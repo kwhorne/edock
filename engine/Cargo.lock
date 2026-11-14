@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "edock"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "block2",
  "dispatch2",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "edock-image"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "edock-init"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "edock-proto",
  "flate2",
@@ -253,11 +253,11 @@ dependencies = [
 
 [[package]]
 name = "edock-proto"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "edock-vmm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "block2",
  "dispatch2",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "yasna"
