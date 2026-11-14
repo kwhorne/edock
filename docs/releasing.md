@@ -16,9 +16,11 @@ A release is a signed, notarized `eDock-<version>-arm64.dmg` on GitHub. `scripts
    xcrun notarytool store-credentials edock-notary --apple-id <apple-id> --team-id <team-id>
    ```
 
-3. **The engine's guest**, built once: `cargo xtask kernel && cargo xtask disk && cargo xtask guest` in `engine/`.
+3. **`cargo-about`**, for the licence notices: `cargo install cargo-about --locked --features cli`.
 
-4. **The update key** in `~/.config/edock/update-key`. Installed copies of eDock accept an update only when it's signed with this key. Its public half is `UPDATE_KEY` in `desktop/src/main.rs`.
+4. **The engine's guest**, built once: `cargo xtask kernel && cargo xtask disk && cargo xtask guest` in `engine/`.
+
+5. **The update key** in `~/.config/edock/update-key`. Installed copies of eDock accept an update only when it's signed with this key. Its public half is `UPDATE_KEY` in `desktop/src/main.rs`.
    - **The key already exists.** Copy it into a password manager or another safe place. If it's lost, installed copies can't take updates any more until people install a new version by hand.
    - **On a new Mac**, copy the file there with mode `600`, or point `EDOCK_UPDATE_KEY` at it.
    - **Never commit it.**
@@ -50,19 +52,21 @@ This takes about 15 minutes, most of it waiting for Apple. It:
    - `dist/latest.json`, which names that zip with its SHA-256, the update key's signature and the notes from `EDOCK_RELEASE_NOTES`.
 
    Before any of this, the script checks that the update key matches the app's `UPDATE_KEY`, so a mismatch stops it at once rather than after 15 minutes.
-8. **Makes the `.dmg`** (the app and a link to Applications), signs it, notarizes it, and staples it.
-9. **Checks both with `spctl`**, and writes `dist/eDock-<version>-arm64.dmg.sha256`.
+8. **Writes the kernel's source archive**, `dist/eDock-<version>-kernel-source.tar.xz`: the exact Linux release with eDock's patches applied, and its build inputs. GPL-2.0 asks that this be published beside the binaries; `KERNEL_SOURCE_OFFER.md` in the app names it. It takes about 6 minutes and is about 160 MB.
+9. **Regenerates `desktop/NOTICE`** (`scripts/notices.sh`, with `cargo about`): the licences of the app's Rust crates and of the JavaScript in its window. It goes into the app as `Contents/Resources/NOTICE`, with the MIT `LICENSE`, and the engine's `NOTICE` and `LICENSE` go in `Contents/Resources/engine/`.
+10. **Makes the `.dmg`** (the app and a link to Applications), signs it, notarizes it, and staples it.
+11. **Checks both with `spctl`**, and writes `dist/eDock-<version>-arm64.dmg.sha256`.
 
 If Apple rejects either submission, the script prints Apple's log with the reason, and stops.
 
 ## Publish
 
 ```sh
-git add -A && git commit -m "eDock 0.3.0"
+git add desktop engine scripts docs README.md LICENSE && git commit -m "eDock 0.3.0"
 git tag -a v0.3.0 -m "eDock 0.3.0"
 git push origin main v0.3.0
 gh release create v0.3.0 dist/eDock-0.3.0-arm64.dmg dist/eDock-0.3.0-arm64.dmg.sha256 \
-  dist/eDock-0.3.0-arm64.zip dist/latest.json \
+  dist/eDock-0.3.0-arm64.zip dist/latest.json dist/eDock-0.3.0-kernel-source.tar.xz \
   --title "eDock 0.3.0" --notes-file notes.md --latest
 ```
 

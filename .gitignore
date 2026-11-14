@@ -1,3 +1,14 @@
 dist/
 .DS_Store
+
+# Release secrets and scratch: never committed.
+*.p8
+*.key
+*update-key*
+!scripts/update-key/
+!scripts/update-key/**
+notes.md
+.env*
+
+# After the exceptions above, so they can't bring it back.
 scripts/update-key/target/

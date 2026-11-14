@@ -72,7 +72,7 @@ amd64 images run through Rosetta. That's fast, but slower than an arm64 image. C
 
 ## Updates
 
-**"Couldn't check for updates".** The check needs to reach `github.com`. Behind a proxy, see [Configuration](configuration.md#proxies).
+**"Couldn't check for updates".** The check needs to reach `github.com` directly. The engine's proxy setting doesn't apply to it. Where a proxy is required, download new versions from [elyracode.com/edock](https://elyracode.com/edock).
 
 **Installing refuses.** eDock replaces itself only where it's allowed to:
 

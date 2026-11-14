@@ -15,7 +15,7 @@ Fixes #
 
 ```
 
-Tested on: <!-- macOS / Windows / Linux, and which version -->
+Tested on: <!-- macOS version, and the Mac (eDock is Apple silicon only) -->
 
 ## How you found it
 
@@ -29,4 +29,4 @@ AI tools used to write this change: <!-- yes / no; if yes, which parts -->
 
 - [ ] I have at most 3 pull requests open on eDock, this one included
 - [ ] `cargo fmt`, `cargo clippy` and the tests pass
-- [ ] It works on macOS, Windows and Linux, or the change only touches one of them
+- [ ] It works on an Apple silicon Mac with macOS 14 or later

@@ -27,4 +27,4 @@ An update is installed only if **all** of these hold:
 
 If any check fails, nothing is installed and the running eDock is left as it was.
 
-The check asks GitHub for the newest release's `latest.json` over HTTPS, through the [proxy](../configuration.md#proxies) if one is set. Nothing about you or your containers is sent.
+The check asks GitHub for the newest release's `latest.json` over HTTPS, straight from the app. It doesn't use the engine's [proxy setting](../configuration.md#proxies), so on a network that only lets traffic out through a proxy, the check fails and eDock stays as it is. Nothing about you or your containers is sent.

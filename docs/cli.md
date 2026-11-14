@@ -98,24 +98,36 @@ Which builder a plain `docker build` uses. See [Builds](docker.md#builds).
 ## `edock import`
 
 ```sh
-edock import --list
-edock import orbstack
-edock import desktop-linux
+edock import [orbstack|desktop-linux] --list
+edock import [orbstack|desktop-linux]
+edock import orbstack image NAME | volume NAME | container NAME
 ```
 
-Brings images, volumes and containers over from OrbStack or Docker Desktop. `--list` shows what would come over.
+Brings images, volumes and containers over from OrbStack (the default) or Docker Desktop (`desktop-linux`).
+
+- `--list` shows what there is, and what eDock has already.
+- With `image`, `volume` or `container NAME`, it brings over that one only.
+
+The source is only read: images through `docker save`, and volumes through a short-lived read-only helper container, so file owners are kept. Containers arrive stopped.
 
 ## `edock machine`
 
 ```sh
-edock machine create dev [--distro ubuntu] [--systemd]
+edock machine create NAME [--distro D | --image IMAGE] [--systemd]
 edock machine list
-edock machine shell dev
-edock machine stop dev
-edock machine delete dev
+edock machine shell NAME [-- CMD...]
+edock machine start | stop | restart | delete NAME
 ```
 
-Long-lived Linux environments on eDock. Each one has your user, `sudo`, and `/Users` at the same path as on the Mac. `--systemd` boots systemd as the machine's init.
+Long-lived Linux environments on eDock. Each one has your user, `sudo`, and `/Users` at the same path as on the Mac.
+
+| Flag | |
+|---|---|
+| `--distro` | `ubuntu` (the default), `debian`, `alpine`, `fedora`, `arch`, `rocky` or `opensuse` |
+| `--image` | Any image to start from, instead of a distribution |
+| `--systemd` | Boots systemd as the machine's init |
+
+`shell NAME -- CMD…` runs one command instead of a shell.
 
 ## `edock usb` (beta)
 

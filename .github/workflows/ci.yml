@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Apple silicon, as eDock is.
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            engine
+            desktop
+            scripts/update-key
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/app/package-lock.json
+
+      - name: Engine tests
+        working-directory: engine
+        run: cargo test --locked -p edock -p edock-image -p edock-proto
+
+      - name: Frontend build
+        working-directory: desktop/app
+        run: npm ci && npm run build
+
+      - name: App tests
+        # The integration tests need an engine (they're #[ignore]); these
+        # are the unit tests: Kubernetes parsing, names, the update key.
+        working-directory: desktop
+        run: cargo test --locked
+
+      - name: Bindings match the commands
+        working-directory: desktop
+        run: |
+          cargo install --locked --git https://github.com/kwhorne/elyra-framework --tag v0.46.0 ratatosk
+          rata codegen
+          git diff --exit-code app/src/bindings.ts
+
+      - name: Update key tool
+        working-directory: scripts/update-key
+        run: cargo build --locked
+
+      - name: Scripts parse
+        run: |
+          sh -n scripts/bundle.sh
+          sh -n scripts/notices.sh
