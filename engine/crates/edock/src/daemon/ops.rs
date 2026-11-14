@@ -363,11 +363,19 @@ fn parse_duration(s: &str) -> Option<Duration> {
     }))
 }
 
+/// eDock's own long-lived containers hold state a prune must never take: a
+/// Linux machine's whole system (`edock machine`), the Kubernetes node's
+/// cluster (`edock k8s`). A stopped one is still wanted; they go only by
+/// their own delete, or an explicit `docker rm`.
+fn kept_from_prune(labels: &Value) -> bool {
+    labels.get("app.edock.machine").is_some() || labels.get("app.edock.k8s").is_some()
+}
+
 fn container_prune(req: &Request, engine: &Engine) -> Result<Value, Error> {
     let f = filters(req, &["until", "label", "label!"])?;
     let doomed = engine.each(|c| {
         let labels = if c.spec.labels.is_object() { c.spec.labels.clone() } else { json!({}) };
-        (c.status != Status::Running && f.labels(&labels) && until_ok(&f, c.created)).then(|| c.id.clone())
+        (c.status != Status::Running && !kept_from_prune(&labels) && f.labels(&labels) && until_ok(&f, c.created)).then(|| c.id.clone())
     });
     let mut deleted = Vec::new();
     for id in doomed {
@@ -676,5 +684,17 @@ mod disk_usage_tests {
         assert_eq!(du.containers.get("c1"), Some(&8192));
         assert_eq!(du.volumes.get("data"), Some(&12288));
         assert_eq!((du.layers.len(), du.containers.len(), du.volumes.len()), (1, 1, 1));
+    }
+}
+
+#[cfg(test)]
+mod prune_tests {
+    #[test]
+    fn a_prune_keeps_machines_and_the_kubernetes_node() {
+        use serde_json::json;
+        assert!(super::kept_from_prune(&json!({"app.edock.machine": "dev"})));
+        assert!(super::kept_from_prune(&json!({"app.edock.k8s": "1"})));
+        assert!(!super::kept_from_prune(&json!({"com.docker.compose.project": "shop"})));
+        assert!(!super::kept_from_prune(&json!({})));
     }
 }
