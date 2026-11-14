@@ -201,4 +201,20 @@ mod update_tests {
         assert!(matches!(updater.evaluate(&manifest("0.2.0"), "macos-aarch64").unwrap(), UpdateStatus::UpToDate));
         assert!(matches!(updater.evaluate(&manifest("0.1.0"), "macos-aarch64").unwrap(), UpdateStatus::UpToDate));
     }
+
+    /// After a release: what an installed eDock does, short of installing.
+    /// It fetches the published manifest, downloads the zip, and checks its
+    /// signature against the app's key, and its SHA-256.
+    /// `cargo test published_release -- --ignored`.
+    #[test]
+    #[ignore = "fetches the published release"]
+    fn the_published_release_verifies() {
+        let updater = Updater::new(super::UPDATE_KEY, "0.0.1").unwrap();
+        let UpdateStatus::Available(info) = updater.check(super::UPDATE_MANIFEST, "macos-aarch64").unwrap() else {
+            panic!("the published manifest offers nothing");
+        };
+        let staged = updater.download_verified(&info).expect("the published zip verifies");
+        assert!(std::fs::metadata(&staged).unwrap().len() > 1_000_000);
+        let _ = std::fs::remove_file(staged);
+    }
 }

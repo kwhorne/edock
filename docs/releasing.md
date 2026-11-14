@@ -76,6 +76,14 @@ shasum -a 256 -c eDock-0.3.0-arm64.dmg.sha256
 xcrun stapler validate eDock-0.3.0-arm64.dmg
 ```
 
+And what an installed eDock will get:
+
+```sh
+cd desktop && cargo test published_release -- --ignored
+```
+
+This test fetches the published `latest.json`, downloads the zip it names, and checks the zip's signature against the app's `UPDATE_KEY` and its SHA-256, just as an update does before installing.
+
 ## Local builds
 
 Without `--notarize` the app is signed ad hoc. It runs on the Mac that built it, and Gatekeeper refuses it elsewhere.
