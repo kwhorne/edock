@@ -21,8 +21,9 @@
     load();
   });
 
-  const running = $derived(containers.filter((c) => c.state === "running"));
-  const stopped = $derived(containers.filter((c) => c.state !== "running").slice(0, 5));
+  const mine = $derived(containers.filter((c) => !c.system));
+  const running = $derived(mine.filter((c) => c.state === "running"));
+  const stopped = $derived(mine.filter((c) => c.state !== "running").slice(0, 5));
   const s = $derived(engine.status);
 
   const open = (path) => api.window_open(path ?? null);

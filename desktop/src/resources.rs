@@ -104,23 +104,23 @@ pub async fn engine_status(ctx: Ctx) -> EngineStatus {
             st.containers = i["Containers"].as_u64().unwrap_or(0) as u32;
             st.running = i["ContainersRunning"].as_u64().unwrap_or(0) as u32;
             st.images = i["Images"].as_u64().unwrap_or(0) as u32;
-            st.state = "running".into();
+            // eDock's own engine says more than Docker's API does, in the
+            // same answer.
+            st.state = if st.context != crate::engine::EDOCK {
+                "running"
+            } else if i["EdockStopped"] == true {
+                "stopped"
+            } else if i["EdockVmAwake"] == false {
+                "asleep"
+            } else {
+                "running"
+            }
+            .into();
         }
         Err(e) => {
             st.error = Some(e);
             engine.reset();
         }
-    }
-    // eDock's own engine says more than Docker's API does.
-    if st.context == crate::engine::EDOCK {
-        use crate::daemon::EngineState::*;
-        st.state = match crate::daemon::engine_state().await {
-            Off => "off",
-            Stopped => "stopped",
-            Asleep => "asleep",
-            Running => "running",
-        }
-        .into();
     }
     st
 }
@@ -168,6 +168,9 @@ pub struct ContainerRow {
     /// On eDock's engine: the name it answers to at `<domain>.edock.localhost`
     /// (its `app.edock.domain` label, `<service>.<project>`, or its name).
     pub domain: Option<String>,
+    /// One of eDock's own: "machine" (a Linux machine), "kubernetes" (the
+    /// node) or "builder" (BuildKit). Kept apart from the user's containers.
+    pub system: Option<String>,
 }
 
 /// Every container, running or not.
@@ -205,6 +208,15 @@ pub async fn containers_list(ctx: Ctx, size: bool) -> Result<Vec<ContainerRow>, 
                 let service = label("com.docker.compose.service").zip(label("com.docker.compose.project")).map(|(s, p)| format!("{s}.{p}"));
                 chosen.or(service).unwrap_or_else(|| name.clone())
             });
+            let system = if label("app.edock.machine").is_some() {
+                Some("machine".to_owned())
+            } else if label("app.edock.k8s").is_some() {
+                Some("kubernetes".to_owned())
+            } else if name.starts_with("buildx_buildkit_") {
+                Some("builder".to_owned())
+            } else {
+                None
+            };
             let status = s(&v["Status"]);
             let health = ["healthy", "unhealthy", "starting"]
                 .into_iter()
@@ -224,7 +236,8 @@ pub async fn containers_list(ctx: Ctx, size: bool) -> Result<Vec<ContainerRow>, 
                 service: label("com.docker.compose.service"),
                 working_dir: label("com.docker.compose.project.working_dir"),
                 size: v["SizeRw"].as_f64(),
-                domain,
+                domain: if system.is_some() { None } else { domain },
+                system,
             }
         })
         .collect())

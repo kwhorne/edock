@@ -36,16 +36,22 @@ impl Provider for Watcher {
             let Some(tray) = tray.clone() else { return };
             let engine = e2.clone();
             tokio::spawn(async move {
-                let running = if connected {
-                    match engine.docker() {
-                        Ok(d) => d.info().await.ok().and_then(|i| i.containers_running).unwrap_or(0),
-                        Err(_) => 0,
+                let (context, _) = engine.context();
+                // eDock's engine: one background look at /info, which
+                // doesn't keep its VM awake, says both. Others: Docker's.
+                let (running, stopped) = if !connected {
+                    (0, false)
+                } else if context == engine::EDOCK {
+                    match daemon::engine_request("GET", "/info").await {
+                        Some((200, i)) => (i["ContainersRunning"].as_u64().unwrap_or(0) as i64, i["EdockStopped"] == true),
+                        _ => (0, false),
                     }
                 } else {
-                    0
+                    match engine.docker() {
+                        Ok(d) => (d.info().await.ok().and_then(|i| i.containers_running).unwrap_or(0), false),
+                        Err(_) => (0, false),
+                    }
                 };
-                let (context, _) = engine.context();
-                let stopped = context == engine::EDOCK && daemon::engine_state().await == daemon::EngineState::Stopped;
                 tray.set_title(if running > 0 { Some(running.to_string()) } else { None }.as_deref());
                 tray.set_tooltip(Some(&if stopped {
                     "eDock — engine stopped".to_owned()

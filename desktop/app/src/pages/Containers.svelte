@@ -1,6 +1,6 @@
 <script>
   import { contextMenu, navigate, shell, clipboard, confirm, toast } from "@elyra/runtime";
-  import { Badge, Button, Callout, Empty, Input, Skeleton } from "@elyra/ui";
+  import { Badge, Button, Callout, Empty, Input, Skeleton, Switch } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
   import { changes, engine, attempt, domainUrl } from "../lib/state.svelte.js";
@@ -9,6 +9,10 @@
   let containers = $state(null);
   let error = $state(null);
   let search = $state("");
+  // eDock's own (Linux machines, the Kubernetes node, BuildKit) have their
+  // own pages; here only when asked for.
+  let showSystem = $state(false);
+  const systemCount = $derived(containers?.filter((c) => c.system).length ?? 0);
   let collapsed = $state({});
   let busy = $state({});
 
@@ -31,7 +35,9 @@
     if (!containers) return [];
     const q = search.trim().toLowerCase();
     const list = containers.filter(
-      (c) => !q || c.name.toLowerCase().includes(q) || c.image.toLowerCase().includes(q) || (c.project ?? "").toLowerCase().includes(q),
+      (c) =>
+        (showSystem || !c.system) &&
+        (!q || c.name.toLowerCase().includes(q) || c.image.toLowerCase().includes(q) || (c.project ?? "").toLowerCase().includes(q)),
     );
     const byProject = new Map();
     const single = [];
@@ -112,7 +118,10 @@
     <span class="muted">{containers ? `${containers.filter((c) => c.state === "running").length} running · ${containers.length} in all` : ""}</span>
     <span class="spacer"></span>
     <div class="search"><Icon name="search" size={14} /><Input bind:value={search} placeholder="Filter" aria-label="Filter containers" /></div>
-    <Button size="sm" variant="ghost" onclick={prune} title="Remove stopped containers"><Icon name="broom" size={14} /> Prune</Button>
+    {#if systemCount}
+      <label class="toggle" title="Linux machines, the Kubernetes node and BuildKit"><Switch bind:checked={showSystem} /> eDock's own ({systemCount})</label>
+    {/if}
+    <Button size="sm" variant="ghost" onclick={prune} title="Remove stopped containers (Linux machines and Kubernetes are kept)"><Icon name="broom" size={14} /> Prune</Button>
   </header>
 
   {#if error}
@@ -167,7 +176,7 @@
                 >
                   <span class="dot" class:on={running} class:warn={c.state === "paused" || c.state === "restarting" || c.health === "unhealthy"}></span>
                   <div class="main">
-                    <div class="name">{g.project && c.service ? c.service : c.name}</div>
+                    <div class="name">{g.project && c.service ? c.service : c.name} {#if c.system}<Badge>{c.system === "machine" ? "Linux machine" : c.system === "kubernetes" ? "Kubernetes" : "BuildKit"}</Badge>{/if}</div>
                     <div class="sub muted">{c.image} · {shortId(c.id)}</div>
                     {#if domainUrl(c)}
                       <button class="domain" title="Open {domainUrl(c)}" onclick={(e) => { e.stopPropagation(); shell.openExternal(domainUrl(c)); }}>

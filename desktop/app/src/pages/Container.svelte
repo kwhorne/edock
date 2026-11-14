@@ -6,7 +6,7 @@
   import Stats from "../lib/Stats.svelte";
   import Terminal from "../lib/Terminal.svelte";
   import Ports from "../lib/Ports.svelte";
-  import { Modal, Textarea } from "@elyra/ui";
+  import { Modal } from "@elyra/ui";
   import { api } from "../bindings";
   import { changes, engine, attempt } from "../lib/state.svelte.js";
   import { stateTone, shortId } from "../lib/format.js";
@@ -58,19 +58,21 @@
     { id: "inspect", label: "Inspect" },
   ]);
 
-  // The environment, edited as NAME=value lines; a running container
+  // The environment, one row per variable: a value is kept exactly as it
+  // is (several lines, a PEM key; spaces at the ends). A running container
   // restarts with it, its files kept (eDock's engine).
   let envOpen = $state(false);
-  let envText = $state("");
+  let envRows = $state([]);
   let envBusy = $state(false);
   function openEnv() {
-    envText = detail.env.map((e) => `${e.key}=${e.value}`).join("\n");
+    envRows = detail.env.map((e) => ({ key: e.key, value: e.value }));
     envOpen = true;
   }
   async function saveEnv() {
-    const env = envText.split("\n").map((l) => l.trim()).filter(Boolean);
-    const bad = env.find((l) => !/^[^=\s]+=/.test(l));
-    if (bad) return toast(`“${bad}” isn't NAME=value`, { variant: "danger" });
+    const rows = envRows.filter((r) => r.key.trim() !== "" || r.value !== "");
+    const bad = rows.find((r) => !/^[^=\s]+$/.test(r.key.trim()));
+    if (bad) return toast(`“${bad.key}” isn't a variable name: no spaces or =`, { variant: "danger" });
+    const env = rows.map((r) => `${r.key.trim()}=${r.value}`);
     if (running && !(await confirm(`${detail.name} restarts with the new environment. Its files are kept.`, { confirmLabel: "Save and restart" }))) return;
     envBusy = true;
     const ok = await attempt(() => api.container_set_env(params.id, env).then(() => true), "Environment saved");
@@ -82,8 +84,17 @@
   }
 </script>
 
-<Modal bind:open={envOpen} title="Environment" description="One NAME=value per line." size="lg">
-  <Textarea class="env-editor" bind:value={envText} rows={14} />
+<Modal bind:open={envOpen} title="Environment" description="Values are kept exactly as typed, several lines too." size="lg">
+  <div class="env-rows">
+    {#each envRows as row, i (i)}
+      <div class="env-row">
+        <input class="mono" bind:value={row.key} placeholder="NAME" aria-label="Name" />
+        <textarea class="mono" bind:value={row.value} rows={Math.min(6, (row.value.match(/\n/g)?.length ?? 0) + 1)} aria-label="Value of {row.key}"></textarea>
+        <button class="icon-btn danger" title="Remove" onclick={() => envRows.splice(i, 1)}><Icon name="trash" size={14} /></button>
+      </div>
+    {/each}
+    <Button size="sm" onclick={() => envRows.push({ key: "", value: "" })}><Icon name="plus" size={13} /> Add a variable</Button>
+  </div>
   {#snippet footer()}
     <Button onclick={() => (envOpen = false)}>Cancel</Button>
     <Button variant="primary" loading={envBusy} onclick={saveEnv}>Save</Button>
@@ -147,7 +158,7 @@
               </h3>
               <table class="kv">
                 <tbody>
-                  {#each detail.env as e (e.key)}<tr><td>{e.key}</td><td class="mono">{e.value}</td></tr>{/each}
+                  {#each detail.env as e, i (`${e.key}:${i}`)}<tr><td>{e.key}</td><td class="mono">{e.value}</td></tr>{/each}
                 </tbody>
               </table>
             </section>

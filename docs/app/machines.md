@@ -45,4 +45,4 @@ On the **Machines** list, each machine has **Shell**, **Start** or **Stop**, **R
 
 ## Under the hood
 
-A machine is a container named `machine-<name>`, labelled `app.edock.machine`. That's why it also shows in **Containers**. See [`edock machine`](../cli.md#edock-machine) for the command line.
+A machine is a container named `machine-<name>`, labelled `app.edock.machine`. **Containers** shows it when you turn on **eDock's own**, and a prune never removes it, even stopped. See [`edock machine`](../cli.md#edock-machine) for the command line.

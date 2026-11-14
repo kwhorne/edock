@@ -111,7 +111,7 @@
                   {/if}
                   {#if b.host_ip === "127.0.0.1"}<Badge>this Mac only</Badge>{/if}
                 </td>
-                <td class="mono">{b.container_port}/{b.proto} {#if info.listening.includes(b.container_port)}<Badge variant="success">listening</Badge>{/if}</td>
+                <td class="mono">{b.container_port}/{b.proto} {#if b.proto === "tcp" && info.listening.includes(b.container_port)}<Badge variant="success">listening</Badge>{/if}</td>
                 <td><button class="icon-btn danger" title="Remove" disabled={busy} onclick={() => remove(b)}><Icon name="trash" size={14} /></button></td>
               </tr>
             {/each}

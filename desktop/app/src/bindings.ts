@@ -91,6 +91,11 @@ export type ContainerRow = {
 	 *  (its `app.edock.domain` label, `<service>.<project>`, or its name).
 	 */
 	domain: string | null,
+	/**
+	 *  One of eDock's own: "machine" (a Linux machine), "kubernetes" (the
+	 *  node) or "builder" (BuildKit). Kept apart from the user's containers.
+	 */
+	system: string | null,
 };
 
 /**  A docker context: a name and the socket behind it. */

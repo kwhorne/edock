@@ -21,7 +21,11 @@ Click a row, or press Enter on it, to open the container. Right-click a row for 
 - Copy ID and Copy name
 - Remove
 
-The header shows how many containers are running, and how many there are in all. **Filter** narrows the list by container name, image or Compose project. **Prune** removes every stopped container, after asking.
+The header shows how many containers are running, and how many there are in all. **Filter** narrows the list by container name, image or Compose project.
+
+**Prune** removes every stopped container, after asking. It never removes a Linux machine or the Kubernetes node, even stopped: they hold a whole system, and go only by their own **Delete**.
+
+eDock's own containers are hidden from the list: Linux machines (`machine-<name>`), the Kubernetes node (`edock-k8s`) and BuildKit. They have pages of their own. **eDock's own** in the header shows them, marked as what they are.
 
 ## Compose projects
 
@@ -101,7 +105,7 @@ Ports the container binds only on its own loopback are listed at the bottom: not
 
 ### Inspect
 
-- **Environment:** every variable, sorted. On eDock's engine, **Edit** changes them: one `NAME=value` per line. A running container restarts with the new environment, and its files are kept.
+- **Environment:** every variable, sorted. On eDock's engine, **Edit** changes them, one row per variable. A value is kept exactly as you type it, over several lines too (a PEM key, JSON), with any spaces at its ends. A running container restarts with the new environment, and its files are kept.
 - **Mounts:** each one's path in the container, its kind (volume or bind) and source, and whether it's read-only.
 - **Labels.**
 - **The full `docker inspect`** as JSON, with a copy button.

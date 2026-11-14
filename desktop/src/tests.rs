@@ -406,8 +406,12 @@ async fn ports_domains_and_env_on_a_running_container() {
         }
     };
     exec("echo kept > /tmp/marker").await;
-    let _: () = app.invoke("container_set_env", (id.clone(), vec!["GREETING=hei".to_string(), "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()])).await.unwrap();
-    assert_eq!(exec("echo $GREETING").await.trim(), "hei");
+    let key = "-----BEGIN KEY-----\nabc\n-----END KEY-----";
+    let env = vec!["GREETING=hei ".to_string(), format!("KEY={key}"), "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()];
+    let _: () = app.invoke("container_set_env", (id.clone(), env)).await.unwrap();
+    // Exactly as given: the space at the end, and every line of the key.
+    assert_eq!(exec("printf '[%s]' \"$GREETING\"").await, "[hei ]");
+    assert_eq!(exec("printf '%s' \"$KEY\"").await, key);
     assert_eq!(exec("cat /tmp/marker").await.trim(), "kept");
     assert!(app.invoke_err("container_set_env", (id.clone(), vec!["not an assignment".to_string()])).await.contains("NAME=value"));
     assert!(app.invoke_err("container_ports", ("../images".to_string(),)).await.contains("isn't a container"));
@@ -447,8 +451,24 @@ async fn a_linux_machine_from_create_to_delete() {
     wait_for(&app, &format!("exec:{term}"), |c: &[TermChunk]| c.iter().map(|c| c.data.as_str()).collect::<String>().contains(&want)).await;
     let _: () = app.invoke("exec_input", (term, "exit\r".to_string())).await.unwrap();
 
-    // Stop, start, delete.
-    for action in ["stop", "start"] {
+    // It's one of eDock's own in the container list.
+    let all: Vec<ContainerRow> = app.invoke("containers_list", (false,)).await.unwrap();
+    let row = all.iter().find(|c| c.name == format!("machine-{name}")).expect("in the list");
+    assert_eq!((row.system.as_deref(), row.domain.as_deref()), (Some("machine"), None));
+
+    // Stopped, it survives a prune: its whole system is in it.
+    let _: () = app.invoke("machine_action", (name.to_string(), "stop".to_string())).await.unwrap();
+    // A prune aimed at this machine alone (its label), so the test never
+    // touches anyone else's stopped containers: still, the engine keeps it.
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let mut only = std::collections::HashMap::new();
+    only.insert("label".to_string(), vec![format!("app.edock.machine={name}")]);
+    docker.prune_containers(Some(bollard::query_parameters::PruneContainersOptionsBuilder::default().filters(&only).build())).await.unwrap();
+    let rows: Vec<MachineRow> = app.invoke("machines_list", ()).await.unwrap();
+    assert!(rows.iter().any(|m| m.name == name), "a prune took the stopped machine");
+
+    // Start, stop, start, delete.
+    for action in ["start", "stop", "start"] {
         let _: () = app.invoke("machine_action", (name.to_string(), action.to_string())).await.unwrap();
     }
     let rows: Vec<MachineRow> = app.invoke("machines_list", ()).await.unwrap();

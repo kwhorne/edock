@@ -247,3 +247,10 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: v
 .slider { width: 100%; }
 .slider-head { display: flex; align-items: baseline; gap: 8px; }
 .facts-grid dd { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.env-rows { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow: auto; }
+.env-row { display: grid; grid-template-columns: 200px 1fr auto; gap: 6px; align-items: start; }
+.env-row input, .env-row textarea {
+  padding: 5px 8px; border-radius: var(--elyra-radius); border: 1px solid var(--elyra-border);
+  background: var(--elyra-inset); color: var(--elyra-text); font-size: 12px; resize: vertical; white-space: pre;
+}
