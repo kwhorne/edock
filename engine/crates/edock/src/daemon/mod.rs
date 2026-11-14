@@ -13,6 +13,7 @@ pub mod dns;
 pub mod tls;
 pub mod proxy;
 mod domains;
+mod inspect;
 mod engine;
 mod filters;
 mod health;
@@ -165,6 +166,7 @@ pub fn run(_args: &[String]) -> io::Result<()> {
             Ok(port) => diag::info!("HTTPS for container domains", port = port, trusted = tls::trusted()),
             Err(e) => diag::warn!("HTTPS for container domains off", error = e),
         }
+        inspect::load();
         match domains::start(engine.clone()) {
             Ok(port) => diag::info!(format!(
                 "container domains on http://<name>.{}{}",

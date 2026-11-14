@@ -25,11 +25,16 @@ mod usbip;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub mod sysfs;
 
-const USAGE: &str = "usage: edock usb [list] | attach DEVICE | detach DEVICE | helper remove\n\
+const USAGE: &str = "usage: edock usb [list [--json]] | attach DEVICE | detach DEVICE | helper remove\n\
     DEVICE is a location (0x02114000), vendor:product (1532:00d7) or part of the name";
 
 pub fn run(args: &[String]) -> io::Result<()> {
     match (args.first().map(String::as_str), args.get(1)) {
+        // The app's USB view: the devices, and which are in eDock, as JSON.
+        (None | Some("list" | "ls"), _) if args.iter().any(|a| a == "--json") => {
+            println!("{}", ui_list());
+            Ok(())
+        }
         (None | Some("list" | "ls"), _) => list(),
         (Some("attach"), Some(d)) => attach(d),
         (Some("detach"), Some(d)) => detach(d),

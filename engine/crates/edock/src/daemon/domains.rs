@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use super::engine::Engine;
+use super::inspect::{Dir, Tap};
 
 /// Largest request head read before routing.
 const MAX_HEAD: usize = 64 * 1024;
@@ -334,28 +335,57 @@ fn serve(mut client: TcpStream, engine: &Engine) -> io::Result<()> {
         return Ok(());
     }
     client.set_nodelay(true)?;
-    let Some((head, guest)) = route(&mut client, engine, "http")? else { return Ok(()) };
+    let Some((head, guest, tap)) = route(&mut client, engine, "http")? else { return Ok(()) };
     let mut to_guest = std::fs::File::from(guest.fd.try_clone()?);
     // What the client sent so far goes first, unchanged.
+    if let Some(t) = &tap {
+        t.saw(Dir::Request, &head);
+    }
     to_guest.write_all(&head)?;
     let mut from_guest = std::fs::File::from(guest.fd.try_clone()?);
     let mut client_read = client.try_clone()?;
+    let up_tap = tap.clone();
     let up = std::thread::Builder::new().name("edock-domain-up".into()).spawn(move || {
-        let _ = io::copy(&mut client_read, &mut to_guest);
+        pump(&mut client_read, &mut to_guest, up_tap.as_deref(), Dir::Request);
         // SAFETY: half-closing a socket we own.
         unsafe { libc::shutdown(to_guest.as_raw_fd(), libc::SHUT_WR) };
     })?;
-    let _ = io::copy(&mut from_guest, &mut client);
+    pump(&mut from_guest, &mut client, tap.as_deref(), Dir::Response);
     let _ = client.shutdown(Shutdown::Write);
     let _ = up.join();
     drop(guest);
     Ok(())
 }
 
+/// Copies one way until either end closes, showing the inspector what passes.
+fn pump(from: &mut impl Read, to: &mut impl Write, tap: Option<&Tap>, dir: Dir) {
+    let Some(tap) = tap else {
+        let _ = io::copy(from, to);
+        return;
+    };
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match from.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                tap.saw(dir, &buf[..n]);
+                if to.write_all(&buf[..n]).is_err() {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    tap.closed(dir);
+}
+
 /// Reads the request head, finds the container its Host names and connects
-/// to it. `None` once it has answered by itself (no such container, an
-/// unreachable one, or a client that went away).
-fn route(client: &mut impl ReadWrite, engine: &Engine, scheme: &str) -> io::Result<Option<(Vec<u8>, edock_vmm::VsockStream)>> {
+/// to it, with a tap when the inspector is on. `None` once it has answered
+/// by itself (no such container, an unreachable one, or a client that went
+/// away).
+type Routed = (Vec<u8>, edock_vmm::VsockStream, Option<Arc<Tap>>);
+fn route(client: &mut impl ReadWrite, engine: &Engine, scheme: &'static str) -> io::Result<Option<Routed>> {
     let mut head = Vec::with_capacity(2048);
     let mut buf = [0u8; 4096];
     let end = loop {
@@ -390,7 +420,7 @@ fn route(client: &mut impl ReadWrite, engine: &Engine, scheme: &str) -> io::Resu
     };
     let port = web_port(engine, &target);
     match engine.relay_to(target.ip, port) {
-        Ok(g) => Ok(Some((head, g))),
+        Ok(g) => Ok(Some((head, g, Tap::new(scheme, &host, &target.name)))),
         Err(e) => {
             respond(client, 502, "Bad Gateway", &format!("eDock could not reach the container: {}", escape(&e.to_string())))?;
             Ok(None)
@@ -403,6 +433,7 @@ fn route(client: &mut impl ReadWrite, engine: &Engine, scheme: &str) -> io::Resu
 pub struct Target {
     pub ip: [u8; 4],
     pub id: String,
+    pub name: String,
     /// `app.edock.http.port`: the owner said so.
     pub label: Option<u16>,
     /// Container ports published with `-p` or `-P`.
@@ -445,7 +476,7 @@ fn choose(cands: &[u16], listening: Option<&[u16]>) -> u16 {
         return *p;
     }
     if cands.is_empty() {
-        let (best, _) = candidates(&Target { ip: [0; 4], id: String::new(), label: None, published: Vec::new(), exposed: on.to_vec() });
+        let (best, _) = candidates(&Target { ip: [0; 4], id: String::new(), name: String::new(), label: None, published: Vec::new(), exposed: on.to_vec() });
         return best[0];
     }
     cands[0]
@@ -490,12 +521,18 @@ fn serve_tls(tcp: TcpStream, engine: &Engine, config: Arc<rustls::ServerConfig>)
     tcp.set_nodelay(true)?;
     let conn = rustls::ServerConnection::new(config).map_err(|e| io::Error::other(e.to_string()))?;
     let mut tls = rustls::StreamOwned::new(conn, tcp);
-    let Some((head, guest)) = route(&mut tls, engine, "https")? else {
+    let Some((head, guest, tap)) = route(&mut tls, engine, "https")? else {
         tls.conn.send_close_notify();
         let _ = tls.flush();
         return Ok(());
     };
     let mut container = std::fs::File::from(guest.fd.try_clone()?);
+    let saw = |dir: Dir, bytes: &[u8]| {
+        if let Some(t) = &tap {
+            t.saw(dir, bytes);
+        }
+    };
+    saw(Dir::Request, &head);
     container.write_all(&head)?;
     let (conn, sock) = (&mut tls.conn, &mut tls.sock);
     let mut buf = vec![0u8; 64 * 1024];
@@ -510,7 +547,10 @@ fn serve_tls(tcp: TcpStream, engine: &Engine, config: Arc<rustls::ServerConfig>)
                     // SAFETY: half-closing a socket we own.
                     unsafe { libc::shutdown(container.as_raw_fd(), libc::SHUT_WR) };
                 }
-                Ok(n) => container.write_all(&buf[..n])?,
+                Ok(n) => {
+                    saw(Dir::Request, &buf[..n]);
+                    container.write_all(&buf[..n])?;
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(_) => {
                     // Closed without TLS's close_notify: the same, for the container.
@@ -554,7 +594,10 @@ fn serve_tls(tcp: TcpStream, engine: &Engine, config: Arc<rustls::ServerConfig>)
         if ready(&fds[1]) {
             match container.read(&mut buf) {
                 Ok(0) | Err(_) => break,
-                Ok(n) => conn.writer().write_all(&buf[..n])?,
+                Ok(n) => {
+                    saw(Dir::Response, &buf[..n]);
+                    conn.writer().write_all(&buf[..n])?;
+                }
             }
         }
     }
@@ -585,7 +628,7 @@ mod tests {
     use super::{candidates, choose, Target};
 
     fn t(label: Option<u16>, published: &[u16], exposed: &[u16]) -> Target {
-        Target { ip: [0; 4], id: String::new(), label, published: published.to_vec(), exposed: exposed.to_vec() }
+        Target { ip: [0; 4], id: String::new(), name: String::new(), label, published: published.to_vec(), exposed: exposed.to_vec() }
     }
 
     #[test]

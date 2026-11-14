@@ -110,6 +110,17 @@ fn route(req: &Request, engine: &Arc<Engine>, w: &mut UnixStream, r: &mut BufRea
         ("GET", "/edock/resources") => return reply(w, Ok(resources(engine)), 200),
         // Settings → Domains: the container-domain routers' ports.
         ("GET", "/edock/domains") => return reply(w, Ok(super::domains::report()), 200),
+        // The HTTP inspector (inspect.rs): what went through the domain routers.
+        ("GET", "/edock/http") => return reply(w, Ok(super::inspect::list(req.query("since").and_then(|v| v.parse().ok()).unwrap_or(0))), 200),
+        ("POST", "/edock/http") => return reply(w, set_inspector(req), 200),
+        ("DELETE", "/edock/http") => {
+            super::inspect::clear();
+            return reply(w, Ok(Value::Null), 204);
+        }
+        ("GET", p) if p.strip_prefix("/edock/http/").is_some_and(|n| n.parse::<u64>().is_ok()) => {
+            let seq = p.strip_prefix("/edock/http/").and_then(|n| n.parse().ok()).unwrap_or(0);
+            return reply(w, super::inspect::get(seq).ok_or_else(|| Error::NotFound("that request is no longer kept".into())), 200);
+        }
         ("POST", "/edock/domains") => return reply(w, set_domain_ports(req, engine), 200),
         // USB passthrough (macOS: the root helper `edock usb serve` connects here).
         #[cfg(target_os = "macos")]
@@ -122,6 +133,12 @@ fn route(req: &Request, engine: &Arc<Engine>, w: &mut UnixStream, r: &mut BufRea
         #[cfg(target_os = "macos")]
         ("DELETE", p) if p.strip_prefix("/edock/usb/").is_some_and(|l| !l.is_empty()) => {
             return reply(w, super::usb::detach(p.strip_prefix("/edock/usb/").unwrap_or_default()), 200);
+        }
+        // The app's file browser: a running container's files, read from the
+        // guest as the Finder view (nfs.rs) reads them.
+        ("GET", p) if p.strip_prefix("/edock/containers/").and_then(|r| r.strip_suffix("/files")).is_some_and(|id| !id.is_empty()) => {
+            let id = p.strip_prefix("/edock/containers/").and_then(|r| r.strip_suffix("/files")).unwrap_or_default();
+            return reply(w, container_files(req, engine, id), 200);
         }
         ("POST", "/edock/resources") => return reply(w, set_resources(req).map(|()| resources(engine)), 200),
         ("POST", p) if p.strip_prefix("/edock/containers/").and_then(|r| r.strip_suffix("/ports")).is_some_and(|id| !id.is_empty()) => {
@@ -138,6 +155,11 @@ fn route(req: &Request, engine: &Arc<Engine>, w: &mut UnixStream, r: &mut BufRea
         // eDock's own: a loopback port reaching a Kubernetes service or pod,
         // for Share. `{"ip": "10.43.0.5", "port": 80}` → `{"port": 50123}`.
         ("POST", "/edock/k8s/forward") => return reply(w, k8s_forward(req, engine), 200),
+        // The forwards open now, so a window that opens later shows them.
+        ("GET", "/edock/k8s/forward") => {
+            let list: Vec<Value> = engine.k8s_forwards().into_iter().map(|(ip, port, mac)| json!({"ip": std::net::Ipv4Addr::from(ip).to_string(), "port": port, "local": mac})).collect();
+            return reply(w, Ok(Value::Array(list)), 200);
+        }
         ("DELETE", p) if p.strip_prefix("/edock/k8s/forward/").is_some_and(|n| n.parse::<u16>().is_ok()) => {
             engine.k8s_unforward(p.strip_prefix("/edock/k8s/forward/").and_then(|n| n.parse().ok()).unwrap_or(0));
             return reply(w, Ok(Value::Null), 204);
@@ -442,7 +464,7 @@ fn images(req: &Request, engine: &Engine) -> Result<Value, Error> {
     }
     Ok(Value::Array(
         list.iter()
-            .filter(|i| f.any("reference", |p| reference_matches(p, &i.name)) && f.labels(&Value::Null))
+            .filter(|i| f.any("reference", |p| reference_matches(p, &i.name)) && f.labels(&image_labels(engine, i)))
             .map(|i| {
                 json!({
                     "Id": i.config_digest,
@@ -453,7 +475,7 @@ fn images(req: &Request, engine: &Engine) -> Result<Value, Error> {
                     "Size": i.size,
                     "SharedSize": -1,
                     "VirtualSize": i.size,
-                    "Labels": null,
+                    "Labels": image_labels(engine, i),
                     "Containers": -1,
                     // Not Docker's: when this image arrived here, for the window.
                     "Pulled": i.pulled_at,
@@ -480,6 +502,7 @@ fn image_inspect(engine: &Engine, name: &str) -> Result<Value, Error> {
             "WorkingDir": i.config.working_dir,
             "User": i.config.user,
             "Healthcheck": image_healthcheck(engine, &i),
+            "Labels": image_labels(engine, &i),
         },
         "RootFS": {"Type": "layers", "Layers": i.layers.iter().map(|l| &l.digest).collect::<Vec<_>>()},
     }))
@@ -1676,6 +1699,22 @@ fn healthcheck_from(body: &Value, image_cfg: &Value) -> Result<Option<super::hea
 }
 
 /// The image's HEALTHCHECK, which eDock's image model does not keep.
+/// An image's labels (`LABEL`, or `docker commit`'s), from its config. A
+/// config never changes once stored, so each is read once.
+fn image_labels(engine: &Engine, i: &edock_image::Image) -> Value {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashMap<String, Value>>> = std::sync::Mutex::new(None);
+    if let Some(v) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(std::collections::HashMap::new).get(&i.config_digest) {
+        return v.clone();
+    }
+    let Some(cfg) = engine.store.read_config(&i.config_digest).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { return Value::Null };
+    let labels = match &cfg["config"]["Labels"] {
+        Value::Object(m) if !m.is_empty() => Value::Object(m.clone()),
+        _ => Value::Null,
+    };
+    SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(std::collections::HashMap::new).insert(i.config_digest.clone(), labels.clone());
+    labels
+}
+
 fn image_healthcheck(engine: &Engine, i: &edock_image::Image) -> Value {
     let cfg: Value = engine.store.read_config(&i.config_digest).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
     cfg["config"]["Healthcheck"].clone()
@@ -1848,7 +1887,7 @@ fn list(req: &Request, engine: &Engine) -> Result<Value, Error> {
 fn inspect(c: &Container, nets: &[super::network::Network]) -> Value {
     let when = |t: Option<std::time::SystemTime>| t.map_or_else(|| time::ZERO.to_owned(), time::rfc3339);
     let argv = c.argv();
-    json!({
+    let mut v = json!({
         "Id": c.id,
         "Created": time::rfc3339(c.created),
         "Path": argv.first().cloned().unwrap_or_default(),
@@ -1916,7 +1955,12 @@ fn inspect(c: &Container, nets: &[super::network::Network]) -> Value {
         },
         "NetworkSettings": network_settings(c, nets),
         "Mounts": c.spec.mount_info,
-    })
+    });
+    // Docker's, kept as the create asked: here, past json!'s recursion limit.
+    for k in ["Binds", "Mounts", "PortBindings", "PublishAllPorts", "ExtraHosts", "Tmpfs", "VolumesFrom"] {
+        v["HostConfig"][k] = super::hostopts::inspect(&c.spec.host_opts, k);
+    }
+    v
 }
 
 fn network_settings(c: &Container, nets: &[super::network::Network]) -> Value {
@@ -2925,4 +2969,51 @@ mod network_option_tests {
         assert_eq!(super::pull_hint(&status(500), "docker.io", None), None);
         assert_eq!(super::pull_hint(&Error::NotFound("no such image".into()), "docker.io", p), None);
     }
+}
+
+/// `POST /edock/http {"on": bool}`: turns the HTTP inspector on or off.
+fn set_inspector(req: &Request) -> Result<Value, Error> {
+    let body: Value = serde_json::from_slice(&req.body).map_err(|e| Error::BadRequest(format!("invalid JSON: {e}")))?;
+    let on = body["on"].as_bool().ok_or_else(|| Error::BadRequest("on: true or false".into()))?;
+    super::inspect::set_on(on).map_err(Error::Io)?;
+    Ok(super::inspect::list(u64::MAX))
+}
+
+/// A path in a container, as the file browser sends it: absolute, without
+/// `..`, NUL or newlines.
+fn container_path(req: &Request) -> Result<String, Error> {
+    let path = req.query("path").unwrap_or("/");
+    if !path.starts_with('/') || path.contains(['\0', '\n']) || path.split('/').any(|p| p == "..") {
+        return Err(Error::BadRequest(format!("{path:?} isn't a path in the container")));
+    }
+    Ok(path.to_owned())
+}
+
+fn running_id(engine: &Engine, key: &str) -> Result<String, Error> {
+    let (id, running) = engine.with(key, |c| (c.id.clone(), c.status == Status::Running))?;
+    if running { Ok(id) } else { Err(Error::Conflict(format!("container {key} is not running"))) }
+}
+
+/// `GET /edock/containers/{id}/files?path=/etc`: the folder's entries,
+/// folders first, then by name.
+fn container_files(req: &Request, engine: &Engine, key: &str) -> Result<Value, Error> {
+    let path = container_path(req)?;
+    let id = running_id(engine, key)?;
+    let mut list = engine.fs_list(&id, &path).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => Error::NotFound(format!("{path}: no such folder")),
+        _ => Error::Io(e),
+    })?;
+    let kind = |mode: u32| match mode & 0o170000 {
+        0o040000 => "dir",
+        0o120000 => "link",
+        0o100000 => "file",
+        _ => "other",
+    };
+    list.retain(|f| f.name != "." && f.name != "..");
+    list.sort_by(|a, b| (kind(b.mode) == "dir").cmp(&(kind(a.mode) == "dir")).then_with(|| a.name.cmp(&b.name)));
+    Ok(Value::Array(
+        list.iter()
+            .map(|f| json!({"name": f.name, "kind": kind(f.mode), "mode": f.mode & 0o7777, "size": f.size, "mtime": f.mtime}))
+            .collect(),
+    ))
 }

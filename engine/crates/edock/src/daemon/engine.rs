@@ -541,7 +541,8 @@ pub struct Engine {
     k8s_routes: Mutex<Option<(usize, [u8; 4])>>,
     /// Shares of Kubernetes services and pods: the Mac port → its forward
     /// to a cluster address. They go when the cluster does.
-    k8s_fwd: Mutex<HashMap<u16, super::ports::Forwards>>,
+    /// Kubernetes addresses on the Mac: local port → (address, port, forward).
+    k8s_fwd: Mutex<HashMap<u16, ([u8; 4], u16, super::ports::Forwards)>>,
 }
 
 /// k3s's pod and service ranges, which `edock k8s` leaves at their defaults.
@@ -827,6 +828,10 @@ impl Engine {
         if !in_k8s_ranges(ip) || port == 0 {
             return Err(Error::BadRequest("not an address in the Kubernetes cluster".into()));
         }
+        // One forward per address: a second ask gets the first's port.
+        if let Some((&mac, _)) = self.k8s_fwd.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(_, (i, p, _))| *i == ip && *p == port) {
+            return Ok(mac);
+        }
         let node = self.lock().containers.values().find(|c| c.status == Status::Running && c.spec.labels.get("app.edock.k8s").is_some()).and_then(|c| c.ip);
         let Some(node) = node else { return Err(Error::Conflict("Kubernetes isn't running".into())) };
         self.route_k8s(node);
@@ -835,8 +840,15 @@ impl Engine {
         let fw = super::ports::start(vm, &format!("k8s-share-{port}"), &[b], ip)?;
         let mac = fw.bound.first().map(|(_, _, p)| *p).unwrap_or(0);
         crate::diag::info!("Kubernetes address forwarded for sharing", to = format!("{}:{port}", std::net::Ipv4Addr::from(ip)), at = format!("127.0.0.1:{mac}"));
-        self.k8s_fwd.lock().unwrap_or_else(|e| e.into_inner()).insert(mac, fw);
+        self.k8s_fwd.lock().unwrap_or_else(|e| e.into_inner()).insert(mac, (ip, port, fw));
         Ok(mac)
+    }
+
+    /// The forwards open now: (address, port, Mac port).
+    pub fn k8s_forwards(&self) -> Vec<([u8; 4], u16, u16)> {
+        let mut v: Vec<_> = self.k8s_fwd.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(&mac, (ip, port, _))| (*ip, *port, mac)).collect();
+        v.sort_by_key(|f| f.2);
+        v
     }
 
     /// Closes a forward `k8s_forward` opened.
@@ -2124,6 +2136,7 @@ impl Engine {
         Some(super::domains::Target {
             ip,
             id: c.id.clone(),
+            name: c.name.clone(),
             label: c.spec.labels.get("app.edock.http.port").and_then(|v| v.as_str()).and_then(|p| p.parse().ok()),
             published: c.spec.ports.iter().filter(|b| b.proto != "udp").map(|b| b.container_port).collect(),
             exposed: c.spec.exposed.clone(),

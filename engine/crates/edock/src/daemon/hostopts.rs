@@ -7,7 +7,23 @@
 use serde_json::{Value, json};
 
 /// The HostConfig keys kept with a container.
-const KEYS: [&str; 5] = ["Ulimits", "Sysctls", "Devices", "DeviceCgroupRules", "GroupAdd"];
+const KEYS: [&str; 12] = [
+    "Ulimits",
+    "Sysctls",
+    "Devices",
+    "DeviceCgroupRules",
+    "GroupAdd",
+    // Kept only for inspect, as Docker shows them: what makes the container
+    // again from its inspect (eDock's snapshots, tools that clone one)
+    // needs its mounts and ports as they were asked for.
+    "Binds",
+    "Mounts",
+    "PortBindings",
+    "PublishAllPorts",
+    "ExtraHosts",
+    "Tmpfs",
+    "VolumesFrom",
+];
 
 /// `nofile` when the run sets none: what containers get on Docker Desktop
 /// and on Docker Engine under containerd's `LimitNOFILE=infinity`. Without
@@ -53,6 +69,8 @@ pub fn from_host(host: &Value) -> Value {
 pub fn inspect(opts: &Value, key: &str) -> Value {
     match (&opts[key], key) {
         (Value::Null, "Ulimits" | "Devices") => json!([]),
+        (Value::Null, "PortBindings") => json!({}),
+        (Value::Null, "PublishAllPorts") => json!(false),
         (Value::Null, _) => Value::Null,
         (v, _) => v.clone(),
     }
@@ -306,5 +324,10 @@ mod tests {
         assert_eq!(inspect(&kept, "Devices"), json!([]));
         assert_eq!(inspect(&kept, "GroupAdd"), Value::Null);
         assert_eq!(inspect(&Value::Null, "Ulimits"), json!([]));
+        let host = json!({"Binds": ["data:/data"], "PortBindings": {"80/tcp": [{"HostPort": "8080"}]}});
+        let kept = from_host(&host);
+        assert_eq!(inspect(&kept, "Binds"), json!(["data:/data"]));
+        assert_eq!(inspect(&kept, "PortBindings")["80/tcp"][0]["HostPort"], "8080");
+        assert_eq!(inspect(&Value::Null, "PortBindings"), json!({}));
     }
 }
