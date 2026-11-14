@@ -301,6 +301,15 @@ async fn stop_and_start_an_engine_the_app_did_not_start() {
     let c = Scratch::new(&app, "edock-desktop-test-restart").await;
     let rows: Vec<ContainerRow> = app.invoke("containers_list", (false,)).await.unwrap();
     assert_eq!(rows.iter().find(|r| r.id == c.id).map(|r| r.state.as_str()), Some("running"));
+    drop(c);
+
+    // Again, now that this app started the engine: its child must be
+    // reaped when it exits, or Restart waits 30 s on a zombie.
+    let before = engine_pid();
+    let t0 = std::time::Instant::now();
+    let _: () = app.invoke("daemon_restart", ()).await.unwrap();
+    assert!(t0.elapsed() < std::time::Duration::from_secs(15), "restart took {:?}", t0.elapsed());
+    assert_ne!(before, engine_pid());
 }
 
 /// The engine's process, as `lsof` sees the socket's listener.

@@ -46,7 +46,7 @@
       <li>
         <span class="dot on"></span>
         <button class="name link" title={c.image} onclick={() => open(`/containers/${c.id}`)}>{c.project && c.service ? `${c.project}/${c.service}` : c.name}</button>
-        {#each c.ports.filter((p) => p.public).slice(0, 2) as p (p.public)}
+        {#each c.ports.filter((p) => p.public).slice(0, 2) as p (`${p.public}/${p.proto}`)}
           <button class="port" onclick={() => shell.openExternal(`http://localhost:${p.public}`)}>{p.public}</button>
         {/each}
         <button class="icon-btn" title="Stop" onclick={() => attempt(() => api.container_action(c.id, "stop"))}><Icon name="stop" size={13} /></button>

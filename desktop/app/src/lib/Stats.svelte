@@ -33,6 +33,8 @@
   }
 
   function stop() {
+    // An open still on its way finds seq moved on, and closes what it got.
+    seq++;
     unsub?.();
     unsub = null;
     if (streamId != null) api.stream_stop(streamId);

@@ -1,5 +1,6 @@
 <script>
   import { channel, confirm, prompt, toast } from "@elyra/runtime";
+  import { onDestroy } from "svelte";
   import { Badge, Button, Callout, Skeleton, Table } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
@@ -25,11 +26,13 @@
     load();
   });
 
-  channel("pull").subscribe((p) => {
+  const offPull = channel("pull").subscribe((p) => {
     if (!p) return;
     if (p.done) delete pulling[p.reference];
     else pulling[p.reference] = p.status;
   });
+
+  onDestroy(offPull);
 
   async function pull() {
     const ref = await prompt("Image to pull", { placeholder: "nginx:latest", confirmLabel: "Pull" });

@@ -23,11 +23,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::engine::{edock_host, Engine, EDOCK};
 
-/// The daemon process this app started, kept so it's reaped when it ends.
+/// eDock's engine as this app runs it. A daemon the app starts is reaped
+/// by a thread of its own when it exits, so it never lingers as a zombie
+/// (which `kill(pid, 0)` would still find, and Restart would wait on).
 #[derive(Default)]
-pub struct Daemon {
-    child: Mutex<Option<std::process::Child>>,
-}
+pub struct Daemon;
 
 /// Where the `edock` engine binary is: `$EDOCK_ENGINE`, beside the app's
 /// own binary (inside eDock.app), `~/.edock/bin/edock`, or a checkout's
@@ -60,7 +60,9 @@ fn socket() -> PathBuf {
 pub(crate) async fn engine_request(method: &str, path: &str) -> Option<(u16, Value)> {
     let fut = async {
         let mut s = tokio::net::UnixStream::connect(socket()).await.ok()?;
-        let req = format!("{method} {path} HTTP/1.1\r\nHost: edock\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        // A look (GET) isn't use: it mustn't keep the VM from sleeping.
+        let background = if method == "GET" { "X-Edock-Background: 1\r\n" } else { "" };
+        let req = format!("{method} {path} HTTP/1.1\r\nHost: edock\r\n{background}Content-Length: 0\r\nConnection: close\r\n\r\n");
         s.write_all(req.as_bytes()).await.ok()?;
         // The engine keeps the connection open: read the head, then the
         // body by its length or its chunks, not to the end.
@@ -175,7 +177,7 @@ pub async fn daemon_start(ctx: Ctx) -> Result<(), String> {
     engine.switch(EDOCK)
 }
 
-fn spawn(ctx: &Ctx) -> Result<(), String> {
+fn spawn(_ctx: &Ctx) -> Result<(), String> {
     let bin = engine_binary().ok_or("The eDock engine (edock) isn't installed. Build it with `cargo xtask host` in engine/, or set EDOCK_ENGINE.")?;
     let log_dir = dirs::home_dir().unwrap_or_default().join(".edock");
     let _ = std::fs::create_dir_all(&log_dir);
@@ -187,7 +189,13 @@ fn spawn(ctx: &Ctx) -> Result<(), String> {
         .stderr(log)
         .spawn()
         .map_err(|e| format!("Couldn't start {}: {e}", bin.display()))?;
-    *ctx.get::<Daemon>().child.lock() = Some(child);
+    let mut child = child;
+    std::thread::Builder::new()
+        .name("edock-daemon-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

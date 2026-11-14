@@ -78,16 +78,22 @@ pub async fn engine_status(ctx: Ctx) -> EngineStatus {
         running: 0,
         images: 0,
     };
-    let docker = match engine.docker() {
-        Ok(d) => d,
-        Err(e) => {
-            st.error = Some(e);
-            return st;
+    // eDock's own engine is asked as a background look, which doesn't
+    // keep its VM awake; others through the Docker client.
+    let info: Result<Value, String> = if st.context == crate::engine::EDOCK {
+        match crate::daemon::engine_request("GET", "/info").await {
+            Some((200, v)) => Ok(v),
+            Some((s, v)) => Err(v["message"].as_str().map(str::to_owned).unwrap_or_else(|| format!("The engine said {s}"))),
+            None => Err(format!("No engine at {}", st.host)),
+        }
+    } else {
+        match engine.docker() {
+            Ok(d) => d.info().await.map(|i| json(&i)).map_err(err),
+            Err(e) => Err(e),
         }
     };
-    match docker.info().await {
-        Ok(info) => {
-            let i = json(&info);
+    match info {
+        Ok(i) => {
             st.connected = true;
             st.name = s(&i["Name"]);
             st.version = s(&i["ServerVersion"]);
@@ -101,7 +107,7 @@ pub async fn engine_status(ctx: Ctx) -> EngineStatus {
             st.state = "running".into();
         }
         Err(e) => {
-            st.error = Some(err(e));
+            st.error = Some(e);
             engine.reset();
         }
     }
@@ -129,7 +135,7 @@ pub async fn contexts_list(_ctx: Ctx) -> Vec<crate::engine::Context> {
 #[command]
 pub async fn context_use(ctx: Ctx, name: String) -> Result<(), String> {
     ctx.get::<Engine>().switch(&name)?;
-    let _ = ctx.get::<elyra::EventBus>().emit("docker:changed", &"context");
+    let _ = ctx.get::<elyra::EventBus>().emit("docker:changed", &crate::streams::Changed { kind: "context".into(), action: "switched".into() });
     Ok(())
 }
 

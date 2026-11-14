@@ -103,22 +103,25 @@ where
     let s2 = streams.clone();
     let task = tokio::spawn(async move {
         let mut pending: Vec<LogLine> = vec![];
-        // A line may come in pieces: keep the unfinished end.
-        let mut partial = String::new();
+        // A line may come in pieces, and a character across two reads:
+        // each stream keeps its unfinished end, as bytes.
+        let mut partial: [Vec<u8>; 2] = [vec![], vec![]];
+        const NAMES: [&str; 2] = ["out", "err"];
         let mut tick = tokio::time::interval(Duration::from_millis(60));
         loop {
             tokio::select! {
                 item = logs.next() => match item {
                     Some(Ok(out)) => {
-                        let (stream, bytes) = match out {
-                            LogOutput::StdErr { message } => ("err", message),
-                            LogOutput::StdOut { message } | LogOutput::Console { message } => ("out", message),
+                        let (i, bytes) = match out {
+                            LogOutput::StdErr { message } => (1, message),
+                            LogOutput::StdOut { message } | LogOutput::Console { message } => (0, message),
                             LogOutput::StdIn { .. } => continue,
                         };
-                        partial.push_str(&String::from_utf8_lossy(&bytes));
-                        while let Some(nl) = partial.find('\n') {
-                            let line: String = partial.drain(..=nl).collect();
-                            pending.push(LogLine { stream: stream.into(), text: line.trim_end_matches(['\n', '\r']).to_owned() });
+                        partial[i].extend_from_slice(&bytes);
+                        while let Some(nl) = partial[i].iter().position(|&b| b == b'\n') {
+                            let line: Vec<u8> = partial[i].drain(..=nl).collect();
+                            let text = String::from_utf8_lossy(&line).trim_end_matches(['\n', '\r']).to_owned();
+                            pending.push(LogLine { stream: NAMES[i].into(), text });
                         }
                         if pending.len() > 2000 {
                             let _ = bus.emit(&channel, &LogBatch { lines: std::mem::take(&mut pending), ended: false });
@@ -137,8 +140,10 @@ where
                 }
             }
         }
-        if !partial.is_empty() {
-            pending.push(LogLine { stream: "out".into(), text: partial });
+        for (i, rest) in partial.iter().enumerate() {
+            if !rest.is_empty() {
+                pending.push(LogLine { stream: NAMES[i].into(), text: String::from_utf8_lossy(rest).into_owned() });
+            }
         }
         let _ = bus.emit(&channel, &LogBatch { lines: pending, ended: true });
         s2.done(id);
@@ -394,8 +399,15 @@ pub fn watch(engine: Arc<Engine>, bus: Arc<EventBus>, on_change: impl Fn(bool) +
                 on_change(true);
             }
             let mut events = docker.events(None::<q::EventsOptions>);
+            // At most one change per kind every 150 ms: the first at once,
+            // the rest of a burst (compose up of ten services) as one
+            // trailing change. A burst that made or removed a container
+            // says so, since that changes what images and volumes are used by.
             let mut last: HashMap<String, Instant> = HashMap::new();
+            let mut pending: HashMap<String, bool> = HashMap::new();
             let mut check = tokio::time::interval(Duration::from_millis(500));
+            let mut flush = tokio::time::interval(Duration::from_millis(50));
+            let window = Duration::from_millis(150);
             loop {
                 tokio::select! {
                     ev = events.next() => match ev {
@@ -408,15 +420,11 @@ pub fn watch(engine: Arc<Engine>, bus: Arc<EventBus>, on_change: impl Fn(bool) +
                             if action.starts_with("exec_") || action == "top" {
                                 continue;
                             }
+                            let structural = action == "create" || action == "destroy";
                             let now = Instant::now();
-                            if last.get(&kind).is_some_and(|t| now.duration_since(*t) < Duration::from_millis(150)) {
-                                // Coalesced; a trailing emit follows below.
-                                let bus = bus.clone();
-                                let k = kind.clone();
-                                tokio::spawn(async move {
-                                    tokio::time::sleep(Duration::from_millis(200)).await;
-                                    let _ = bus.emit("docker:changed", &Changed { kind: k, action });
-                                });
+                            if last.get(&kind).is_some_and(|t| now.duration_since(*t) < window) {
+                                let flag = pending.entry(kind).or_insert(false);
+                                *flag |= structural;
                                 continue;
                             }
                             last.insert(kind.clone(), now);
@@ -424,6 +432,21 @@ pub fn watch(engine: Arc<Engine>, bus: Arc<EventBus>, on_change: impl Fn(bool) +
                             if kind == "container" { on_change(true); }
                         }
                         _ => break,
+                    },
+                    _ = flush.tick() => {
+                        let now = Instant::now();
+                        let due: Vec<String> = pending
+                            .keys()
+                            .filter(|k| last.get(*k).is_none_or(|t| now.duration_since(*t) >= window))
+                            .cloned()
+                            .collect();
+                        for kind in due {
+                            let structural = pending.remove(&kind).unwrap_or(false);
+                            last.insert(kind.clone(), now);
+                            let action = if structural { "create" } else { "update" };
+                            let _ = bus.emit("docker:changed", &Changed { kind: kind.clone(), action: action.into() });
+                            if kind == "container" { on_change(true); }
+                        }
                     },
                     _ = check.tick() => {
                         if engine.generation() != generation { break; }
