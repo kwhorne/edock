@@ -28,6 +28,8 @@ All of these are in `~/.edock/`:
 | `builder.json` | The engine | The BuildKit builder: `{"idle_secs": 300, "cache_gb": 20}` |
 | `domains.json` | The engine | `{"http": 8088, "https": 8443}`: the ports for container domains, instead of 80 and 443. The environment variables override it. |
 | `proxy.json` | The engine | The proxy for pulls, pushes and logins (below) |
+| `snapshots/volumes/` | The app | Volume [snapshots](app/snapshots.md), a `.tar.gz` each |
+| `inspector.json` | The engine | `{"on": true}` while [Requests](app/requests.md) records |
 | `desktop.json` | The app | Which context the app shows, and whether the welcome was shown |
 | `stopped` | The engine | There while eDock is stopped with **Stop**, so the engine stays off across restarts until **Start** |
 

@@ -152,12 +152,12 @@ Long-lived Linux environments on eDock. Each one has your user, `sudo`, and `/Us
 ## `edock usb` (beta)
 
 ```sh
-edock usb list
+edock usb list [--json]
 edock usb attach DEVICE
 edock usb detach DEVICE
 ```
 
-Hands a USB device to your containers (a serial adapter, a Zigbee stick, a development board). On a Mac it's passed through to the VM. A device that drops off the bus while attached is attached again when it comes back, for example when the board resets or the Mac sleeps and wakes.
+Hands a USB device to your containers (a serial adapter, a Zigbee stick, a development board). On a Mac it's passed through to the VM. `list --json` prints the devices as JSON, as the app reads them. A device that drops off the bus while attached is attached again when it comes back, for example when the board resets or the Mac sleeps and wakes.
 
 ## `edock diag`
 

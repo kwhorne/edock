@@ -35,7 +35,7 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 |---|---|
 | **Containers** | Grouped by Compose project, with start, stop, restart and remove for one container or a whole project. Ports open with a click. Health checks show in the list. |
 | **Ports that just work** | eDock sees which ports a container really listens on, even without `-p`. It publishes or changes them while the container runs, and edits its environment in place. |
-| **Each container** | A live log with filter and timestamps, CPU, memory, network and disk graphs, a full terminal (xterm), and `docker inspect` |
+| **Each container** | A live log with filter and timestamps, CPU, memory, network and disk graphs, a full terminal (xterm), its files (browse, preview, save, upload), and `docker inspect` |
 | **Images, volumes, networks** | Pull with progress, prune, create and remove, and see what each is used by |
 | **Image security** | Each Dockerfile line's size, a vulnerability scan with Grype (without waking the VM), fixable filters and a CycloneDX SBOM |
 | **Linux machines** | Ubuntu, Debian, Fedora, Arch and more, with your user, `sudo` and `/Users` in place, and a shell a click away |
@@ -44,10 +44,16 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 | **Menu bar** | What's running, start and stop, and ports, a click away |
 | **Command line** | `docker`, Compose and buildx set up for you, without a package manager |
 | **Container domains** | `http://<name>.edock.localhost` on every running container, and trusted HTTPS in one click |
+| **New service** | PostgreSQL, MySQL, MariaDB, Redis, MongoDB, RabbitMQ, Mailpit or MinIO in one click, with its data in a volume and the connection string copied |
+| **⌘K everywhere** | Find any container, image, machine or pod by name |
+| **Snapshots** | A container's or a volume's files as they are now, and back to them later, on any engine |
+| **HTTP inspector** | Each request through `*.edock.localhost` with headers, bodies and timing; copy as curl, or replay it |
 | **Builds** | Each `docker build`'s steps, cache hits, logs and the reason it failed |
 | **Kubernetes forward** | Reach a ClusterIP service from the Mac with one click, no kubectl |
 | **Welcome** | Engine, terminal, import from OrbStack or Docker Desktop, and HTTPS: four clicks on first launch |
 | **Engine settings** | The VM's CPUs and memory, and what it uses now; a proxy; the build cache; import from OrbStack or Docker Desktop; a diagnostics report |
+| **USB devices** (beta) | Hand a serial adapter, Zigbee stick or development board to your containers, and back |
+| **AI agents** | eDock is an MCP server: Claude, Cursor and VS Code can read containers and logs, and run things after you say yes |
 | **Updates** | Checked at launch. An update is installed only when it's signed with eDock's key and Developer ID. |
 
 ## Install

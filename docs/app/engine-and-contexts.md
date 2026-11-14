@@ -31,7 +31,7 @@ When the engine goes away or comes back, the app notices within two seconds, rec
 
 ## The Engine page
 
-**Engine**, at the bottom of the sidebar, has four tabs. **Overview** shows eDock's engine, the command line setup, the version and the contexts. **Resources**, **Network** and **Builds & import** are for eDock's own engine.
+**Engine**, at the bottom of the sidebar, has six tabs. **Overview** shows eDock's engine, the command line setup, the version and the contexts. **Resources**, **Network**, **Builds & import** and **USB** are for eDock's own engine. **AI agents** connects Claude, Cursor and VS Code to eDock.
 
 ### eDock engine
 
@@ -123,3 +123,17 @@ The new size applies from the VM's next start. **Restart VM** starts it now; run
   - The other engine is only read.
   - Volumes keep their files' owners, and containers arrive stopped.
 - **Diagnostics** saves a report of eDock's state and recent logs, with tokens taken out, where you choose. Nothing is sent anywhere.
+
+## USB (beta)
+
+**USB** lists the USB devices on the Mac: serial adapters, Zigbee and Z-Wave sticks, development boards, HID devices. It looks again every few seconds, so a device shows up when you plug it in.
+
+- **Hand to eDock** passes the device through to eDock's VM. It's gone from the Mac until you give it back. The first time, macOS asks for an administrator's password to install eDock's USB helper.
+- Once it's in eDock, the card shows its path in the VM (`/dev/ttyACM0`, say) and a `docker run --device …` to copy. Containers reach it with `--device`, as on Linux.
+- **Give back to the Mac** returns it.
+
+A device that resets, or drops off while the Mac sleeps, is handed over again when it comes back. The same from a terminal: [`edock usb`](../cli.md#edock-usb-beta).
+
+## AI agents
+
+**AI agents** shows how to add eDock as an MCP server to Claude Code, Claude Desktop, Cursor and VS Code, with the command and the settings to copy. See [AI agents](ai-agents.md).

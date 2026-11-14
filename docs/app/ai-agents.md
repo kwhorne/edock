@@ -1,0 +1,75 @@
+# AI agents (MCP)
+
+eDock is an [MCP](https://modelcontextprotocol.io) server. An AI agent in Claude Code, Claude Desktop, Cursor or VS Code can see your containers, read their logs, check ports and image scans, and run commands in throwaway containers.
+
+Looking is free. Anything that changes something (start, stop, pull, run, exec) is asked in the agent's app first, and nothing happens if you say no.
+
+## Set it up
+
+**Engine › AI agents** shows the exact command for this Mac. For Claude Code:
+
+```sh
+claude mcp add edock -- "/Applications/eDock.app/Contents/MacOS/edock-desktop" --mcp
+```
+
+For Claude Desktop, Cursor and VS Code, add this to their MCP settings (the page has a **Copy** button):
+
+```json
+{
+  "mcpServers": {
+    "edock": {
+      "command": "/Applications/eDock.app/Contents/MacOS/edock-desktop",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+The agent starts eDock with `--mcp` and talks to it over stdio. When the app is open, the agent works through it, and the app shows a note when an agent changes something. When it isn't, eDock runs without a window. Either way it uses the engine the app would: eDock's own, or the one picked in the toolbar.
+
+## What an agent can do
+
+| Tool | | Asks first |
+|---|---|---|
+| `engine_status` | The engine, its version, and how many containers run | |
+| `containers_list`, `container_inspect` | Containers, with their state, ports and Compose project | |
+| `container_logs` | A container's recent log as text; `errors_only` keeps the lines that read like an error | |
+| `container_ports` | The ports a container really listens on, published or not | |
+| `domains_info` | Where containers answer (`<name>.edock.localhost`) | |
+| `http_requests`, `http_request` | Requests through container domains, while [Requests](requests.md) records | |
+| `images_list`, `image_layers` | Images, and each Dockerfile line's size | |
+| `image_scans`, `image_scan_result` | Vulnerability scans | |
+| `volumes_list`, `networks_list` | Volumes and networks | |
+| `machines_list` | Linux machines | |
+| `container_files`, `container_file_preview` | A container's folders, and the start of a file | |
+| `recipes_list` | The services a recipe starts | |
+| `k8s_status`, `k8s_items` | The Kubernetes cluster, its pods and services | |
+| `container_action`, `project_action` | Start, stop, restart or remove a container or a Compose project | Yes |
+| `image_pull` | Pull an image | Yes |
+| `recipe_start` | Start PostgreSQL, MySQL, Redis, RabbitMQ… for development | Yes |
+| `snapshots_list` | Snapshots of containers and volumes | |
+| `container_snapshot`, `volume_snapshot` | Take a snapshot | Yes |
+| `container_snapshot_restore`, `volume_snapshot_restore` | Go back to one | Yes |
+| `container_run` | Run a command once in a fresh container, then remove it | Yes |
+| `container_exec` | Run a command in a running container | Yes |
+
+`container_run` is the safe place to try something: the container has **no network** unless the agent asks for it, stops after 60 seconds (at most 10 minutes), and is removed afterwards. It touches nothing on the Mac. Output longer than 64 KB is cut.
+
+Agents can't create or remove volumes or networks, change the engine's settings, or reach Kubernetes beyond reading it.
+
+## Try it
+
+Ask the agent things like:
+
+- *Why does my `api` container keep restarting?*
+- *Which of my containers listen on a port that isn't published?*
+- *Does `node:22-alpine` have `git`?* (it runs `container_run` and asks you first)
+- *Which of my images have fixable critical vulnerabilities?*
+
+## Check it from a terminal
+
+The [MCP Inspector](https://github.com/modelcontextprotocol/inspector) lists eDock's tools and lets you call them by hand:
+
+```sh
+npx @modelcontextprotocol/inspector "/Applications/eDock.app/Contents/MacOS/edock-desktop" --mcp
+```
