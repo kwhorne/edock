@@ -92,6 +92,7 @@ usage: edock COMMAND          docker's commands, on eDock: edock run, ps, exec,
        edock diag logs [-f] [--engine|--cli] [--errors] [-n N]
        edock diag report [--out PATH]   (a local file, tokens taken out)
        edock k8s start [--use] | stop | status | delete | set [--lan on|off] [--tls-san NAME,…] [--port N]
+       edock tls status | trust | untrust   HTTPS for *.edock.local(host) in browsers
        edock usb [list] | attach DEVICE | detach DEVICE   USB devices for containers, beta (Mac: pass through to the VM)
        edock machine create NAME [--distro D] | list | shell NAME | stop | delete NAME
        edock import [orbstack | desktop-linux] [--list]
@@ -147,6 +148,8 @@ fn main() -> ExitCode {
         Some("machine") => machine::run(&args[1..]),
         #[cfg(unix)]
         Some("usb") => usb::run(&args[1..]),
+        #[cfg(unix)]
+        Some("tls") => tls_cli(&args[1..]),
         #[cfg(target_os = "macos")]
         Some("import") => import::run(&args[1..]),
         #[cfg(unix)]
@@ -198,5 +201,24 @@ fn engine_version_check() {
     if engine != me && engine != "0.0.0" {
         let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "edock".into());
         eprintln!("edock: this edock ({exe}) is {me}, but the engine runs {engine}. Restart the engine (`edock daemon`) to use one version, or remove the older edock.");
+    }
+}
+
+/// `edock tls status | trust | untrust`: whether macOS trusts eDock's
+/// certificate authority for websites, so `https://<name>.edock.localhost`
+/// shows a padlock. Trusting asks for the user's password, in macOS's own
+/// prompt (it names eDock when run from eDock.app); the authority's name
+/// constraints let it vouch for `*.edock.local` and `*.edock.localhost` only.
+#[cfg(unix)]
+fn tls_cli(args: &[String]) -> std::io::Result<()> {
+    use daemon::tls;
+    match args.first().map(String::as_str) {
+        Some("status") | None => {
+            println!("{}", if tls::trusted() { "trusted" } else { "not trusted" });
+            Ok(())
+        }
+        Some("trust") => tls::trust().map(|()| println!("trusted")),
+        Some("untrust") => tls::untrust().map(|()| println!("not trusted")),
+        _ => Err(std::io::Error::other("usage: edock tls status | trust | untrust")),
     }
 }

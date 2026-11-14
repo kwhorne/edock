@@ -264,6 +264,10 @@ pub fn report() -> serde_json::Value {
             "env": env_port(kind.var()).map(|_| kind.var()),
         });
     }
+    // For the app: the names' suffix (`*.edock.local` once its resolver is
+    // set up) and whether browsers trust the HTTPS certificates.
+    v["suffix"] = serde_json::json!(if super::dns::installed() { "edock.local" } else { "edock.localhost" });
+    v["trusted"] = serde_json::json!(super::tls::trusted());
     v
 }
 
