@@ -44,7 +44,10 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 | **Menu bar** | What's running, start and stop, and ports, a click away |
 | **Command line** | `docker`, Compose and buildx set up for you, without a package manager |
 | **Container domains** | `http://<name>.edock.localhost` on every running container, and trusted HTTPS in one click |
-| **Engine settings** | The VM's CPUs and memory, and what it uses now; the build cache; import from OrbStack or Docker Desktop; a diagnostics report |
+| **Builds** | Each `docker build`'s steps, cache hits, logs and the reason it failed |
+| **Kubernetes forward** | Reach a ClusterIP service from the Mac with one click, no kubectl |
+| **Welcome** | Engine, terminal, import from OrbStack or Docker Desktop, and HTTPS: four clicks on first launch |
+| **Engine settings** | The VM's CPUs and memory, and what it uses now; a proxy; the build cache; import from OrbStack or Docker Desktop; a diagnostics report |
 | **Updates** | Checked at launch. An update is installed only when it's signed with eDock's key and Developer ID. |
 
 ## Install

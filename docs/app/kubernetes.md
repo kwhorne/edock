@@ -73,7 +73,7 @@ kubectl --context edock expose deployment web --port=8080 --target-port=80 --typ
 open http://localhost:8080
 ```
 
-Other services show their ports as `port[:nodePort]/protocol`.
+Other services show their ports as `port[:nodePort]/protocol`, with **Forward** next to each TCP port. Forward opens a port on the Mac, on `127.0.0.1`, that reaches the service inside the cluster, the way `kubectl port-forward` does, but without kubectl. The service then shows `localhost:<port>` as a link, and **■** stops the forward. Forwards end when Kubernetes or the engine stops.
 
 ## How the app reads the cluster
 

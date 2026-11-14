@@ -18,6 +18,8 @@ The app is signed with a Developer ID and notarized by Apple, so it opens withou
 
 Open eDock from Applications, or with Spotlight. eDock lives in the **menu bar**. It has no Dock icon while its window is closed. The main window opens on the first launch.
 
+The first time, a **welcome** page walks through the rest of this guide in four clicks: start the engine, set up the terminal, bring things over from OrbStack or Docker Desktop if you have it, and trust HTTPS. Each step can wait; **Skip** leaves them all for the Engine page. ⌘K › *Welcome* shows it again.
+
 The app first connects to whatever engine your docker setup uses: eDock's own when it runs, otherwise docker's current context (OrbStack or Docker Desktop, say). The toolbar shows which one, and you can switch at any time. See [Engine and contexts](app/engine-and-contexts.md).
 
 ## Start the eDock engine

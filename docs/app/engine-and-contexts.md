@@ -31,7 +31,7 @@ When the engine goes away or comes back, the app notices within two seconds, rec
 
 ## The Engine page
 
-**Engine**, at the bottom of the sidebar, has four tabs. **Overview** shows eDock's engine, the command line setup, the version and the contexts. **Resources**, **Domains** and **Builds & import** are for eDock's own engine.
+**Engine**, at the bottom of the sidebar, has four tabs. **Overview** shows eDock's engine, the command line setup, the version and the contexts. **Resources**, **Network** and **Builds & import** are for eDock's own engine.
 
 ### eDock engine
 
@@ -99,11 +99,21 @@ eDock's engine reports no memory while its VM sleeps.
 
 The new size applies from the VM's next start. **Restart VM** starts it now; running containers stop, and those with a restart policy come back. The size is kept in `~/.edock/vm.json`. `EDOCK_CPUS` and `EDOCK_MEMORY_MIB` override it.
 
-## Domains
+## Network
 
 **Container domains** shows where containers answer (`http://<name>.edock.localhost`, and `<service>.<project>…` for Compose), and the ports. Change the ports there when another server holds 80 and 443; they're kept in `~/.edock/domains.json`.
 
 **HTTPS**: **Trust HTTPS** has macOS trust eDock's certificate authority, so `https://<name>.edock.localhost` shows a padlock. macOS asks for your password. The authority's certificates can only vouch for `*.edock.local` and `*.edock.localhost`, never any other site. **Stop trusting** undoes it. The same from a terminal: [`edock tls`](../cli.md#edock-tls).
+
+**Proxy**, for networks that need one for image pulls, pushes, searches and logins:
+
+| Setting | |
+|---|---|
+| macOS's settings | The default; it shows the proxy in use now |
+| Custom | An HTTP and an HTTPS proxy, and the hosts that go direct |
+| None | No proxy |
+
+**Pass it to new containers** gives them `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, as Docker Desktop does. VPNs need nothing here. It's kept in `~/.edock/proxy.json`; see [Configuration](../configuration.md#proxies).
 
 ## Builds & import
 

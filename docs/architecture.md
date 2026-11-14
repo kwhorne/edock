@@ -91,10 +91,11 @@ The app is an Elyra app:
 | `engine.rs` | The current engine: a `bollard` Docker client on the chosen context's socket, behind a lock so switching context swaps it for every command. It also reads the contexts from `~/.docker/contexts`, and keeps the app's choice in `~/.edock/desktop.json`. |
 | `resources.rs` | Commands for containers, Compose projects, images, volumes and networks: lists, actions, inspect, pull and prune. Containers group by the `com.docker.compose.*` labels. |
 | `streams.rs` | What streams to the window: logs, stats, terminals (exec with a TTY, input, resize), and the engine's event stream. |
-| `k8s.rs` | Kubernetes: `edock k8s start/stop/delete` as a child process with its output as progress, and `kubectl` in the node container for pods, services, logs, shells, deletes and restarts. |
+| `k8s.rs` | Kubernetes (and forwarding a service to the Mac): `edock k8s start/stop/delete` as a child process with its output as progress, and `kubectl` in the node container for pods, services, logs, shells, deletes and restarts. |
 | `edock.rs` | eDock's own API for containers: domains and HTTPS trust, the ports a container listens on, publishing ports and changing the environment while it runs |
 | `machines.rs` | Linux machines: listing, `edock machine create` with progress, start/stop/delete, and a login shell as the Mac user |
 | `images.rs` | An image's layers, Grype scans (streamed progress), their findings and SBOM |
+| `builds.rs` | The build history, through `edock builds` |
 | `vm.rs` | The VM's size and use, the BuildKit builder, importing from other engines, the diagnostics report |
 | `daemon.rs` | eDock's engine: finding the `edock` binary, running `edock daemon` when none runs, and Start and Stop through the engine's own `POST /edock/wake` and `POST /edock/stop`. It also reads the engine's state (`EdockStopped`, `EdockVmAwake` in `/info`), with a small HTTP client, since a Docker client library drops those fields. |
 | `main.rs` | The app: its window, the menu bar item and its popover, and a provider that watches the engine and keeps the menu bar title current. |

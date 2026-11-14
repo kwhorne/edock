@@ -86,6 +86,16 @@ A single-node Kubernetes cluster (k3s) in the `edock-k8s` container. See [Kubern
 
 `set` recreates the node container with the new settings, and keeps the cluster's state. The settings are in `~/.edock/k8s.json`.
 
+## `edock builds`
+
+```sh
+edock builds
+edock builds show BUILDER ID
+edock builds rm BUILDER ID
+```
+
+The build history, as JSON: every `docker build` on eDock's builders, newest first. `show` gives one build's steps (with their logs), its error and warnings; `rm` takes it off the history. The app's [Builds](app/builds.md) page reads it.
+
 ## `edock tls`
 
 ```sh

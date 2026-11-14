@@ -12,6 +12,7 @@ eDock runs on **Apple silicon Macs with macOS 14 or later**. Download it, and re
 | [Using docker with eDock](docker.md) | The `edock` context, `edock setup`, Compose, builds, container domains, `/var/run/docker.sock` |
 | [Containers](app/containers.md) | The container list, Compose projects, domains, logs, stats, the terminal, ports, inspect |
 | [Images, volumes and networks](app/images-volumes-networks.md) | Pulling and pruning; an image's layers and its vulnerability scan; volumes and networks |
+| [Builds](app/builds.md) | Each `docker build`: its steps, cache, logs and errors |
 | [Linux machines](app/machines.md) | Long-lived Linux environments with your user and `/Users` |
 | [Kubernetes](app/kubernetes.md) | The k3s cluster: starting it, pods, services, pod logs and shells |
 | [Engine and contexts](app/engine-and-contexts.md) | Starting and stopping the engine; its resources, domains, builds, import; switching to other engines |
