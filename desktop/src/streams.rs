@@ -403,8 +403,9 @@ pub fn watch(engine: Arc<Engine>, bus: Arc<EventBus>, on_change: impl Fn(bool) +
                             let v = serde_json::to_value(&msg).unwrap_or_default();
                             let kind = v["Type"].as_str().unwrap_or("").to_owned();
                             let action = v["Action"].as_str().unwrap_or("").to_owned();
-                            // exec_* and health checks run often and change no list.
-                            if action.starts_with("exec_") || action.starts_with("health_status") || action == "top" {
+                            // exec_* (health checks run as execs too) change no list;
+                            // health_status does: the badge goes healthy or unhealthy.
+                            if action.starts_with("exec_") || action == "top" {
                                 continue;
                             }
                             let now = Instant::now();

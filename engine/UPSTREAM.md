@@ -87,3 +87,5 @@ and runs `edock daemon` / `edock setup`.
   the eDock desktop is expected to offer equivalents.
 - `NOTICE` is upstream's file unchanged below the prepended attribution, so
   its copied kernel source offer still names Kiri's download site.
+
+- Container-domain routers bind both IPv4 and IPv6 or neither: Kiri took a port on IPv6 alone when another server held it on IPv4 (a local web server on 80/443), so `localhost` (::1 first) reached eDock instead of it.

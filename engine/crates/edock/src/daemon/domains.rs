@@ -159,7 +159,11 @@ fn register(router: Arc<Router>) -> io::Result<()> {
 /// A router on `port`, listening; an error when the port is taken.
 fn bind_router(engine: Arc<Engine>, port: u16, tls: Option<Arc<rustls::ServerConfig>>) -> io::Result<Arc<Router>> {
     let router = Arc::new(Router { port, engine, tls, want: 0.into(), serving: Mutex::new(Vec::new()) });
-    let threads = router.listen(1)?;
+    // Both addresses, or none: a port another server holds on IPv4 (a
+    // local web server on 80) must not be taken on IPv6 alone, or
+    // `localhost`, which a browser tries as ::1 first, would reach eDock
+    // instead of it.
+    let threads = router.listen(router_addrs(port).len())?;
     router.want.store(threads.len(), std::sync::atomic::Ordering::Relaxed);
     *router.serving.lock().unwrap_or_else(PoisonError::into_inner) = threads;
     Ok(router)

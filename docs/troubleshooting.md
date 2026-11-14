@@ -38,11 +38,14 @@ Every docker command answers this while eDock is stopped. Press **Start** on the
 
 ## Ports 80 or 443 are taken
 
-The engine serves `*.edock.localhost` on ports 80 and 443. If another tool holds them (a local web server, another container engine), move eDock's:
+The engine serves `*.edock.localhost` on ports 80 and 443. When another tool holds them (a local web server, another container engine), eDock leaves them to it and turns its container domains off. To have them on other ports, for good, while the engine runs:
 
 ```sh
-EDOCK_HTTP_PORT=8081 EDOCK_HTTPS_PORT=8443 edock daemon
+curl -s --unix-socket ~/.edock/run/docker.sock -X POST \
+  -H 'Content-Type: application/json' -d '{"http":8088,"https":8443}' http://edock/edock/domains
 ```
+
+This moves them at once and saves the ports in `~/.edock/domains.json`. Containers are then at `http://<name>.edock.localhost:8088`. For one run only, `EDOCK_HTTP_PORT` and `EDOCK_HTTPS_PORT` do the same.
 
 Containers' own published ports (`-p 8080:80`) don't depend on this.
 
