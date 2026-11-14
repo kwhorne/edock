@@ -30,6 +30,30 @@ The header shows the number of images and the total size, counting an image tagg
 
 The prune actions say how much space they freed.
 
+### An image
+
+On eDock's engine, click an image to open it. The shield on a row opens its security scan straight away.
+
+**Layers** shows each line of the Dockerfile that made the image:
+
+- what it added, with a bar for its share of the image;
+- a **base** badge on the lines that came with the base image;
+- lines that changed no files (`ENV`, `CMD`…) in grey.
+
+**Security** lists the image's known vulnerabilities, found by [Grype](https://github.com/anchore/grype).
+
+- **Scan** reads the image from eDock's store on the Mac; the VM isn't woken.
+- **The first scan** downloads Grype and its vulnerability database. That's about 200 MB to download, and it takes about 3 GB on disk in `~/Library/Application Support/eDock/scanner`. Later scans update the database first; offline, they use the one they have.
+- **The results** show a count per severity, how many have a fix, and how many packages there are. Each vulnerability shows:
+  - its severity;
+  - its ID, which links to the advisory;
+  - the package and version;
+  - the versions that fix it;
+  - the Dockerfile line that brought the package in, or *base image*.
+- **Filter** by text, by severity, or to **Fixable only**.
+- **Earlier scans** are kept (the last few), and a picker shows them.
+- **SBOM** saves the scan's software bill of materials, as CycloneDX JSON, where you choose.
+
 ## Volumes
 
 | Column | |

@@ -31,7 +31,7 @@ When the engine goes away or comes back, the app notices within two seconds, rec
 
 ## The Engine page
 
-**Engine**, at the bottom of the sidebar, shows eDock's engine, the command line setup, the version, and the contexts.
+**Engine**, at the bottom of the sidebar, has four tabs. **Overview** shows eDock's engine, the command line setup, the version and the contexts. **Resources**, **Domains** and **Builds & import** are for eDock's own engine.
 
 ### eDock engine
 
@@ -84,12 +84,32 @@ For the engine the app is on, while it answers:
 
 eDock's engine reports no memory while its VM sleeps.
 
-## The VM's size
+## Resources
 
-eDock's VM uses the CPUs and memory in `~/.edock/vm.json`, from the VM's next start:
+**Now** shows:
 
-```json
-{ "cpus": 4, "memory_mib": 8192 }
-```
+- the VM, awake or asleep, with its CPUs and memory;
+- the memory the containers use, out of the most the VM may take;
+- the VM's CPU use;
+- the engine's own memory on the Mac;
+- the guest agent's memory in the VM;
+- processes the VM had to kill for lack of memory, if any.
 
-`EDOCK_CPUS` and `EDOCK_MEMORY_MIB` override the file. Memory the containers don't use is given back to macOS while the VM runs, and all of it when the VM sleeps. See [Configuration](../configuration.md).
+**Size** sets the VM's CPUs, and the most memory it may take. Memory the containers don't use goes back to macOS while the VM runs, and all of it when it sleeps, so a generous cap costs nothing until it's used.
+
+The new size applies from the VM's next start. **Restart VM** starts it now; running containers stop, and those with a restart policy come back. The size is kept in `~/.edock/vm.json`. `EDOCK_CPUS` and `EDOCK_MEMORY_MIB` override it.
+
+## Domains
+
+**Container domains** shows where containers answer (`http://<name>.edock.localhost`, and `<service>.<project>…` for Compose), and the ports. Change the ports there when another server holds 80 and 443; they're kept in `~/.edock/domains.json`.
+
+**HTTPS**: **Trust HTTPS** has macOS trust eDock's certificate authority, so `https://<name>.edock.localhost` shows a padlock. macOS asks for your password. The authority's certificates can only vouch for `*.edock.local` and `*.edock.localhost`, never any other site. **Stop trusting** undoes it. The same from a terminal: [`edock tls`](../cli.md#edock-tls).
+
+## Builds & import
+
+- **Builds** sets how big `docker build`'s cache may grow, and how long BuildKit waits without a build before it stops. **Empty cache** frees all of it; the next builds start from scratch.
+- **Import** brings images, volumes and containers over from OrbStack or Docker Desktop, while that engine runs.
+  - It shows how many of each eDock doesn't have yet.
+  - The other engine is only read.
+  - Volumes keep their files' owners, and containers arrive stopped.
+- **Diagnostics** saves a report of eDock's state and recent logs, with tokens taken out, where you choose. Nothing is sent anywhere.

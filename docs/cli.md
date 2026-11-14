@@ -86,6 +86,16 @@ A single-node Kubernetes cluster (k3s) in the `edock-k8s` container. See [Kubern
 
 `set` recreates the node container with the new settings, and keeps the cluster's state. The settings are in `~/.edock/k8s.json`.
 
+## `edock tls`
+
+```sh
+edock tls status
+edock tls trust
+edock tls untrust
+```
+
+Whether macOS trusts eDock's certificate authority for websites, so `https://<name>.edock.localhost` has a padlock. `trust` asks for your password in macOS's own prompt. The authority can only vouch for `*.edock.local` and `*.edock.localhost`. The app's **Engine › Domains › Trust HTTPS** runs it.
+
 ## `edock build-with`
 
 ```sh

@@ -34,13 +34,17 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 | | |
 |---|---|
 | **Containers** | Grouped by Compose project, with start, stop, restart and remove for one container or a whole project. Ports open with a click. Health checks show in the list. |
+| **Ports that just work** | eDock sees which ports a container really listens on, even without `-p`. It publishes or changes them while the container runs, and edits its environment in place. |
 | **Each container** | A live log with filter and timestamps, CPU, memory, network and disk graphs, a full terminal (xterm), and `docker inspect` |
 | **Images, volumes, networks** | Pull with progress, prune, create and remove, and see what each is used by |
+| **Image security** | Each Dockerfile line's size, a vulnerability scan with Grype (without waking the VM), fixable filters and a CycloneDX SBOM |
+| **Linux machines** | Ubuntu, Debian, Fedora, Arch and more, with your user, `sudo` and `/Users` in place, and a shell a click away |
 | **Kubernetes** | Start, stop and delete a k3s cluster. Pods with kubectl's statuses, their logs and shells, restarts and deletes. Services, with LoadBalancer ports on `localhost`. |
 | **Any engine** | Switch to OrbStack, Docker Desktop, Colima or Podman from the toolbar. eDock manages any Docker Engine API. |
 | **Menu bar** | What's running, start and stop, and ports, a click away |
 | **Command line** | `docker`, Compose and buildx set up for you, without a package manager |
-| **Container domains** | `http://<name>.edock.localhost`, and `*.edock.local` with HTTPS |
+| **Container domains** | `http://<name>.edock.localhost` on every running container, and trusted HTTPS in one click |
+| **Engine settings** | The VM's CPUs and memory, and what it uses now; the build cache; import from OrbStack or Docker Desktop; a diagnostics report |
 | **Updates** | Checked at launch. An update is installed only when it's signed with eDock's key and Developer ID. |
 
 ## Install

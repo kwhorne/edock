@@ -8,6 +8,8 @@
 | `~/.edock/` | The engine's state, logs and settings, and the app's settings |
 | `~/.edock/bin/` | `edock` and `docker`, after `edock setup` |
 | `~/Library/Application Support/eDock/cli/` | The `docker` CLI, Compose and buildx that `edock setup` downloaded |
+| `~/Library/Application Support/eDock/scanner/` | Grype and its vulnerability database, after the first scan (about 3 GB) |
+| `~/Library/Application Support/eDock/scans/` | Each image's last few scans and SBOMs |
 | `~/.edock/tls/` | The certificate authority for `https://*.edock.local` |
 | `~/Library/Application Support/eDock/` | Images, volumes and the VM's data disk (`vm/data.img`) |
 | `~/eDock` | Container files, in Finder (read-only) |
