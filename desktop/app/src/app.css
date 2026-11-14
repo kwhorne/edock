@@ -32,8 +32,8 @@ a { color: var(--elyra-accent); }
 
 /* ── Window ─────────────────────────────────────────────────────────── */
 .window { display: grid; grid-template-rows: auto 1fr; height: 100vh; overflow: hidden; }
-.body { display: flex; min-height: 0; }
-.body > nav { flex: none; }
+.window-body { display: flex; min-height: 0; }
+.window-body > nav { flex: none; }
 .content { flex: 1; overflow: auto; min-width: 0; }
 
 .engine-pill {
@@ -206,3 +206,44 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: v
 .engine-card p { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .version-row { display: flex; align-items: center; gap: 8px; margin: 4px 0 0; }
 .engine-card p.text { display: block; line-height: 1.55; }
+
+.domain {
+  display: inline-block; margin-top: 2px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: none; border: none; padding: 0; color: var(--elyra-accent); font-family: var(--elyra-font-mono); font-size: 11px; text-align: left;
+}
+.domain:hover { text-decoration: underline; }
+.ports-panel { display: flex; flex-direction: column; gap: 16px; max-width: 760px; }
+.ports-panel table { width: 100%; border-collapse: collapse; }
+.ports-panel td, .ports-panel th { padding: 6px 8px; border-bottom: 1px solid var(--elyra-border); text-align: left; font-weight: normal; }
+.ports-panel th { color: var(--elyra-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+.port-form { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.port-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--elyra-muted); }
+.port-form input, .port-form select {
+  width: 110px; padding: 5px 8px; border-radius: var(--elyra-radius); border: 1px solid var(--elyra-border);
+  background: var(--elyra-inset); color: var(--elyra-text); font-family: var(--elyra-font-mono); font-size: 12px;
+}
+.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.env-editor { width: 100%; min-height: 280px; font-family: var(--elyra-font-mono); font-size: 12px; }
+.port-form label.toggle { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 6px; }
+.machine-term { flex: 1; min-height: 0; display: flex; }
+.machine-term .terminal { flex: 1; }
+
+.layers, .vulns { width: 100%; border-collapse: collapse; }
+.layers td, .vulns td, .vulns th { padding: 6px 8px; border-bottom: 1px solid var(--elyra-border); text-align: left; font-weight: normal; vertical-align: top; }
+.vulns th { color: var(--elyra-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+.layers tr.empty td { color: var(--elyra-muted); }
+.layers td.by, .vulns td.by { max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layers td.size { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; width: 90px; }
+.layers td.bar { width: 140px; }
+.layers td.bar span { display: block; height: 6px; border-radius: 3px; background: var(--elyra-accent); }
+.security { display: flex; flex-direction: column; gap: 12px; }
+.security-bar { display: flex; align-items: center; gap: 10px; }
+
+.tab-cards { display: flex; flex-direction: column; gap: 12px; }
+.slider { display: flex; flex-direction: column; gap: 6px; }
+.slider input[type=range] { width: 100%; accent-color: var(--elyra-accent); }
+.meter { display: inline-block; vertical-align: middle; width: 120px; height: 6px; margin-left: 8px; border-radius: 3px; background: var(--elyra-inset); overflow: hidden; }
+.meter span { display: block; height: 100%; background: var(--elyra-accent); }
+.slider { width: 100%; }
+.slider-head { display: flex; align-items: baseline; gap: 8px; }
+.facts-grid dd { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

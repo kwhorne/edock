@@ -5,8 +5,10 @@
   import Logs from "../lib/Logs.svelte";
   import Stats from "../lib/Stats.svelte";
   import Terminal from "../lib/Terminal.svelte";
+  import Ports from "../lib/Ports.svelte";
+  import { Modal, Textarea } from "@elyra/ui";
   import { api } from "../bindings";
-  import { changes, attempt } from "../lib/state.svelte.js";
+  import { changes, engine, attempt } from "../lib/state.svelte.js";
   import { stateTone, shortId } from "../lib/format.js";
 
   let { params, query } = $props();
@@ -52,9 +54,41 @@
     { id: "logs", label: "Logs" },
     { id: "stats", label: "Stats", disabled: !running },
     { id: "terminal", label: "Terminal", disabled: !running },
+    { id: "ports", label: "Ports" },
     { id: "inspect", label: "Inspect" },
   ]);
+
+  // The environment, edited as NAME=value lines; a running container
+  // restarts with it, its files kept (eDock's engine).
+  let envOpen = $state(false);
+  let envText = $state("");
+  let envBusy = $state(false);
+  function openEnv() {
+    envText = detail.env.map((e) => `${e.key}=${e.value}`).join("\n");
+    envOpen = true;
+  }
+  async function saveEnv() {
+    const env = envText.split("\n").map((l) => l.trim()).filter(Boolean);
+    const bad = env.find((l) => !/^[^=\s]+=/.test(l));
+    if (bad) return toast(`“${bad}” isn't NAME=value`, { variant: "danger" });
+    if (running && !(await confirm(`${detail.name} restarts with the new environment. Its files are kept.`, { confirmLabel: "Save and restart" }))) return;
+    envBusy = true;
+    const ok = await attempt(() => api.container_set_env(params.id, env).then(() => true), "Environment saved");
+    envBusy = false;
+    if (ok) {
+      envOpen = false;
+      load();
+    }
+  }
 </script>
+
+<Modal bind:open={envOpen} title="Environment" description="One NAME=value per line." size="lg">
+  <Textarea class="env-editor" bind:value={envText} rows={14} />
+  {#snippet footer()}
+    <Button onclick={() => (envOpen = false)}>Cancel</Button>
+    <Button variant="primary" loading={envBusy} onclick={saveEnv}>Save</Button>
+  {/snippet}
+</Modal>
 
 <div class="page detail">
   <header class="page-head">
@@ -100,10 +134,17 @@
           <Stats container={params.id} />
         {:else if id === "terminal"}
           <Terminal container={params.id} />
+        {:else if id === "ports"}
+          <Ports id={params.id} row={{ state: detail.state, domain: detail.domain }} />
         {:else if id === "inspect"}
           <div class="inspect">
             <section>
-              <h3>Environment</h3>
+              <h3>
+                Environment
+                {#if engine.status?.context === "edock"}
+                  <button class="ghost-btn" onclick={openEnv}>Edit</button>
+                {/if}
+              </h3>
               <table class="kv">
                 <tbody>
                   {#each detail.env as e (e.key)}<tr><td>{e.key}</td><td class="mono">{e.value}</td></tr>{/each}

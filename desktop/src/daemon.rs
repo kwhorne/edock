@@ -58,11 +58,21 @@ fn socket() -> PathBuf {
 /// the fields of `/info` a Docker client library drops (`EdockStopped`).
 /// `None` when nothing answers.
 pub(crate) async fn engine_request(method: &str, path: &str) -> Option<(u16, Value)> {
+    engine_call(method, path, None).await
+}
+
+/// `engine_request` with a JSON body.
+pub(crate) async fn engine_call(method: &str, path: &str, body: Option<&Value>) -> Option<(u16, Value)> {
+    let body = body.map(|b| b.to_string()).unwrap_or_default();
     let fut = async {
         let mut s = tokio::net::UnixStream::connect(socket()).await.ok()?;
         // A look (GET) isn't use: it mustn't keep the VM from sleeping.
         let background = if method == "GET" { "X-Edock-Background: 1\r\n" } else { "" };
-        let req = format!("{method} {path} HTTP/1.1\r\nHost: edock\r\n{background}Content-Length: 0\r\nConnection: close\r\n\r\n");
+        let kind = if body.is_empty() { "" } else { "Content-Type: application/json\r\n" };
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: edock\r\n{background}{kind}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
         s.write_all(req.as_bytes()).await.ok()?;
         // The engine keeps the connection open: read the head, then the
         // body by its length or its chunks, not to the end.
@@ -201,7 +211,7 @@ fn spawn(_ctx: &Ctx) -> Result<(), String> {
 
 /// The engine process behind eDock's socket: the peer of a connection to
 /// it (`LOCAL_PEERPID`), so it's that process, however it was started.
-fn engine_pid() -> Option<i32> {
+pub(crate) fn engine_pid() -> Option<i32> {
     use std::os::fd::AsRawFd;
     let s = std::os::unix::net::UnixStream::connect(socket()).ok()?;
     let mut pid: libc::pid_t = 0;
@@ -391,4 +401,58 @@ pub async fn cli_setup(ctx: Ctx, use_context: bool) -> Result<(), String> {
         setup.busy.store(false, std::sync::atomic::Ordering::SeqCst);
     }
     started
+}
+
+/// A streamed answer from eDock's own API (`/edock/images/scan`): each JSON
+/// line as it comes, then the status. For work that takes minutes (the
+/// first scan downloads its scanner), so no time limit.
+pub(crate) async fn engine_stream(method: &str, path: &str, mut each: impl FnMut(Value) + Send) -> Result<u16, String> {
+    let mut s = tokio::net::UnixStream::connect(socket()).await.map_err(|_| "eDock's engine isn't running".to_string())?;
+    let req = format!("{method} {path} HTTP/1.1\r\nHost: edock\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    s.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
+    let mut r = BufReader::new(s);
+    let mut status_line = String::new();
+    r.read_line(&mut status_line).await.map_err(|e| e.to_string())?;
+    let status: u16 = status_line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).ok_or("The engine's answer made no sense")?;
+    let mut chunked = false;
+    loop {
+        let mut line = String::new();
+        if r.read_line(&mut line).await.map_err(|e| e.to_string())? == 0 || line == "\r\n" {
+            break;
+        }
+        if line.to_ascii_lowercase().starts_with("transfer-encoding:") && line.to_ascii_lowercase().contains("chunked") {
+            chunked = true;
+        }
+    }
+    // Chunks carry lines, but a line may span chunks: keep the rest.
+    let mut pending: Vec<u8> = Vec::new();
+    let flush = |pending: &mut Vec<u8>, each: &mut dyn FnMut(Value)| {
+        while let Some(nl) = pending.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = pending.drain(..=nl).collect();
+            if let Ok(v) = serde_json::from_slice::<Value>(&line) {
+                each(v);
+            }
+        }
+    };
+    if chunked {
+        loop {
+            let mut size = String::new();
+            if r.read_line(&mut size).await.map_err(|e| e.to_string())? == 0 {
+                break;
+            }
+            let n = usize::from_str_radix(size.trim(), 16).map_err(|_| "The engine's answer made no sense".to_string())?;
+            if n == 0 {
+                break;
+            }
+            let mut chunk = vec![0; n + 2];
+            r.read_exact(&mut chunk).await.map_err(|e| e.to_string())?;
+            pending.extend_from_slice(&chunk[..n]);
+            flush(&mut pending, &mut each);
+        }
+    } else {
+        r.read_to_end(&mut pending).await.map_err(|e| e.to_string())?;
+        pending.push(b'\n');
+        flush(&mut pending, &mut each);
+    }
+    Ok(status)
 }

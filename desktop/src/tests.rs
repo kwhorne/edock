@@ -318,3 +318,242 @@ fn engine_pid() -> Option<String> {
     let out = std::process::Command::new("/usr/sbin/lsof").args(["-t", "-a", "-c", "edock", &sock]).output().ok()?;
     String::from_utf8_lossy(&out.stdout).lines().next().map(str::to_owned)
 }
+
+/// Ports and environment on eDock's engine, on a running container:
+/// `EDOCK_TEST_HOST=unix://$HOME/.edock/run/docker.sock`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn ports_domains_and_env_on_a_running_container() {
+    use crate::edock::{ContainerPorts, DomainsInfo, PortBinding};
+    use bollard::query_parameters as q;
+    if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
+        eprintln!("skipped: needs EDOCK_TEST_HOST on eDock's socket");
+        return;
+    }
+    let _shared = ENGINE.read().await;
+    let app = app();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let name = "edock-desktop-test-ports";
+    let _ = docker.remove_container(name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    let _: () = app.invoke("image_pull", ("nginx:alpine",)).await.unwrap();
+    let body = bollard::models::ContainerCreateBody { image: Some("nginx:alpine".into()), env: Some(vec!["GREETING=hello".into()]), ..Default::default() };
+    let id = docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(name).build()), body).await.unwrap().id;
+    docker.start_container(&id, None::<q::StartContainerOptions>).await.unwrap();
+    struct Gone(bollard::Docker, String);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let (d, id) = (self.0.clone(), self.1.clone());
+            let _ = std::thread::spawn(move || tokio::runtime::Runtime::new().unwrap().block_on(async move {
+                let _ = d.remove_container(&id, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+            })).join();
+        }
+    }
+    let _gone = Gone(docker.clone(), id.clone());
+
+    // It listens on 80, which nothing publishes.
+    let start = Instant::now();
+    let ports: ContainerPorts = loop {
+        let p: ContainerPorts = app.invoke("container_ports", (id.clone(),)).await.unwrap();
+        if p.listening.contains(&80) {
+            break p;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "80 never showed as listening");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    assert!(ports.published.is_empty());
+
+    // Publish it while it runs: the Mac reaches it.
+    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port() as u32;
+    let bind = PortBinding { container_port: 80, host_port: free, proto: "tcp".into(), host_ip: "".into() };
+    let _: () = app.invoke("container_set_ports", (id.clone(), vec![bind.clone()])).await.unwrap();
+    let get = |port: u32| std::process::Command::new("curl").args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "3", &format!("http://127.0.0.1:{port}/")]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let mut code = String::new();
+    for _ in 0..20 {
+        code = get(free);
+        if code == "200" { break; }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(code, "200", "published port didn't answer");
+    let p: ContainerPorts = app.invoke("container_ports", (id.clone(),)).await.unwrap();
+    assert_eq!(p.published, vec![bind]);
+
+    // Its domain, through the router.
+    let d: DomainsInfo = app.invoke("domains_info", ()).await.unwrap();
+    if d.http_on {
+        let url = format!("http://{name}.{}:{}/", d.suffix, d.http_port);
+        let out = std::process::Command::new("curl").args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5", &url]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "200", "{url}");
+    }
+
+    // Unpublish: gone again.
+    let _: () = app.invoke("container_set_ports", (id.clone(), Vec::<PortBinding>::new())).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_ne!(get(free), "200");
+
+    // A new environment: it restarts with it, and keeps its files.
+    let exec = |cmd: &'static str| {
+        let docker = docker.clone();
+        let id = id.clone();
+        async move {
+            use bollard::exec::{CreateExecOptions, StartExecResults};
+            let e = docker.create_exec(&id, CreateExecOptions { attach_stdout: Some(true), cmd: Some(vec!["sh", "-c", cmd]), ..Default::default() }).await.unwrap();
+            let mut out = String::new();
+            if let StartExecResults::Attached { mut output, .. } = docker.start_exec(&e.id, None).await.unwrap() {
+                use futures_util::StreamExt;
+                while let Some(Ok(o)) = output.next().await { out.push_str(&o.to_string()); }
+            }
+            out
+        }
+    };
+    exec("echo kept > /tmp/marker").await;
+    let _: () = app.invoke("container_set_env", (id.clone(), vec!["GREETING=hei".to_string(), "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()])).await.unwrap();
+    assert_eq!(exec("echo $GREETING").await.trim(), "hei");
+    assert_eq!(exec("cat /tmp/marker").await.trim(), "kept");
+    assert!(app.invoke_err("container_set_env", (id.clone(), vec!["not an assignment".to_string()])).await.contains("NAME=value"));
+    assert!(app.invoke_err("container_ports", ("../images".to_string(),)).await.contains("isn't a container"));
+}
+
+/// A Linux machine on eDock's engine, made, used and deleted through the
+/// app: `EDOCK_TEST_HOST=unix://$HOME/.edock/run/docker.sock`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn a_linux_machine_from_create_to_delete() {
+    use crate::daemon::Progress;
+    use crate::machines::MachineRow;
+    if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
+        eprintln!("skipped: needs EDOCK_TEST_HOST on eDock's socket");
+        return;
+    }
+    let _shared = ENGINE.read().await;
+    let app = app();
+    app.listen();
+    let name = "edock-test-machine";
+    let _ = app.invoke::<()>("machine_action", (name.to_string(), "delete".to_string())).await;
+
+    let _: () = app.invoke("machine_create", (name.to_string(), "alpine".to_string(), false)).await.unwrap();
+    assert!(app.invoke_err("machine_create", ("other".to_string(), "alpine".to_string(), false)).await.contains("being made"));
+    let done = wait_long::<Progress>(&app, "machine:progress", 180, |p| p.iter().any(|p| p.done)).await;
+    assert!(done.iter().find(|p| p.done).unwrap().error.is_none(), "{:?}", done.iter().map(|p| &p.line).collect::<Vec<_>>());
+
+    let rows: Vec<MachineRow> = app.invoke("machines_list", ()).await.unwrap();
+    let m = rows.iter().find(|m| m.name == name).expect("listed");
+    assert_eq!((m.state.as_str(), m.distro.as_str()), ("running", "Alpine 3.22"));
+
+    // A login shell: the Mac user, in their home, with /Users there.
+    let user = std::env::var("USER").unwrap();
+    let term: u32 = app.invoke("machine_shell", (name.to_string(), 80u32, 24u32)).await.unwrap();
+    let _: () = app.invoke("exec_input", (term, "echo \"who=$(id -un) at=$(pwd)\"; ls -d /Users/*/ | head -1\r".to_string())).await.unwrap();
+    let want = format!("who={user} at=/Users/{user}");
+    wait_for(&app, &format!("exec:{term}"), |c: &[TermChunk]| c.iter().map(|c| c.data.as_str()).collect::<String>().contains(&want)).await;
+    let _: () = app.invoke("exec_input", (term, "exit\r".to_string())).await.unwrap();
+
+    // Stop, start, delete.
+    for action in ["stop", "start"] {
+        let _: () = app.invoke("machine_action", (name.to_string(), action.to_string())).await.unwrap();
+    }
+    let rows: Vec<MachineRow> = app.invoke("machines_list", ()).await.unwrap();
+    assert_eq!(rows.iter().find(|m| m.name == name).map(|m| m.state.as_str()), Some("running"));
+    assert!(app.invoke_err("machine_action", ("../x".to_string(), "delete".to_string())).await.contains("letters, digits"));
+    let _: () = app.invoke("machine_action", (name.to_string(), "delete".to_string())).await.unwrap();
+    let rows: Vec<MachineRow> = app.invoke("machines_list", ()).await.unwrap();
+    assert!(rows.iter().all(|m| m.name != name));
+}
+
+/// An image's layers, a vulnerability scan and its SBOM, on eDock's engine:
+/// `EDOCK_TEST_HOST=… EDOCK_TEST_SCAN=1` (the first scan downloads Grype
+/// and its database, about 200 MB).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn an_images_layers_scan_and_sbom() {
+    use crate::images::{ImageLayers, ScanProgress, ScanResult, ScanSummary};
+    if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
+        eprintln!("skipped: needs EDOCK_TEST_HOST on eDock's socket");
+        return;
+    }
+    let _shared = ENGINE.read().await;
+    let app = app();
+    app.listen();
+    let _: () = app.invoke("image_pull", ("alpine:3.20",)).await.unwrap();
+
+    let l: ImageLayers = app.invoke("image_layers", ("alpine:3.20".to_string(),)).await.unwrap();
+    assert!(l.platform.contains("arm64"), "{}", l.platform);
+    assert!(l.layers.iter().any(|x| x.by.starts_with("ADD") && x.size > 1_000_000.0));
+    assert!(app.invoke_err("image_layers", ("no-such-image:0".to_string(),)).await.contains("no image"));
+
+    if std::env::var("EDOCK_TEST_SCAN").is_err() {
+        eprintln!("scan skipped: set EDOCK_TEST_SCAN=1");
+        return;
+    }
+    let _: () = app.invoke("image_scan", ("alpine:3.20".to_string(),)).await.unwrap();
+    assert!(app.invoke_err("image_scan", ("alpine:3.20".to_string(),)).await.contains("being scanned"));
+    let p = wait_long::<ScanProgress>(&app, "scan:progress", 900, |p| p.iter().any(|p| p.done)).await;
+    let last = p.iter().find(|p| p.done).unwrap();
+    assert!(last.error.is_none(), "{:?}", last.error);
+    assert!(p.iter().any(|p| p.phase == "scanning"));
+
+    let scans: Vec<ScanSummary> = app.invoke("image_scans", ("alpine:3.20".to_string(),)).await.unwrap();
+    let newest = scans.first().expect("a scan");
+    assert!(newest.packages > 5);
+    let r: Option<ScanResult> = app.invoke("image_scan_result", ("alpine:3.20".to_string(), Some(newest.scanned))).await.unwrap();
+    let r = r.expect("findings");
+    assert_eq!(r.vulns.len() as u32, newest.vulns);
+    assert!(r.vulns.iter().all(|v| !v.id.is_empty() && !v.severity.is_empty()));
+
+    let out = std::env::temp_dir().join(format!("edock-sbom-{}.json", std::process::id()));
+    let file = elyra::files::ChosenFile::for_saving(&out);
+    let _: () = app.invoke("image_sbom_save", ("alpine:3.20".to_string(), newest.scanned, file)).await.unwrap();
+    let sbom: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(sbom["bomFormat"], "CycloneDX");
+    let _ = std::fs::remove_file(out);
+}
+
+/// The Engine page's settings on eDock's engine. Changes the VM's size and
+/// the builder's settings, then puts them back: `EDOCK_TEST_HOST=…`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn resources_builder_import_list_and_diagnostics() {
+    use crate::vm::{BuilderInfo, ImportList, ImportSource, VmInfo};
+    if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
+        eprintln!("skipped: needs EDOCK_TEST_HOST on eDock's socket");
+        return;
+    }
+    // A VM restart stops containers: alone.
+    let _alone = ENGINE.write().await;
+    let app = app();
+
+    let before: VmInfo = app.invoke("vm_info", ()).await.unwrap();
+    assert!(before.max_cpus >= 1 && before.max_memory_mib >= 1024 && before.cpus >= 1);
+    let cpus = if before.cpus > 1 { before.cpus - 1 } else { 2.min(before.max_cpus) };
+    let after: VmInfo = app.invoke("vm_set_resources", (cpus, 4096u32)).await.unwrap();
+    assert_eq!((after.cpus, after.memory_mib), (cpus, 4096));
+    assert!(app.invoke_err("vm_set_resources", (0u32, 4096u32)).await.contains("cpus"));
+    // Restart now: the VM comes back with the new size.
+    let _: () = app.invoke("vm_restart", ()).await.unwrap();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let _ = docker.info().await; // wakes it
+    let now: VmInfo = app.invoke("vm_info", ()).await.unwrap();
+    assert!(now.awake, "the VM is up again");
+    assert_eq!(now.running_cpus, cpus);
+    let _: VmInfo = app.invoke("vm_set_resources", (before.cpus, before.memory_mib)).await.unwrap();
+    let _: () = app.invoke("vm_restart", ()).await.unwrap();
+
+    let b: BuilderInfo = app.invoke("builder_info", ()).await.unwrap();
+    let set: BuilderInfo = app.invoke("builder_set", (Some(7u32), 420u32)).await.unwrap();
+    assert_eq!((set.cache_gb, set.idle_secs), (Some(7), 420));
+    let back: BuilderInfo = app.invoke("builder_set", (b.cache_gb, b.idle_secs)).await.unwrap();
+    assert_eq!((back.cache_gb, back.idle_secs), (b.cache_gb, b.idle_secs));
+    let _freed: f64 = app.invoke("builder_prune", ()).await.unwrap();
+
+    // What another engine has: listed, not imported (that would copy it all).
+    let sources: Vec<ImportSource> = app.invoke("import_sources", ()).await.unwrap();
+    if let Some(src) = sources.iter().find(|s| s.available) {
+        let list: ImportList = app.invoke("import_list", (src.id.clone(),)).await.unwrap();
+        eprintln!("{}: {} images, {} volumes, {} containers", src.label, list.images.len(), list.volumes.len(), list.containers.len());
+    }
+    assert!(app.invoke_err("import_run", ("--all".to_string(),)).await.contains("isn't an engine"));
+
+    let out = std::env::temp_dir().join(format!("edock-diag-{}.txt", std::process::id()));
+    let _: () = app.invoke("diag_report", (elyra::files::ChosenFile::for_saving(&out),)).await.unwrap();
+    assert!(std::fs::read_to_string(&out).unwrap().contains("eDock diagnostics report"));
+    let _ = std::fs::remove_file(out);
+}

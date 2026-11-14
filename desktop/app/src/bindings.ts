@@ -3,6 +3,29 @@
 
 import { invoke } from "@elyra/runtime";
 
+export type BuilderInfo = {
+	/**  The cache's cap in GB; none: the default. */
+	cache_gb: number | null,
+	default_cache_gb: number,
+	/**  Seconds without a build before BuildKit stops. */
+	idle_secs: number,
+	/**  "running", "exited", "none"… */
+	state: string,
+	overridden: boolean,
+};
+
+/**
+ *  A file (or folder) the user chose in this run. Decoded from the
+ *  frontend only when the shell granted it; see the [module](self).
+ */
+export type ChosenFile = {
+	/**  The grant: random, and meaningless after the run. */
+	id: string,
+	path: string,
+	name: string,
+	kind: FileChoice,
+};
+
 export type CliStatus = {
 	/**  `~/.edock/bin/docker` is there (`edock setup` linked it). */
 	docker: boolean,
@@ -17,6 +40,8 @@ export type CliStatus = {
 export type ContainerDetail = {
 	id: string,
 	name: string,
+	/**  On eDock's engine: its name at `<domain>.edock.localhost`. */
+	domain: string | null,
 	image: string,
 	state: string,
 	started_at: string,
@@ -35,6 +60,17 @@ export type ContainerDetail = {
 	raw: string,
 };
 
+export type ContainerPorts = {
+	published: PortBinding[],
+	/**  TCP ports the container listens on, published or not. */
+	listening: number[],
+	/**
+	 *  …of those, the ones bound to its own loopback, which nothing outside
+	 *  it can reach.
+	 */
+	local: number[],
+};
+
 export type ContainerRow = {
 	id: string,
 	name: string,
@@ -50,6 +86,11 @@ export type ContainerRow = {
 	service: string | null,
 	working_dir: string | null,
 	size: number | null,
+	/**
+	 *  On eDock's engine: the name it answers to at `<domain>.edock.localhost`
+	 *  (its `app.edock.domain` label, `<service>.<project>`, or its name).
+	 */
+	domain: string | null,
 };
 
 /**  A docker context: a name and the socket behind it. */
@@ -64,10 +105,37 @@ export type Context = {
 	docker_current: boolean,
 };
 
+export type Counts = {
+	critical: number,
+	high: number,
+	medium: number,
+	low: number,
+	other: number,
+};
+
 export type DaemonInfo = {
 	/**  The engine binary, when the app found one. */
 	binary: string | null,
 	state: EngineState,
+};
+
+export type Distro = {
+	id: string,
+	label: string,
+};
+
+export type DomainsInfo = {
+	/**  The app is on eDock's engine, and it answers. */
+	available: boolean,
+	http_port: number,
+	https_port: number,
+	/**  The routers serve (off when another server has their port). */
+	http_on: boolean,
+	https_on: boolean,
+	/**  `edock.localhost`, or `edock.local` once its resolver is set up. */
+	suffix: string,
+	/**  Browsers trust the HTTPS certificates. */
+	trusted: boolean,
 };
 
 /**  eDock's engine as the app sees it. */
@@ -104,6 +172,21 @@ export type EngineStatus = {
 	images: number,
 };
 
+/**  How the user chose it, which is what it may be used for. */
+export type FileChoice = 
+/**  Picked in an open dialog, or dropped: it may be read. */
+"open" | 
+/**  Picked in a save dialog: it may be written, replacing what's there. */
+"save" | 
+/**  A folder picked in an open dialog: a new file may be written in it. */
+"folder";
+
+export type ImageLayers = {
+	platform: string,
+	size: number,
+	layers: Layer[],
+};
+
 export type ImageRow = {
 	id: string,
 	repository: string,
@@ -112,6 +195,26 @@ export type ImageRow = {
 	created: number,
 	/**  Containers using it (-1: unknown). */
 	containers: number,
+};
+
+export type ImportItem = {
+	name: string,
+	/**  eDock has it already. */
+	have: boolean,
+};
+
+export type ImportList = {
+	images: ImportItem[],
+	volumes: ImportItem[],
+	containers: ImportItem[],
+};
+
+export type ImportSource = {
+	/**  `orbstack` or `desktop-linux`, as `edock import` names them. */
+	id: string,
+	label: string,
+	/**  Its engine answers on its socket. */
+	available: boolean,
 };
 
 export type K8sItems = {
@@ -136,6 +239,29 @@ export type K8sStatus = {
 export type KeyValue = {
 	key: string,
 	value: string,
+};
+
+export type Layer = {
+	/**  The Dockerfile line (`RUN apk add …`), or "" when the image doesn't say. */
+	by: string,
+	size: number,
+	/**  Changed no files (ENV, CMD…). */
+	empty: boolean,
+	created: string,
+	/**  Came with the base image. */
+	base: boolean,
+};
+
+export type MachineRow = {
+	name: string,
+	/**  The distribution's name when it's one of ours, else the image. */
+	distro: string,
+	image: string,
+	state: string,
+	status: string,
+	/**  Runs systemd as its init. */
+	systemd: boolean,
+	created: number,
 };
 
 export type MountRow = {
@@ -184,11 +310,39 @@ export type PodRow = {
 	containers: PodContainer[],
 };
 
+export type PortBinding = {
+	container_port: number,
+	/**  0: a free one, chosen by the engine. */
+	host_port: number,
+	/**  "tcp" or "udp". */
+	proto: string,
+	/**  "" for every interface, "127.0.0.1" for this Mac only. */
+	host_ip: string,
+};
+
 export type PortRow = {
 	ip: string,
 	private: number,
 	public: number | null,
 	proto: string,
+};
+
+export type ScanResult = {
+	scanned: number,
+	packages: number,
+	/**  When the vulnerability database was built. */
+	db: string,
+	scanner: string,
+	vulns: Vuln[],
+};
+
+export type ScanSummary = {
+	/**  Unix time: the scan's key. */
+	scanned: number,
+	counts: Counts,
+	vulns: number,
+	fixable: number,
+	packages: number,
 };
 
 export type ServicePort = {
@@ -209,6 +363,32 @@ export type ServiceRow = {
 	created: string,
 };
 
+export type VmInfo = {
+	/**  What the VM starts with (`~/.edock/vm.json`). */
+	cpus: number,
+	memory_mib: number,
+	/**  What it has now, while awake. */
+	running_cpus: number,
+	running_memory_mib: number,
+	awake: boolean,
+	max_cpus: number,
+	max_memory_mib: number,
+	/**  EDOCK_CPUS or EDOCK_MEMORY_MIB fix them. */
+	overridden: boolean,
+	/**
+	 *  Memory the containers use now, and the most the VM may take (the
+	 *  balloon gives the rest back to macOS), in bytes.
+	 */
+	memory_used: number,
+	memory_ceiling: number,
+	/**  The engine process's memory on the Mac, in bytes. */
+	engine_memory: number,
+	/**  The guest agent's (PID 1 in the VM), in bytes. */
+	agent_memory: number,
+	cpu_percent: number,
+	oom_kills: number,
+};
+
 export type VolumeRow = {
 	name: string,
 	driver: string,
@@ -220,7 +400,40 @@ export type VolumeRow = {
 	size: number | null,
 };
 
+export type Vuln = {
+	id: string,
+	/**  Critical, High, Medium, Low, Negligible or Unknown. */
+	severity: string,
+	package: string,
+	version: string,
+	kind: string,
+	/**  Versions that fix it; none yet when empty. */
+	fixed: string[],
+	url: string,
+	description: string,
+	/**  The Dockerfile line that brought the package in, when known. */
+	by: string | null,
+	/**  It came with the base image. */
+	base: boolean | null,
+};
+
 export const api = {
+  builder_info(): Promise<BuilderInfo> {
+    return invoke("builder_info");
+  },
+  /**
+   * Empty the build cache. Returns the bytes freed.
+   */
+  builder_prune(): Promise<number> {
+    return invoke("builder_prune");
+  },
+  /**
+   * The builder's cache cap (none: the default) and idle time, from its
+   * next start.
+   */
+  builder_set(cache_gb: number | null, idle_secs: number): Promise<BuilderInfo> {
+    return invoke("builder_set", cache_gb, idle_secs);
+  },
   /**
    * `edock setup`: the `edock` docker context, `docker` and `edock` on PATH
    * (the docker CLI, Compose and buildx downloaded the first time, checked
@@ -246,6 +459,25 @@ export const api = {
    */
   container_inspect(id: string): Promise<ContainerDetail> {
     return invoke("container_inspect", id);
+  },
+  /**
+   * What a container publishes, and what it really listens on.
+   */
+  container_ports(id: string): Promise<ContainerPorts> {
+    return invoke("container_ports", id);
+  },
+  /**
+   * Replace a container's environment (`NAME=value` each). A running
+   * container restarts with it; its files are kept.
+   */
+  container_set_env(id: string, env: string[]): Promise<null> {
+    return invoke("container_set_env", id, env);
+  },
+  /**
+   * Set a container's published ports, all of them, while it runs.
+   */
+  container_set_ports(id: string, ports: PortBinding[]): Promise<null> {
+    return invoke("container_set_ports", id, ports);
   },
   /**
    * Every container, running or not.
@@ -297,6 +529,23 @@ export const api = {
     return invoke("daemon_stop");
   },
   /**
+   * A diagnostics report (`edock diag report`), with tokens taken out,
+   * saved where the user chose. Nothing is sent anywhere.
+   */
+  diag_report(file: ChosenFile): Promise<null> {
+    return invoke("diag_report", file);
+  },
+  domains_info(): Promise<DomainsInfo> {
+    return invoke("domains_info");
+  },
+  /**
+   * Move the container domains to other ports, at once (kept in
+   * `~/.edock/domains.json`).
+   */
+  domains_set_ports(http: number, https: number): Promise<DomainsInfo> {
+    return invoke("domains_set_ports", http, https);
+  },
+  /**
    * Which engine the app is on, and whether it answers.
    */
   engine_status(): Promise<EngineStatus> {
@@ -322,6 +571,9 @@ export const api = {
   exec_start(container: string, cols: number, rows: number, command: string | null): Promise<number> {
     return invoke("exec_start", container, cols, rows, command);
   },
+  image_layers(name: string): Promise<ImageLayers> {
+    return invoke("image_layers", name);
+  },
   /**
    * Pull an image. Progress goes out on the `pull` channel; the promise
    * settles when the pull is done.
@@ -336,6 +588,31 @@ export const api = {
     return invoke("image_remove", reference, force);
   },
   /**
+   * Save a scan's SBOM (CycloneDX JSON) where the user chose.
+   */
+  image_sbom_save(name: string, at: number, file: ChosenFile): Promise<null> {
+    return invoke("image_sbom_save", name, at, file);
+  },
+  /**
+   * Scan an image for known vulnerabilities. Progress on `scan:progress`;
+   * the first scan downloads Grype and its database (about 200 MB).
+   */
+  image_scan(name: string): Promise<null> {
+    return invoke("image_scan", name);
+  },
+  /**
+   * One scan's findings (`at`), or the newest when `at` is none.
+   */
+  image_scan_result(name: string, at: number | null): Promise<ScanResult | null> {
+    return invoke("image_scan_result", name, at);
+  },
+  /**
+   * The image's scans, newest first.
+   */
+  image_scans(name: string): Promise<ScanSummary[]> {
+    return invoke("image_scans", name);
+  },
+  /**
    * Every image, one row per tag (untagged ones as `<none>`).
    */
   images_list(): Promise<ImageRow[]> {
@@ -346,6 +623,22 @@ export const api = {
    */
   images_prune(all: boolean): Promise<number> {
     return invoke("images_prune", all);
+  },
+  /**
+   * What the other engine has (`edock import <source> --list`).
+   */
+  import_list(source: string): Promise<ImportList> {
+    return invoke("import_list", source);
+  },
+  /**
+   * Bring everything over from the other engine (`edock import <source>`):
+   * its lines on `import:progress`. The source is only read.
+   */
+  import_run(source: string): Promise<null> {
+    return invoke("import_run", source);
+  },
+  import_sources(): Promise<ImportSource[]> {
+    return invoke("import_sources");
   },
   /**
    * Start, stop or delete the cluster: `edock k8s <action>`, with its lines
@@ -397,6 +690,32 @@ export const api = {
   logs_follow(container: string, tail: number, timestamps: boolean): Promise<number> {
     return invoke("logs_follow", container, tail, timestamps);
   },
+  /**
+   * start, stop, restart or delete a machine. Delete removes it and what's
+   * only in it (its own files, not `/Users`).
+   */
+  machine_action(name: string, action: string): Promise<null> {
+    return invoke("machine_action", name, action);
+  },
+  /**
+   * Make a machine: `edock machine create`, its lines on `machine:progress`.
+   */
+  machine_create(name: string, distro: string, systemd: boolean): Promise<null> {
+    return invoke("machine_create", name, distro, systemd);
+  },
+  machine_distros(): Promise<Distro[]> {
+    return invoke("machine_distros");
+  },
+  /**
+   * A login shell in a machine, as the Mac user, in their home: on
+   * `exec:<id>` like any terminal.
+   */
+  machine_shell(name: string, cols: number, rows: number): Promise<number> {
+    return invoke("machine_shell", name, cols, rows);
+  },
+  machines_list(): Promise<MachineRow[]> {
+    return invoke("machines_list");
+  },
   network_create(name: string): Promise<null> {
     return invoke("network_create", name);
   },
@@ -427,6 +746,30 @@ export const api = {
    */
   stream_stop(id: number): Promise<null> {
     return invoke("stream_stop", id);
+  },
+  /**
+   * Trust eDock's certificate authority for websites, so
+   * `https://<name>.edock.localhost` has a padlock. macOS asks for the
+   * password. The authority can only vouch for eDock's own names.
+   */
+  tls_trust(trust: boolean): Promise<null> {
+    return invoke("tls_trust", trust);
+  },
+  vm_info(): Promise<VmInfo> {
+    return invoke("vm_info");
+  },
+  /**
+   * Start the VM again now, with its new size: running containers stop
+   * (those with a restart policy come back).
+   */
+  vm_restart(): Promise<null> {
+    return invoke("vm_restart");
+  },
+  /**
+   * The VM's CPUs and memory, from its next start.
+   */
+  vm_set_resources(cpus: number, memory_mib: number): Promise<VmInfo> {
+    return invoke("vm_set_resources", cpus, memory_mib);
   },
   volume_create(name: string): Promise<null> {
     return invoke("volume_create", name);

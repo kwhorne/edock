@@ -4,7 +4,7 @@
   import { Button } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { changes, engine, attempt } from "../lib/state.svelte.js";
+  import { changes, engine, attempt, domainUrl } from "../lib/state.svelte.js";
 
   let containers = $state([]);
 
@@ -46,6 +46,9 @@
       <li>
         <span class="dot on"></span>
         <button class="name link" title={c.image} onclick={() => open(`/containers/${c.id}`)}>{c.project && c.service ? `${c.project}/${c.service}` : c.name}</button>
+        {#if domainUrl(c)}
+          <button class="port" title={domainUrl(c)} onclick={() => shell.openExternal(domainUrl(c))}>↗</button>
+        {/if}
         {#each c.ports.filter((p) => p.public).slice(0, 2) as p (`${p.public}/${p.proto}`)}
           <button class="port" onclick={() => shell.openExternal(`http://localhost:${p.public}`)}>{p.public}</button>
         {/each}

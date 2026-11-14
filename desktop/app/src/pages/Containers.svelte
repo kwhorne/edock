@@ -3,7 +3,7 @@
   import { Badge, Button, Callout, Empty, Input, Skeleton } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { changes, engine, attempt } from "../lib/state.svelte.js";
+  import { changes, engine, attempt, domainUrl } from "../lib/state.svelte.js";
   import { ago, shortId, stateTone } from "../lib/format.js";
 
   let containers = $state(null);
@@ -169,6 +169,11 @@
                   <div class="main">
                     <div class="name">{g.project && c.service ? c.service : c.name}</div>
                     <div class="sub muted">{c.image} · {shortId(c.id)}</div>
+                    {#if domainUrl(c)}
+                      <button class="domain" title="Open {domainUrl(c)}" onclick={(e) => { e.stopPropagation(); shell.openExternal(domainUrl(c)); }}>
+                        {domainUrl(c).replace(/^https?:\/\//, "")}
+                      </button>
+                    {/if}
                   </div>
                   <div class="ports">
                     {#each c.ports.filter((p) => p.public) as p (`${p.public}/${p.proto}`)}

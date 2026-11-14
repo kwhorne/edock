@@ -1,10 +1,10 @@
 <script>
-  import { channel, confirm, prompt, toast } from "@elyra/runtime";
+  import { channel, confirm, navigate, prompt, toast } from "@elyra/runtime";
   import { onDestroy } from "svelte";
   import { Badge, Button, Callout, Skeleton, Table } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { changes, attempt } from "../lib/state.svelte.js";
+  import { changes, engine, attempt } from "../lib/state.svelte.js";
   import { ago, bytes, shortId } from "../lib/format.js";
 
   let images = $state(null);
@@ -87,6 +87,7 @@
       label="Images"
       resizable
       persist="images"
+      onrowclick={(row) => navigate(`/images/${encodeURIComponent(row.tag === "<none>" ? row.id : `${row.repository}:${row.tag}`)}`)}
       columns={[
         { key: "repository", label: "Repository" },
         { key: "tag", label: "Tag", width: 140 },
@@ -106,6 +107,9 @@
         {/if}
       {/snippet}
       {#snippet actions(row)}
+        {#if engine.status?.context === "edock"}
+          <button class="icon-btn" title="Scan for vulnerabilities" onclick={() => navigate(`/images/${encodeURIComponent(row.tag === "<none>" ? row.id : `${row.repository}:${row.tag}`)}?tab=security`)}><Icon name="shield" size={14} /></button>
+        {/if}
         <button class="icon-btn danger" title="Remove" onclick={() => remove(row)}><Icon name="trash" size={14} /></button>
       {/snippet}
       {#snippet empty()}<span class="muted">No images. Pull one, or `docker build`.</span>{/snippet}

@@ -3,10 +3,14 @@
 //! bar item.
 
 mod daemon;
+mod edock;
 mod engine;
+mod images;
 mod k8s;
+mod machines;
 mod resources;
 mod streams;
+mod vm;
 
 use std::sync::Arc;
 
@@ -77,6 +81,9 @@ fn core(engine: Arc<engine::Engine>) -> App {
         .bind_as::<daemon::Daemon>(Arc::new(daemon::Daemon::default()))
         .bind_as::<k8s::Cluster>(Arc::new(k8s::Cluster::default()))
         .bind_as::<daemon::Setup>(Arc::new(daemon::Setup::default()))
+        .bind_as::<machines::Creating>(Arc::new(machines::Creating::default()))
+        .bind_as::<images::Scanning>(Arc::new(images::Scanning::default()))
+        .bind_as::<vm::Importing>(Arc::new(vm::Importing::default()))
         .commands(commands![
             resources::engine_status,
             resources::contexts_list,
@@ -117,6 +124,32 @@ fn core(engine: Arc<engine::Engine>) -> App {
             k8s::k8s_rollout_restart,
             k8s::k8s_logs_follow,
             k8s::k8s_exec_start,
+            edock::domains_info,
+            edock::domains_set_ports,
+            edock::tls_trust,
+            edock::container_ports,
+            edock::container_set_ports,
+            edock::container_set_env,
+            machines::machine_distros,
+            machines::machines_list,
+            machines::machine_create,
+            machines::machine_action,
+            machines::machine_shell,
+            images::image_layers,
+            images::image_scans,
+            images::image_scan_result,
+            images::image_scan,
+            images::image_sbom_save,
+            vm::vm_info,
+            vm::vm_set_resources,
+            vm::vm_restart,
+            vm::builder_info,
+            vm::builder_set,
+            vm::builder_prune,
+            vm::import_sources,
+            vm::import_list,
+            vm::import_run,
+            vm::diag_report,
             window_open,
         ])
 }

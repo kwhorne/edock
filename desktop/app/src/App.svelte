@@ -39,6 +39,7 @@
     { id: "go.images", title: "Images", action: () => navigate("/images") },
     { id: "go.volumes", title: "Volumes", action: () => navigate("/volumes") },
     { id: "go.networks", title: "Networks", action: () => navigate("/networks") },
+    { id: "go.machines", title: "Linux machines", action: () => navigate("/machines") },
     { id: "go.kubernetes", title: "Kubernetes", action: () => navigate("/kubernetes") },
     { id: "go.engine", title: "Engine & contexts", action: () => navigate("/engine") },
     { id: "app.update", title: "Check for updates", action: checkForUpdates },
@@ -87,7 +88,7 @@
         </button>
       {/snippet}
     </Toolbar>
-    <div class="body">
+    <div class="window-body">
       <Sidebar>
         <NavItem path="/" count={status?.running ?? 0}>
           {#snippet icon()}<Icon name="box" />{/snippet}
@@ -104,6 +105,10 @@
         <NavItem path="/networks">
           {#snippet icon()}<Icon name="network" />{/snippet}
           Networks
+        </NavItem>
+        <NavItem path="/machines">
+          {#snippet icon()}<Icon name="monitor" />{/snippet}
+          Machines
         </NavItem>
         <NavItem path="/kubernetes">
           {#snippet icon()}<Icon name="helm" />{/snippet}

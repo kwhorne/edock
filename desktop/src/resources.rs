@@ -165,12 +165,16 @@ pub struct ContainerRow {
     pub service: Option<String>,
     pub working_dir: Option<String>,
     pub size: Option<f64>,
+    /// On eDock's engine: the name it answers to at `<domain>.edock.localhost`
+    /// (its `app.edock.domain` label, `<service>.<project>`, or its name).
+    pub domain: Option<String>,
 }
 
 /// Every container, running or not.
 #[command]
 pub async fn containers_list(ctx: Ctx, size: bool) -> Result<Vec<ContainerRow>, String> {
     let docker = docker(&ctx)?;
+    let on_edock = ctx.get::<Engine>().context().0 == crate::engine::EDOCK;
     let opts = q::ListContainersOptionsBuilder::default().all(true).size(size).build();
     let list = docker.list_containers(Some(opts)).await.map_err(err)?;
     Ok(list
@@ -196,6 +200,11 @@ pub async fn containers_list(ctx: Ctx, size: bool) -> Result<Vec<ContainerRow>, 
             ports.sort_by_key(|p| (p.public, p.private));
             ports.dedup_by(|a, b| a.public == b.public && a.private == b.private && a.proto == b.proto);
             let name = v["Names"][0].as_str().unwrap_or("").trim_start_matches('/').to_owned();
+            let domain = on_edock.then(|| {
+                let chosen = label("app.edock.domain").and_then(|d| d.split(',').next().map(|d| d.trim().to_owned())).filter(|d| !d.is_empty());
+                let service = label("com.docker.compose.service").zip(label("com.docker.compose.project")).map(|(s, p)| format!("{s}.{p}"));
+                chosen.or(service).unwrap_or_else(|| name.clone())
+            });
             let status = s(&v["Status"]);
             let health = ["healthy", "unhealthy", "starting"]
                 .into_iter()
@@ -215,6 +224,7 @@ pub async fn containers_list(ctx: Ctx, size: bool) -> Result<Vec<ContainerRow>, 
                 service: label("com.docker.compose.service"),
                 working_dir: label("com.docker.compose.project.working_dir"),
                 size: v["SizeRw"].as_f64(),
+                domain,
             }
         })
         .collect())
@@ -284,6 +294,8 @@ pub struct MountRow {
 pub struct ContainerDetail {
     pub id: String,
     pub name: String,
+    /// On eDock's engine: its name at `<domain>.edock.localhost`.
+    pub domain: Option<String>,
     pub image: String,
     pub state: String,
     pub started_at: String,
@@ -369,9 +381,17 @@ pub async fn container_inspect(ctx: Ctx, id: String) -> Result<ContainerDetail, 
                 .collect()
         })
         .unwrap_or_default();
+    let name = s(&v["Name"]).trim_start_matches('/').to_owned();
+    let domain = (ctx.get::<Engine>().context().0 == crate::engine::EDOCK).then(|| {
+        let label = |k: &str| cfg["Labels"][k].as_str().filter(|v| !v.is_empty()).map(str::to_owned);
+        let chosen = label("app.edock.domain").and_then(|d| d.split(',').next().map(|d| d.trim().to_owned())).filter(|d| !d.is_empty());
+        let service = label("com.docker.compose.service").zip(label("com.docker.compose.project")).map(|(s, p)| format!("{s}.{p}"));
+        chosen.or(service).unwrap_or_else(|| name.clone())
+    });
     Ok(ContainerDetail {
+        domain,
         id: s(&v["Id"]),
-        name: s(&v["Name"]).trim_start_matches('/').into(),
+        name,
         image: s(&cfg["Image"]),
         state: s(&v["State"]["Status"]),
         started_at: s(&v["State"]["StartedAt"]),

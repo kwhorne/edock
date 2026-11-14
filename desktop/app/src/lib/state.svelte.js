@@ -3,16 +3,17 @@
 import { channel, toast } from "@elyra/runtime";
 import { api } from "../bindings";
 
-export const engine = $state({ status: null, contexts: [] });
+export const engine = $state({ status: null, contexts: [], domains: null });
 
 // One counter per kind; a page reads the one it lists in an $effect.
 export const changes = $state({ container: 0, image: 0, volume: 0, network: 0, engine: 0, k8s: 0 });
 
 export async function refreshEngine() {
   try {
-    const [status, contexts] = await Promise.all([api.engine_status(), api.contexts_list()]);
+    const [status, contexts, domains] = await Promise.all([api.engine_status(), api.contexts_list(), api.domains_info()]);
     engine.status = status;
     engine.contexts = contexts;
+    engine.domains = domains;
   } catch (e) {
     console.error(e);
   }
@@ -67,4 +68,16 @@ export async function attempt(fn, done) {
 export async function useContext(name) {
   await attempt(() => api.context_use(name));
   await refreshEngine();
+}
+
+/** A container's address at eDock's router, or null: https when browsers
+ *  trust eDock's certificates, else http; the port only when it isn't the
+ *  scheme's own. */
+export function domainUrl(row) {
+  const d = engine.domains;
+  if (!row?.domain || !d?.available || row.state !== "running") return null;
+  const https = d.trusted && d.https_on;
+  if (!https && !d.http_on) return null;
+  const port = https ? (d.https_port === 443 ? "" : `:${d.https_port}`) : d.http_port === 80 ? "" : `:${d.http_port}`;
+  return `${https ? "https" : "http"}://${row.domain}.${d.suffix}${port}`;
 }

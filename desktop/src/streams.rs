@@ -268,6 +268,20 @@ pub async fn exec_start(ctx: Ctx, container: String, cols: u32, rows: u32, comma
 /// Run `cmd` in `container` on a terminal, for the page's xterm: a shell,
 /// or `kubectl exec -it` in the Kubernetes node.
 pub(crate) async fn open_terminal(ctx: &Ctx, container: &str, cmd: Vec<String>, cols: u32, rows: u32) -> Result<u32, String> {
+    open_terminal_as(ctx, container, cmd, cols, rows, Exec::default()).await
+}
+
+/// Who a terminal runs as, and where.
+#[derive(Default)]
+pub(crate) struct Exec {
+    pub user: Option<String>,
+    pub working_dir: Option<String>,
+    pub env: Vec<String>,
+}
+
+/// `open_terminal`, as a user, in a directory, with more environment: a
+/// Linux machine's login shell.
+pub(crate) async fn open_terminal_as(ctx: &Ctx, container: &str, cmd: Vec<String>, cols: u32, rows: u32, how: Exec) -> Result<u32, String> {
     let docker = ctx.get::<Engine>().docker()?;
     let bus = ctx.get::<EventBus>();
     let streams = ctx.get::<Streams>();
@@ -279,8 +293,10 @@ pub(crate) async fn open_terminal(ctx: &Ctx, container: &str, cmd: Vec<String>, 
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
                 tty: Some(true),
-                env: Some(vec!["TERM=xterm-256color".to_owned()]),
+                env: Some(std::iter::once("TERM=xterm-256color".to_owned()).chain(how.env).collect()),
                 cmd: Some(cmd),
+                user: how.user,
+                working_dir: how.working_dir,
                 ..Default::default()
             },
         )

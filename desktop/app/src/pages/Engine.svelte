@@ -3,7 +3,10 @@
   import { onDestroy } from "svelte";
   import { Checkbox } from "@elyra/ui";
   import { checkForUpdates } from "../lib/updates.js";
-  import { Badge, Button, Callout, Card } from "@elyra/ui";
+  import { Badge, Button, Callout, Card, Tabs } from "@elyra/ui";
+  import EngineResources from "../lib/EngineResources.svelte";
+  import EngineDomains from "../lib/EngineDomains.svelte";
+  import EngineBuilds from "../lib/EngineBuilds.svelte";
   import { api } from "../bindings";
   import { engine, changes, refreshEngine, useContext, attempt } from "../lib/state.svelte.js";
   import { bytes } from "../lib/format.js";
@@ -87,10 +90,33 @@
     off: ["neutral", "not running"],
   };
   const on = $derived(daemon?.state === "running" || daemon?.state === "asleep");
+  let tab = $state("overview");
+  const edockOn = $derived(s?.context === "edock" && s?.connected);
+
 </script>
 
 <div class="page narrow">
   <header class="page-head"><h1>Engine</h1></header>
+
+  <Tabs
+    tabs={[
+      { id: "overview", label: "Overview" },
+      { id: "resources", label: "Resources", disabled: !edockOn },
+      { id: "domains", label: "Domains", disabled: !edockOn },
+      { id: "builds", label: "Builds & import", disabled: !edockOn },
+    ]}
+    bind:value={tab}
+    label="Engine"
+  >
+    {#snippet panel(id)}
+      {#if id === "resources"}
+        <div class="tab-cards"><EngineResources /></div>
+      {:else if id === "domains"}
+        <div class="tab-cards"><EngineDomains /></div>
+      {:else if id === "builds"}
+        <div class="tab-cards"><EngineBuilds /></div>
+      {:else}
+      <div class="tab-cards">
 
   <Card title="eDock engine">
     <div class="engine-card">
@@ -204,4 +230,8 @@
   {:else if s?.error}
     <Callout variant="warning" title="{s.context} isn't answering">{s.error}</Callout>
   {/if}
+      </div>
+      {/if}
+    {/snippet}
+  </Tabs>
 </div>
