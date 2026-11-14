@@ -3,6 +3,55 @@
 
 import { invoke } from "@elyra/runtime";
 
+export type BuildDetail = {
+	builder: string,
+	id: string,
+	name: string,
+	status: string,
+	started: string,
+	completed: string,
+	context: string,
+	dockerfile: string,
+	total: number,
+	cached: number,
+	/**  Why it failed: the message, the step, and the Dockerfile lines. */
+	error: string | null,
+	error_step: string | null,
+	error_source: string | null,
+	steps: BuildStep[],
+	warnings: BuildWarning[],
+};
+
+export type BuildRow = {
+	builder: string,
+	id: string,
+	/**  The build's name (its tag, or its Dockerfile's folder). */
+	name: string,
+	/**  Completed, Running, Error or Canceled. */
+	status: string,
+	/**  RFC 3339. */
+	started: string,
+	completed: string,
+	steps: number,
+	cached: number,
+};
+
+export type BuildStep = {
+	name: string,
+	started: string,
+	completed: string,
+	cached: boolean,
+	error: string | null,
+	log: string,
+};
+
+export type BuildWarning = {
+	text: string,
+	detail: string,
+	url: string,
+	line: number | null,
+};
+
 export type BuilderInfo = {
 	/**  The cache's cap in GB; none: the default. */
 	cache_gb: number | null,
@@ -186,6 +235,15 @@ export type FileChoice =
 /**  A folder picked in an open dialog: a new file may be written in it. */
 "folder";
 
+export type Forward = {
+	/**  What it reaches: `namespace/name`. */
+	target: string,
+	ip: string,
+	port: number,
+	/**  `127.0.0.1:<local>` on the Mac. */
+	local: number,
+};
+
 export type ImageLayers = {
 	platform: string,
 	size: number,
@@ -332,6 +390,20 @@ export type PortRow = {
 	proto: string,
 };
 
+export type ProxyInfo = {
+	/**  "system" (macOS's settings), "custom" or "none". */
+	mode: string,
+	http: string,
+	https: string,
+	no_proxy: string,
+	/**  New containers get HTTP_PROXY, HTTPS_PROXY and NO_PROXY too. */
+	containers: boolean,
+	/**  What's used now (the system's, when the mode is "system"). */
+	effective_http: string | null,
+	effective_https: string | null,
+	pac: boolean,
+};
+
 export type ScanResult = {
 	scanned: number,
 	packages: number,
@@ -423,6 +495,15 @@ export type Vuln = {
 };
 
 export const api = {
+  build_detail(builder: string, id: string): Promise<BuildDetail> {
+    return invoke("build_detail", builder, id);
+  },
+  /**
+   * Take a build off the history.
+   */
+  build_remove(builder: string, id: string): Promise<null> {
+    return invoke("build_remove", builder, id);
+  },
   builder_info(): Promise<BuilderInfo> {
     return invoke("builder_info");
   },
@@ -438,6 +519,9 @@ export const api = {
    */
   builder_set(cache_gb: number | null, idle_secs: number): Promise<BuilderInfo> {
     return invoke("builder_set", cache_gb, idle_secs);
+  },
+  builds_list(): Promise<BuildRow[]> {
+    return invoke("builds_list");
   },
   /**
    * `edock setup`: the `edock` docker context, `docker` and `edock` on PATH
@@ -661,6 +745,19 @@ export const api = {
     return invoke("k8s_exec_start", namespace, pod, container, cols, rows);
   },
   /**
+   * Reach a ClusterIP service (or a pod) from the Mac: a port on
+   * 127.0.0.1 forwarding to `ip:port` in the cluster.
+   */
+  k8s_forward(target: string, ip: string, port: number): Promise<Forward> {
+    return invoke("k8s_forward", target, ip, port);
+  },
+  /**
+   * The forwards this app opened that are still open.
+   */
+  k8s_forwards(): Promise<Forward[]> {
+    return invoke("k8s_forwards");
+  },
+  /**
    * Every pod and service, in every namespace.
    */
   k8s_items(): Promise<K8sItems> {
@@ -687,6 +784,9 @@ export const api = {
   },
   k8s_status(): Promise<K8sStatus> {
     return invoke("k8s_status");
+  },
+  k8s_unforward(local: number): Promise<null> {
+    return invoke("k8s_unforward", local);
   },
   /**
    * Follow a container's log, from its last `tail` lines. Lines arrive on
@@ -738,6 +838,15 @@ export const api = {
    */
   project_action(project: string, action: string): Promise<null> {
     return invoke("project_action", project, action);
+  },
+  /**
+   * The proxy for pulls, pushes and logins (and, when chosen, containers).
+   */
+  proxy_info(): Promise<ProxyInfo> {
+    return invoke("proxy_info");
+  },
+  proxy_set(mode: string, http: string, https: string, no_proxy: string, containers: boolean): Promise<ProxyInfo> {
+    return invoke("proxy_set", mode, http, https, no_proxy, containers);
   },
   /**
    * Follow a container's CPU, memory, network and disk, about once a
@@ -793,6 +902,18 @@ export const api = {
    */
   volumes_prune(): Promise<number> {
     return invoke("volumes_prune");
+  },
+  /**
+   * The welcome was done or skipped.
+   */
+  welcome_done(): Promise<null> {
+    return invoke("welcome_done");
+  },
+  /**
+   * Whether to show the welcome: the first time the app opens.
+   */
+  welcome_needed(): Promise<boolean> {
+    return invoke("welcome_needed");
   },
   /**
    * Show the main window (from the menu bar's popover), on `path` when

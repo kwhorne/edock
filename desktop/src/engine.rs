@@ -190,6 +190,9 @@ pub fn list_contexts() -> Vec<Context> {
 #[derive(Default, Serialize, Deserialize)]
 pub struct Settings {
     pub context: Option<String>,
+    /// The welcome was shown (or skipped).
+    #[serde(default)]
+    pub onboarded: bool,
 }
 
 impl Settings {

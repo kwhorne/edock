@@ -4,6 +4,7 @@
 
 mod daemon;
 mod edock;
+mod builds;
 mod engine;
 mod images;
 mod k8s;
@@ -90,6 +91,7 @@ fn core(engine: Arc<engine::Engine>) -> App {
         .bind_as::<machines::Creating>(Arc::new(machines::Creating::default()))
         .bind_as::<images::Scanning>(Arc::new(images::Scanning::default()))
         .bind_as::<vm::Importing>(Arc::new(vm::Importing::default()))
+        .bind_as::<k8s::Forwards>(Arc::new(k8s::Forwards::default()))
         .commands(commands![
             resources::engine_status,
             resources::contexts_list,
@@ -156,6 +158,16 @@ fn core(engine: Arc<engine::Engine>) -> App {
             vm::import_list,
             vm::import_run,
             vm::diag_report,
+            vm::proxy_info,
+            vm::proxy_set,
+            k8s::k8s_forward,
+            k8s::k8s_unforward,
+            k8s::k8s_forwards,
+            builds::builds_list,
+            builds::build_detail,
+            builds::build_remove,
+            welcome_needed,
+            welcome_done,
             window_open,
         ])
 }
@@ -170,6 +182,20 @@ const UPDATE_MANIFEST: &str = "https://github.com/kwhorne/edock/releases/latest/
 /// Who signs eDock (the Developer ID's team), and its bundle id.
 const TEAM_ID: &str = "52AT44QFCM";
 const BUNDLE_ID: &str = "app.edock.app";
+
+/// Whether to show the welcome: the first time the app opens.
+#[command]
+async fn welcome_needed(_ctx: Ctx) -> bool {
+    !engine::Settings::load().onboarded
+}
+
+/// The welcome was done or skipped.
+#[command]
+async fn welcome_done(_ctx: Ctx) {
+    let mut s = engine::Settings::load();
+    s.onboarded = true;
+    s.save();
+}
 
 fn main() -> elyra::Result<()> {
     core(engine::Engine::new())

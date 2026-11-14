@@ -106,6 +106,25 @@
   const reachable = (s) => s.kind === "LoadBalancer";
 
   const kubectl = "kubectl --context edock get pods -A";
+
+  // Forwards to the Mac: a ClusterIP service reached on 127.0.0.1.
+  let forwards = $state([]);
+  async function loadForwards() {
+    forwards = await api.k8s_forwards();
+  }
+  loadForwards();
+  const fwFor = (s, p) => forwards.find((f) => f.ip === s.cluster_ip && f.port === p.port);
+  async function forward(s, p) {
+    const f = await attempt(() => api.k8s_forward(`${s.namespace}/${s.name}`, s.cluster_ip, p.port));
+    if (f) {
+      await loadForwards();
+      toast(`${s.name}:${p.port} is on localhost:${f.local}`, { variant: "success" });
+    }
+  }
+  async function unforward(f) {
+    await attempt(() => api.k8s_unforward(f.local));
+    loadForwards();
+  }
 </script>
 
 <div class="page">
@@ -240,8 +259,15 @@
                 {#each row.ports as p (`${p.port}/${p.protocol}`)}
                   {#if reachable(row)}
                     <button class="port" title="Open http://localhost:{p.port}" onclick={() => shell.openExternal(`http://localhost:${p.port}`)}>{p.port}<span class="muted">→{p.target}</span></button>
+                  {:else if fwFor(row, p)}
+                    {@const f = fwFor(row, p)}
+                    <button class="port" title="Open http://localhost:{f.local}" onclick={() => shell.openExternal(`http://localhost:${f.local}`)}>localhost:{f.local}<span class="muted">→{p.port}</span></button>
+                    <button class="icon-btn" title="Stop forwarding" onclick={() => unforward(f)}><Icon name="stop" size={12} /></button>
                   {:else}
                     <span class="mono port-text">{p.port}{p.node_port ? `:${p.node_port}` : ""}/{p.protocol}</span>
+                    {#if p.protocol === "TCP" && row.cluster_ip && row.cluster_ip !== "None"}
+                      <button class="ghost-btn" title="Reach it from the Mac" onclick={() => forward(row, p)}>Forward</button>
+                    {/if}
                   {/if}
                 {/each}
               {:else if column.key === "cluster_ip" || column.key === "name"}

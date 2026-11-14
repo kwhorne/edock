@@ -7,6 +7,7 @@
   import EngineResources from "../lib/EngineResources.svelte";
   import EngineDomains from "../lib/EngineDomains.svelte";
   import EngineBuilds from "../lib/EngineBuilds.svelte";
+  import EngineProxy from "../lib/EngineProxy.svelte";
   import { api } from "../bindings";
   import { engine, changes, refreshEngine, useContext, attempt } from "../lib/state.svelte.js";
   import { bytes } from "../lib/format.js";
@@ -90,7 +91,11 @@
     off: ["neutral", "not running"],
   };
   const on = $derived(daemon?.state === "running" || daemon?.state === "asleep");
+  let { query } = $props();
   let tab = $state("overview");
+  $effect(() => {
+    if (query?.tab) tab = query.tab;
+  });
   const edockOn = $derived(s?.context === "edock" && s?.connected);
 
 </script>
@@ -102,7 +107,7 @@
     tabs={[
       { id: "overview", label: "Overview" },
       { id: "resources", label: "Resources", disabled: !edockOn },
-      { id: "domains", label: "Domains", disabled: !edockOn },
+      { id: "domains", label: "Network", disabled: !edockOn },
       { id: "builds", label: "Builds & import", disabled: !edockOn },
     ]}
     bind:value={tab}
@@ -112,7 +117,7 @@
       {#if id === "resources"}
         <div class="tab-cards"><EngineResources /></div>
       {:else if id === "domains"}
-        <div class="tab-cards"><EngineDomains /></div>
+        <div class="tab-cards"><EngineDomains /><EngineProxy /></div>
       {:else if id === "builds"}
         <div class="tab-cards"><EngineBuilds /></div>
       {:else}

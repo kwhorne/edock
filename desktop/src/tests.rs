@@ -210,6 +210,21 @@ async fn kubernetes() {
     // Names that aren't Kubernetes names never reach kubectl.
     assert!(app.invoke_err("k8s_pod_delete", ("default".to_string(), "--all".to_string())).await.contains("isn't a Kubernetes name"));
 
+    // Forward the ClusterIP service to the Mac: it answers there.
+    let svc = loop {
+        let items: K8sItems = app.invoke("k8s_items", ()).await.unwrap();
+        if let Some(s) = items.services.iter().find(|s| s.name == "web" && !s.cluster_ip.is_empty()) { break s.clone(); }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let fw: crate::k8s::Forward = app.invoke("k8s_forward", ("default/web".to_string(), svc.cluster_ip.clone(), 8080u32)).await.unwrap();
+    let curl = |port: u32| std::process::Command::new("curl").args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5", &format!("http://127.0.0.1:{port}/")]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    assert_eq!(curl(fw.local), "200", "the forward didn't answer");
+    let listed: Vec<crate::k8s::Forward> = app.invoke("k8s_forwards", ()).await.unwrap();
+    assert!(listed.iter().any(|f| f.local == fw.local && f.target == "default/web"));
+    assert!(app.invoke_err("k8s_forward", ("x".to_string(), "8.8.8.8".to_string(), 53u32)).await.contains("Kubernetes"));
+    let _: () = app.invoke("k8s_unforward", (fw.local,)).await.unwrap();
+    assert_ne!(curl(fw.local), "200");
+
     // Restart the deployment, then delete the pod: a new one takes its place.
     let _: () = app.invoke("k8s_rollout_restart", ("default".to_string(), "web".to_string())).await.unwrap();
     let _: () = app.invoke("k8s_pod_delete", ("default".to_string(), pod.name.clone())).await.unwrap();
@@ -576,4 +591,86 @@ async fn resources_builder_import_list_and_diagnostics() {
     let _: () = app.invoke("diag_report", (elyra::files::ChosenFile::for_saving(&out),)).await.unwrap();
     assert!(std::fs::read_to_string(&out).unwrap().contains("eDock diagnostics report"));
     let _ = std::fs::remove_file(out);
+}
+
+/// A build on eDock, then its history: listed, read step by step, removed.
+/// Its own DOCKER_CONFIG (an `edock` context and builder), so the user's
+/// ~/.docker isn't touched: `EDOCK_TEST_HOST=… EDOCK_TEST_BUILD=1` (pulls
+/// BuildKit the first time).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn a_build_and_its_history() {
+    use crate::builds::{BuildDetail, BuildRow};
+    if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) || std::env::var("EDOCK_TEST_BUILD").is_err() {
+        eprintln!("skipped: needs EDOCK_TEST_HOST on eDock's socket and EDOCK_TEST_BUILD=1");
+        return;
+    }
+    // Alone: this process's DOCKER_CONFIG changes for a while.
+    let _alone = ENGINE.write().await;
+    let home = std::env::var("HOME").unwrap();
+    let cfg = std::env::temp_dir().join(format!("edock-build-test-{}", std::process::id()));
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("config.json"), serde_json::json!({"cliPluginsExtraDirs": [format!("{home}/.docker/cli-plugins")]}).to_string()).unwrap();
+    // SAFETY: the test holds the engine lock alone; nothing else reads it now.
+    unsafe { std::env::set_var("DOCKER_CONFIG", &cfg) };
+    let docker = |args: &[&str]| {
+        let out = std::process::Command::new("docker").args(args).output().unwrap();
+        assert!(out.status.success(), "docker {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let sock = format!("host=unix://{home}/.edock/run/docker.sock");
+    docker(&["context", "create", "edock", "--docker", &sock]);
+    docker(&["buildx", "create", "--name", "edock-build", "--driver", "docker-container", "--driver-opt", "default-load=true", "edock"]);
+    let dir = cfg.join("app");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Dockerfile"), "FROM alpine:3.20\nRUN echo built-by-edock-test > /hello\n").unwrap();
+    docker(&["--context", "edock", "buildx", "build", "--builder", "edock-build", "--load", "-t", "edock-build-test:1", dir.to_str().unwrap()]);
+
+    let app = app();
+    let rows: Vec<BuildRow> = app.invoke("builds_list", ()).await.unwrap();
+    let b = rows.iter().find(|r| r.builder == "edock-build").expect("the build is in the history");
+    assert_eq!(b.status, "Completed");
+    let d: BuildDetail = app.invoke("build_detail", (b.builder.clone(), b.id.clone())).await.unwrap();
+    assert!(d.steps.iter().any(|s| s.name.contains("RUN echo built-by-edock-test")), "{:?}", d.steps.iter().map(|s| &s.name).collect::<Vec<_>>());
+    assert!(d.error.is_none());
+    assert!(app.invoke_err("build_detail", ("edock-build".to_string(), "../x".to_string())).await.contains("isn't a build"));
+    let _: () = app.invoke("build_remove", (b.builder.clone(), b.id.clone())).await.unwrap();
+    let rows: Vec<BuildRow> = app.invoke("builds_list", ()).await.unwrap();
+    assert!(!rows.iter().any(|r| r.id == b.id));
+
+    // Leave nothing: the builder (its container), the image, the config.
+    let _ = std::process::Command::new("docker").args(["buildx", "rm", "edock-build"]).output();
+    let _ = std::process::Command::new("docker").args(["--context", "edock", "rmi", "edock-build-test:1"]).output();
+    unsafe { std::env::remove_var("DOCKER_CONFIG") };
+    let _ = std::fs::remove_dir_all(&cfg);
+}
+
+/// The proxy setting, changed and put back: `EDOCK_TEST_HOST=…`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn the_proxy_setting() {
+    use crate::vm::ProxyInfo;
+    if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
+        eprintln!("skipped: needs EDOCK_TEST_HOST on eDock's socket");
+        return;
+    }
+    let _alone = ENGINE.write().await;
+    let file = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".edock/proxy.json");
+    let had = std::fs::read(&file).ok();
+    let app = app();
+    let before: ProxyInfo = app.invoke("proxy_info", ()).await.unwrap();
+    let set: ProxyInfo = app
+        .invoke("proxy_set", ("custom".to_string(), "http://proxy.test:3128".to_string(), String::new(), "localhost,.local".to_string(), false))
+        .await
+        .unwrap();
+    assert_eq!((set.mode.as_str(), set.http.as_str(), set.no_proxy.as_str()), ("custom", "http://proxy.test:3128", "localhost,.local"));
+    assert_eq!(set.effective_http.as_deref(), Some("http://proxy.test:3128"));
+    assert!(app.invoke_err("proxy_set", ("sometimes".to_string(), String::new(), String::new(), String::new(), false)).await.contains("mode"));
+    let _: ProxyInfo = app.invoke("proxy_set", (before.mode, before.http, before.https, before.no_proxy, before.containers)).await.unwrap();
+    match had {
+        Some(bytes) => std::fs::write(&file, bytes).unwrap(),
+        None => {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
 }

@@ -10,6 +10,9 @@ export const routes = {
   "/engine": () => import("./pages/Engine.svelte"),
   "/machines": () => import("./pages/Machines.svelte"),
   "/machines/:name": () => import("./pages/Machine.svelte"),
+  "/builds": () => import("./pages/Builds.svelte"),
+  "/builds/:builder/:id": () => import("./pages/Build.svelte"),
+  "/welcome": () => import("./pages/Welcome.svelte"),
   "/kubernetes": () => import("./pages/Kubernetes.svelte"),
   "/kubernetes/:namespace/:pod": () => import("./pages/Pod.svelte"),
   // The menu bar item's popover.

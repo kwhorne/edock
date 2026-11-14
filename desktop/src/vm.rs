@@ -152,6 +152,52 @@ pub async fn builder_prune(ctx: Ctx) -> Result<f64, String> {
     Ok(n(&v["SpaceReclaimed"]))
 }
 
+// ── Proxy ──────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, specta::Type)]
+pub struct ProxyInfo {
+    /// "system" (macOS's settings), "custom" or "none".
+    pub mode: String,
+    pub http: String,
+    pub https: String,
+    pub no_proxy: String,
+    /// New containers get HTTP_PROXY, HTTPS_PROXY and NO_PROXY too.
+    pub containers: bool,
+    /// What's used now (the system's, when the mode is "system").
+    pub effective_http: Option<String>,
+    pub effective_https: Option<String>,
+    pub pac: bool,
+}
+
+fn proxy_from(v: &Value) -> ProxyInfo {
+    let st = &v["settings"];
+    let e = &v["effective"];
+    ProxyInfo {
+        mode: st["mode"].as_str().unwrap_or("system").into(),
+        http: st["http"].as_str().unwrap_or("").into(),
+        https: st["https"].as_str().unwrap_or("").into(),
+        no_proxy: st["no_proxy"].as_str().unwrap_or("").into(),
+        containers: st["containers"] == true,
+        effective_http: e["http"].as_str().map(str::to_owned),
+        effective_https: e["https"].as_str().map(str::to_owned),
+        pac: e["pac"] == true,
+    }
+}
+
+/// The proxy for pulls, pushes and logins (and, when chosen, containers).
+#[command]
+pub async fn proxy_info(ctx: Ctx) -> Result<ProxyInfo, String> {
+    on_edock(&ctx)?;
+    Ok(proxy_from(&answer(engine_request("GET", "/edock/proxy").await)?))
+}
+
+#[command]
+pub async fn proxy_set(ctx: Ctx, mode: String, http: String, https: String, no_proxy: String, containers: bool) -> Result<ProxyInfo, String> {
+    on_edock(&ctx)?;
+    let body = json!({"mode": mode, "http": http, "https": https, "no_proxy": no_proxy, "containers": containers});
+    Ok(proxy_from(&answer(engine_call("POST", "/edock/proxy", Some(&body)).await)?))
+}
+
 // ── Import from another engine ─────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, specta::Type)]

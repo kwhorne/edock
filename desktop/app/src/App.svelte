@@ -15,9 +15,11 @@
   startWatching();
 
   // The main window starts hidden (eDock lives in the menu bar); show it
-  // on the first launch of a session.
+  // on the first launch of a session, with the welcome the very first time.
   $effect(() => {
-    if (!quick) appWindow.show();
+    if (quick) return;
+    appWindow.show();
+    api.welcome_needed().then((first) => first && navigate("/welcome"));
   });
 
   // The menu bar item's menu, and pages the popover asks for. Handlers,
@@ -40,6 +42,8 @@
     { id: "go.volumes", title: "Volumes", action: () => navigate("/volumes") },
     { id: "go.networks", title: "Networks", action: () => navigate("/networks") },
     { id: "go.machines", title: "Linux machines", action: () => navigate("/machines") },
+    { id: "go.builds", title: "Builds", action: () => navigate("/builds") },
+    { id: "go.welcome", title: "Welcome: set eDock up", action: () => navigate("/welcome") },
     { id: "go.kubernetes", title: "Kubernetes", action: () => navigate("/kubernetes") },
     { id: "go.engine", title: "Engine & contexts", action: () => navigate("/engine") },
     { id: "app.update", title: "Check for updates", action: checkForUpdates },
@@ -105,6 +109,10 @@
         <NavItem path="/networks">
           {#snippet icon()}<Icon name="network" />{/snippet}
           Networks
+        </NavItem>
+        <NavItem path="/builds">
+          {#snippet icon()}<Icon name="hammer" />{/snippet}
+          Builds
         </NavItem>
         <NavItem path="/machines">
           {#snippet icon()}<Icon name="monitor" />{/snippet}
