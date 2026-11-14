@@ -4,6 +4,7 @@
   import { appWindow, channel, navigate, registerCommands, route } from "@elyra/runtime";
   import { NavItem, Select, Sidebar, Toolbar } from "@elyra/ui";
   import Icon from "./lib/Icon.svelte";
+  import { checkForUpdates } from "./lib/updates.js";
   import { engine, startWatching, useContext, attempt } from "./lib/state.svelte.js";
   import { getTheme, applyTheme } from "./theme.js";
   import { api } from "./bindings";
@@ -26,6 +27,7 @@
       if (id === "open") appWindow.show().then(() => appWindow.focus());
       if (id === "engine:start") attempt(() => api.daemon_start(), "eDock engine started");
       if (id === "engine:stop") attempt(() => api.daemon_stop(), "eDock engine stopped");
+      if (id === "update") appWindow.show().then(checkForUpdates);
     });
     channel("navigate").subscribe((path) => {
       if (path) navigate(path);
@@ -37,7 +39,9 @@
     { id: "go.images", title: "Images", action: () => navigate("/images") },
     { id: "go.volumes", title: "Volumes", action: () => navigate("/volumes") },
     { id: "go.networks", title: "Networks", action: () => navigate("/networks") },
+    { id: "go.kubernetes", title: "Kubernetes", action: () => navigate("/kubernetes") },
     { id: "go.engine", title: "Engine & contexts", action: () => navigate("/engine") },
+    { id: "app.update", title: "Check for updates", action: checkForUpdates },
     { id: "engine.start", title: "Start eDock engine", action: () => attempt(() => api.daemon_start(), "eDock engine started") },
   ]);
 
@@ -57,9 +61,11 @@
 {:else}
   <div class="window">
     <Toolbar title="eDock">
-      <span class="engine-pill" class:up={status?.connected} title={status?.error ?? status?.host ?? ""}>
+      <span class="engine-pill" class:up={status?.connected && status?.state !== "stopped"} title={status?.error ?? status?.host ?? ""}>
         <span class="dot"></span>
-        {#if status?.connected}
+        {#if status?.state === "stopped"}
+          {status.context}: stopped
+        {:else if status?.connected}
           {status.name || status.context} · {status.version}
         {:else if status}
           {status.context}: not running
@@ -98,6 +104,10 @@
         <NavItem path="/networks">
           {#snippet icon()}<Icon name="network" />{/snippet}
           Networks
+        </NavItem>
+        <NavItem path="/kubernetes">
+          {#snippet icon()}<Icon name="helm" />{/snippet}
+          Kubernetes
         </NavItem>
         {#snippet footer()}
           <NavItem path="/engine">

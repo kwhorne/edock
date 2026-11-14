@@ -4,7 +4,8 @@
   import { onDestroy, tick } from "svelte";
   import { api } from "../bindings";
 
-  let { container } = $props();
+  // A container's log, or what `start(tail, timestamps)` opens (a pod's).
+  let { container = null, start: open = null } = $props();
 
   const MAX = 5000;
   let lines = $state([]);
@@ -24,7 +25,7 @@
     lines = [];
     ended = false;
     const mine = ++seq;
-    const id = await api.logs_follow(container, 500, timestamps);
+    const id = open ? await open(500, timestamps) : await api.logs_follow(container, 500, timestamps);
     if (mine !== seq) return api.stream_stop(id);
     streamId = id;
     unsub = channel(`logs:${id}`).subscribe(async (batch) => {

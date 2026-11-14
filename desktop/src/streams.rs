@@ -79,20 +79,29 @@ pub struct LogBatch {
 #[command]
 pub async fn logs_follow(ctx: Ctx, container: String, tail: u32, timestamps: bool) -> Result<u32, String> {
     let docker = ctx.get::<Engine>().docker()?;
+    let o = q::LogsOptionsBuilder::default()
+        .follow(true)
+        .stdout(true)
+        .stderr(true)
+        .timestamps(timestamps)
+        .tail(&tail.to_string())
+        .build();
+    let logs = docker.logs(&container, Some(o));
+    Ok(follow_lines(&ctx, logs) as u32)
+}
+
+/// Send what a stream of output says, line by line, in batches on
+/// `logs:<id>`: a container's log, or `kubectl logs -f`'s.
+pub(crate) fn follow_lines<S>(ctx: &Ctx, mut logs: S) -> u64
+where
+    S: futures_util::Stream<Item = Result<LogOutput, bollard::errors::Error>> + Send + Unpin + 'static,
+{
     let bus = ctx.get::<EventBus>();
     let streams = ctx.get::<Streams>();
     let id = streams.id();
     let channel = format!("logs:{id}");
     let s2 = streams.clone();
     let task = tokio::spawn(async move {
-        let o = q::LogsOptionsBuilder::default()
-            .follow(true)
-            .stdout(true)
-            .stderr(true)
-            .timestamps(timestamps)
-            .tail(&tail.to_string())
-            .build();
-        let mut logs = docker.logs(&container, Some(o));
         let mut pending: Vec<LogLine> = vec![];
         // A line may come in pieces: keep the unfinished end.
         let mut partial = String::new();
@@ -135,7 +144,7 @@ pub async fn logs_follow(ctx: Ctx, container: String, tail: u32, timestamps: boo
         s2.done(id);
     });
     streams.keep(id, task.abort_handle());
-    Ok(id as u32)
+    id
 }
 
 // ── Stats ──────────────────────────────────────────────────────────────
@@ -244,16 +253,22 @@ fn utf8_split(buf: &mut Vec<u8>) -> String {
 /// `exec_input`.
 #[command]
 pub async fn exec_start(ctx: Ctx, container: String, cols: u32, rows: u32, command: Option<String>) -> Result<u32, String> {
-    let docker = ctx.get::<Engine>().docker()?;
-    let bus = ctx.get::<EventBus>();
-    let streams = ctx.get::<Streams>();
     let cmd = match command.filter(|c| !c.trim().is_empty()) {
         Some(c) => vec!["/bin/sh".to_owned(), "-c".into(), c],
         None => vec!["/bin/sh".to_owned(), "-c".into(), "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi".into()],
     };
+    open_terminal(&ctx, &container, cmd, cols, rows).await
+}
+
+/// Run `cmd` in `container` on a terminal, for the page's xterm: a shell,
+/// or `kubectl exec -it` in the Kubernetes node.
+pub(crate) async fn open_terminal(ctx: &Ctx, container: &str, cmd: Vec<String>, cols: u32, rows: u32) -> Result<u32, String> {
+    let docker = ctx.get::<Engine>().docker()?;
+    let bus = ctx.get::<EventBus>();
+    let streams = ctx.get::<Streams>();
     let exec = docker
         .create_exec(
-            &container,
+            container,
             CreateExecOptions {
                 attach_stdin: Some(true),
                 attach_stdout: Some(true),

@@ -23,7 +23,9 @@
 #                   engine/Cargo.toml first (otherwise all three must already agree)
 #   --skip-engine   reuse engine/target/edock-engine
 #   --dmg           also make the .dmg
-#   --notarize      sign with EDOCK_SIGN_ID, notarize and staple (implies --dmg)
+#   --notarize      sign with EDOCK_SIGN_ID, notarize and staple (implies --dmg),
+#                   and make the update: dist/eDock-<version>-<arch>.zip and
+#                   dist/latest.json, signed with the update key
 #
 # Environment:
 #   EDOCK_SIGN_ID        "Developer ID Application: Name (TEAMID)", or its SHA-1;
@@ -32,6 +34,10 @@
 #                        `xcrun notarytool store-credentials <profile> --apple-id … --team-id …`
 #   or, for CI, an App Store Connect API key:
 #   EDOCK_NOTARY_KEY (path to the .p8), EDOCK_NOTARY_KEY_ID, EDOCK_NOTARY_ISSUER
+#   EDOCK_UPDATE_KEY     the update signing key (default ~/.config/edock/update-key;
+#                        see scripts/update-key)
+#   EDOCK_RELEASE_NOTES  a Markdown file: the release's notes, shown in the update toast
+#   EDOCK_RELEASE_REPO   where releases are published (default kwhorne/edock)
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -40,6 +46,8 @@ command -v "$RATA" >/dev/null 2>&1 || RATA="$ROOT/../elyra-framework/target/rele
 SIGN_ID=${EDOCK_SIGN_ID:--}
 
 ENGINE="$ROOT/engine"
+UPDATE_KEY_TOOL="$ROOT/scripts/update-key/target/release/update-key"
+REPO=${EDOCK_RELEASE_REPO:-kwhorne/edock}
 DESKTOP="$ROOT/desktop"
 APP="$DESKTOP/target/release/bundle/eDock.app"
 DIST="$ROOT/dist"
@@ -86,6 +94,12 @@ if [ "$NOTARIZE" = 1 ]; then
   else
     die "--notarize needs EDOCK_NOTARY_PROFILE, or EDOCK_NOTARY_KEY + EDOCK_NOTARY_KEY_ID + EDOCK_NOTARY_ISSUER"
   fi
+  # The update is signed with the key whose public half the app carries.
+  (cd "$ROOT/scripts/update-key" && cargo build --release -q)
+  "$UPDATE_KEY_TOOL" public >/dev/null || die "no update key: make one with $UPDATE_KEY_TOOL keygen (once), or set EDOCK_UPDATE_KEY"
+  APP_KEY=$(sed -n 's/^const UPDATE_KEY: &str = "\(.*\)";/\1/p' "$DESKTOP/src/main.rs")
+  [ "$("$UPDATE_KEY_TOOL" public)" = "$APP_KEY" ] || die "the update key isn't the one the app trusts (UPDATE_KEY in desktop/src/main.rs)"
+  if [ -n "${EDOCK_RELEASE_NOTES:-}" ]; then [ -f "$EDOCK_RELEASE_NOTES" ] || die "EDOCK_RELEASE_NOTES: no file $EDOCK_RELEASE_NOTES"; fi
 fi
 if [ "$SIGN_ID" != "-" ]; then
   security find-identity -v -p codesigning | grep -qF "$SIGN_ID" || die "no signing identity \"$SIGN_ID\" in the keychain"
@@ -153,6 +167,18 @@ if [ "$NOTARIZE" = 1 ]; then
   notarize "$ZIP"
   rm -f "$ZIP"
   xcrun stapler staple "$APP"
+
+  # The update: the stapled app as a zip (--norsrc: AppleDouble files would
+  # break its seal), and latest.json naming it, with its SHA-256 and the
+  # update key's signature. The app finds latest.json at
+  # github.com/$REPO/releases/latest/download/latest.json.
+  mkdir -p "$DIST"
+  ZIP_NAME="eDock-$VERSION-$ARCH.zip"
+  rm -f "$DIST/$ZIP_NAME"
+  ditto -c -k --keepParent --norsrc "$APP" "$DIST/$ZIP_NAME"
+  # shellcheck disable=SC2086
+  "$UPDATE_KEY_TOOL" manifest "$VERSION" "https://github.com/$REPO/releases/download/v$VERSION/$ZIP_NAME" "$DIST/$ZIP_NAME" ${EDOCK_RELEASE_NOTES:-} > "$DIST/latest.json"
+  echo "== update: $DIST/$ZIP_NAME, $DIST/latest.json"
 fi
 
 # ── The .dmg: eDock.app and a link to /Applications ────────────────────

@@ -2,7 +2,7 @@
 
 A tiny, fast container runtime for the desktop: its own Linux VM and Docker
 Engine API (forked from [Kiri](https://github.com/libracoder/kiri), Apache-2.0),
-with a desktop app built on the [Elyra Framework](../elyra-framework).
+with a desktop app built on the [Elyra Framework](https://github.com/kwhorne/elyra-framework).
 
 ```
 docker CLI ─┐
@@ -10,10 +10,13 @@ compose ────┼─ ~/.edock/run/docker.sock ─► edock daemon ── v
 eDock app ──┘     Docker Engine API          owns the VM            clone3 → container
 ```
 
+**Documentation: [docs/](docs/README.md)**: getting started, the app, the `edock` CLI, configuration, architecture, development and releasing.
+
 | Path | What |
 |------|------|
 | `engine/` | The engine: `edock` daemon + CLI, VM, guest agent, kernel config. Fork of Kiri; see `engine/UPSTREAM.md` and `engine/NOTICE`. |
-| `desktop/` | The desktop app (Elyra: Rust + Svelte 5): containers grouped by Compose project, images, volumes, networks, live logs, stats, a terminal, docker contexts, and a menu bar item. |
+| `docs/` | The documentation. |
+| `desktop/` | The desktop app (Elyra: Rust + Svelte 5): containers grouped by Compose project, images, volumes, networks, live logs, stats, a terminal, docker contexts, Kubernetes (k3s: start/stop, pods, services, pod logs and shell), and a menu bar item. |
 
 ## Build
 
@@ -68,6 +71,7 @@ Docker Desktop, Colima or Podman (switch in the toolbar or on *Engine*).
 cd engine && cargo test
 cd desktop && cargo test -- --ignored                       # against docker's current context
 EDOCK_TEST_HOST=unix://$HOME/.edock/run/docker.sock cargo test -- --ignored   # against eDock
+# + EDOCK_TEST_K8S=1: also makes, uses and deletes a Kubernetes cluster (needs none there)
 ```
 
 When trying the engine, `EDOCK_NO_FINDER=1` skips the `~/eDock` Finder
@@ -76,5 +80,6 @@ routers off ports 80/443.
 
 ## License
 
-The engine is Apache-2.0 (Kiri's licence; keep `engine/LICENSE` and
-`engine/NOTICE`). The guest kernel is GPL-2.0.
+eDock's own code (the desktop app, scripts and docs) is [MIT](LICENSE). The
+engine is a fork of Kiri and stays Apache-2.0 (`engine/LICENSE`,
+`engine/NOTICE`). The guest kernel is GPL-2.0. See [docs/licensing.md](docs/licensing.md).

@@ -7,6 +7,8 @@ export const routes = {
   "/volumes": () => import("./pages/Volumes.svelte"),
   "/networks": () => import("./pages/Networks.svelte"),
   "/engine": () => import("./pages/Engine.svelte"),
+  "/kubernetes": () => import("./pages/Kubernetes.svelte"),
+  "/kubernetes/:namespace/:pod": () => import("./pages/Pod.svelte"),
   // The menu bar item's popover.
   "/quick": () => import("./pages/Quick.svelte"),
 };

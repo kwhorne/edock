@@ -39,6 +39,11 @@ pub struct EngineStatus {
     pub context: String,
     pub host: String,
     pub connected: bool,
+    /// "running", "asleep" (eDock's VM sleeps until needed), "stopped"
+    /// (eDock turned off with Stop) or "off" (nothing answers).
+    pub state: String,
+    /// This app's version; eDock's engine should run the same.
+    pub app_version: String,
     pub error: Option<String>,
     pub name: String,
     pub version: String,
@@ -57,6 +62,8 @@ pub async fn engine_status(ctx: Ctx) -> EngineStatus {
     let engine = ctx.get::<Engine>();
     let (context, host) = engine.context();
     let mut st = EngineStatus {
+        state: "off".into(),
+        app_version: env!("CARGO_PKG_VERSION").into(),
         context,
         host,
         connected: false,
@@ -91,11 +98,23 @@ pub async fn engine_status(ctx: Ctx) -> EngineStatus {
             st.containers = i["Containers"].as_u64().unwrap_or(0) as u32;
             st.running = i["ContainersRunning"].as_u64().unwrap_or(0) as u32;
             st.images = i["Images"].as_u64().unwrap_or(0) as u32;
+            st.state = "running".into();
         }
         Err(e) => {
             st.error = Some(err(e));
             engine.reset();
         }
+    }
+    // eDock's own engine says more than Docker's API does.
+    if st.context == crate::engine::EDOCK {
+        use crate::daemon::EngineState::*;
+        st.state = match crate::daemon::engine_state().await {
+            Off => "off",
+            Stopped => "stopped",
+            Asleep => "asleep",
+            Running => "running",
+        }
+        .into();
     }
     st
 }

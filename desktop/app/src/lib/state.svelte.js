@@ -6,7 +6,7 @@ import { api } from "../bindings";
 export const engine = $state({ status: null, contexts: [] });
 
 // One counter per kind; a page reads the one it lists in an $effect.
-export const changes = $state({ container: 0, image: 0, volume: 0, network: 0, engine: 0 });
+export const changes = $state({ container: 0, image: 0, volume: 0, network: 0, engine: 0, k8s: 0 });
 
 export async function refreshEngine() {
   try {
@@ -32,6 +32,7 @@ export function startWatching() {
       changes.image++;
       changes.volume++;
       changes.network++;
+      changes.k8s++;
       refreshEngine();
       return;
     }

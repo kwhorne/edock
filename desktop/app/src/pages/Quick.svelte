@@ -30,12 +30,12 @@
 
 <div class="quick">
   <header class="quick-head">
-    <span class="dot" class:on={s?.connected}></span>
+    <span class="dot" class:on={s?.connected && s?.state !== "stopped"}></span>
     <strong>eDock</strong>
-    <span class="muted">{s?.connected ? `${s.context} · ${running.length} running` : `${s?.context ?? ""} not running`}</span>
+    <span class="muted">{s?.state === "stopped" ? `${s.context} stopped` : s?.connected ? `${s.context} · ${running.length} running` : `${s?.context ?? ""} not running`}</span>
   </header>
 
-  {#if !s?.connected && s?.context === "edock"}
+  {#if s?.context === "edock" && (!s?.connected || s?.state === "stopped")}
     <div class="quick-empty">
       <Button size="sm" variant="primary" onclick={() => attempt(() => api.daemon_start(), "eDock engine started")}>Start engine</Button>
     </div>

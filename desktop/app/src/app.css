@@ -182,3 +182,27 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: v
 .link { background: none; border: none; color: inherit; text-align: left; padding: 0; font-size: 13px; }
 .link:hover { color: var(--elyra-accent); }
 .quick-foot { display: flex; align-items: center; padding: 6px 8px; border-top: 1px solid var(--elyra-border); }
+
+/* ── Kubernetes ─────────────────────────────────────────────────────── */
+.progress {
+  margin: 0; max-height: 280px; overflow: auto; font-family: var(--elyra-font-mono); font-size: 12px;
+  color: var(--elyra-muted); white-space: pre-wrap;
+}
+.callout-action { margin-top: 8px; }
+.start-row { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.k8s-facts { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+.k8s-facts > div { display: flex; align-items: center; gap: 8px; }
+.k8s-facts .muted { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+.copy-cmd {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--elyra-border); background: var(--elyra-inset);
+  color: var(--elyra-text); border-radius: var(--elyra-radius); padding: 2px 8px;
+}
+.copy-cmd:hover { border-color: var(--elyra-accent); }
+.k8s-bar { display: flex; align-items: center; gap: 14px; }
+.k8s-bar > :first-child { min-width: 200px; }
+.port-text { margin-right: 6px; color: var(--elyra-muted); }
+
+.engine-card { display: flex; flex-direction: column; gap: 6px; }
+.engine-card p { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.version-row { display: flex; align-items: center; gap: 8px; margin: 4px 0 0; }
+.engine-card p.text { display: block; line-height: 1.55; }

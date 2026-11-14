@@ -6,7 +6,8 @@
   import "@xterm/xterm/css/xterm.css";
   import { api } from "../bindings";
 
-  let { container } = $props();
+  // A shell in a container, or what `start(cols, rows)` opens (a pod's).
+  let { container = null, start = null } = $props();
 
   let el;
   let term;
@@ -24,7 +25,7 @@
     ended = false;
     term?.reset();
     fit.fit();
-    const id = await api.exec_start(container, term.cols, term.rows, null);
+    const id = start ? await start(term.cols, term.rows) : await api.exec_start(container, term.cols, term.rows, null);
     sessionId = id;
     unsub = channel(`exec:${id}`).subscribe((chunk) => {
       if (!chunk) return;

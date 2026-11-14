@@ -1,4 +1,8 @@
 <script>
+  import { channel, confirm, toast } from "@elyra/runtime";
+  import { onDestroy } from "svelte";
+  import { Checkbox } from "@elyra/ui";
+  import { checkForUpdates } from "../lib/updates.js";
   import { Badge, Button, Callout, Card } from "@elyra/ui";
   import { api } from "../bindings";
   import { engine, changes, refreshEngine, useContext, attempt } from "../lib/state.svelte.js";
@@ -24,6 +28,8 @@
   }
 
   async function stop() {
+    const ok = await confirm("Stop eDock's engine? Its containers stop, and nothing runs until you start it again.", { confirmLabel: "Stop" });
+    if (!ok) return;
     busy = "stop";
     await attempt(() => api.daemon_stop(), "eDock engine stopped");
     busy = null;
@@ -31,21 +37,73 @@
   }
 
   const s = $derived(engine.status);
+
+  // After an update the engine that ran keeps the old version until it
+  // starts again (a checkout's engine says 0.0.0: no comparing then).
+  const outdated = $derived(
+    s?.context === "edock" && s?.connected && s.version && s.version !== s.app_version && s.version !== "0.0.0" && s.app_version !== "0.0.0",
+  );
+
+  async function restart() {
+    busy = "restart";
+    await attempt(() => api.daemon_restart(), `The engine runs ${s.app_version} now`);
+    busy = null;
+    await Promise.all([loadDaemon(), refreshEngine()]);
+  }
+
+  // The command line: `edock setup`.
+  let cli = $state(null);
+  let useAsCurrent = $state(true);
+  let setupLines = $state([]);
+  async function loadCli() {
+    cli = await api.cli_status();
+  }
+  $effect(() => {
+    changes.engine;
+    loadCli();
+  });
+  const offSetup = channel("setup:progress").subscribe((p) => {
+    if (!p) return;
+    if (p.line) setupLines = [...setupLines.slice(-30), p.line];
+    if (p.done) {
+      if (p.error) toast(p.error, { variant: "danger", duration: 8000 });
+      else toast("docker and edock are set up. Open a new terminal to use them.", { variant: "success" });
+      loadCli();
+      refreshEngine();
+    }
+  });
+  onDestroy(offSetup);
+  async function setupCli() {
+    setupLines = [];
+    await attempt(() => api.cli_setup(useAsCurrent));
+    await loadCli();
+  }
+  const cliReady = $derived(cli?.docker && cli?.context);
+  // Off: no daemon. Stopped: turned off with Stop. Asleep: on, its VM idle.
+  const STATE = {
+    running: ["success", "running"],
+    asleep: ["accent", "running · VM asleep"],
+    stopped: ["warning", "stopped"],
+    off: ["neutral", "not running"],
+  };
+  const on = $derived(daemon?.state === "running" || daemon?.state === "asleep");
 </script>
 
 <div class="page narrow">
   <header class="page-head"><h1>Engine</h1></header>
 
   <Card title="eDock engine">
+    <div class="engine-card">
     {#if daemon}
       <p>
-        {#if daemon.running}
-          <Badge variant="success">running</Badge>
-        {:else}
-          <Badge>stopped</Badge>
-        {/if}
+        <Badge variant={STATE[daemon.state][0]}>{STATE[daemon.state][1]}</Badge>
         <span class="muted mono">~/.edock/run/docker.sock</span>
       </p>
+      {#if daemon.state === "asleep"}
+        <p class="muted">The VM sleeps while nothing needs it, and wakes in a fraction of a second.</p>
+      {:else if daemon.state === "stopped"}
+        <p class="muted">Stopped: containers don't run until you start it again.</p>
+      {/if}
       {#if daemon.binary}
         <p class="muted">Engine: <span class="mono">{daemon.binary}</span></p>
       {:else}
@@ -55,14 +113,55 @@
         </Callout>
       {/if}
     {/if}
+    </div>
     {#snippet actions()}
-      {#if daemon?.running}
-        <Button size="sm" loading={busy === "stop"} disabled={!daemon?.ours} onclick={stop}>Stop</Button>
-      {:else}
-        <Button size="sm" variant="primary" loading={busy === "start"} disabled={!daemon?.binary} onclick={start}>Start</Button>
+      {#if on}
+        <Button size="sm" loading={busy === "stop"} onclick={stop}>Stop</Button>
+      {:else if daemon}
+        <!-- A stopped engine runs already: Start needs no binary for it. -->
+        <Button size="sm" variant="primary" loading={busy === "start"} disabled={daemon.state === "off" && !daemon.binary} onclick={start}>Start</Button>
       {/if}
     {/snippet}
   </Card>
+
+  {#if outdated}
+    <Callout variant="warning" title="The engine runs an older eDock">
+      eDock was updated to {s.app_version}, and the engine still runs {s.version}. Restart it to run the new one;
+      running containers stop and start again.
+      <div class="callout-action"><Button size="sm" variant="primary" loading={busy === "restart"} onclick={restart}>Restart engine</Button></div>
+    </Callout>
+  {/if}
+
+  <Card title="Command line">
+    <div class="engine-card">
+      {#if cli?.busy || setupLines.length}
+        <pre class="progress">{setupLines.join("\n") || "…"}</pre>
+      {/if}
+      {#if cliReady}
+        <p><Badge variant="success">set up</Badge> <code>docker</code> and <code>edock</code> are in <span class="mono">~/.edock/bin</span>, with the <code>edock</code> context.</p>
+        {#if !cli.agent}<p class="muted">The engine doesn't start at login (no LaunchAgent).</p>{/if}
+      {:else if cli && !cli.busy}
+        <p class="muted text">
+          Use eDock from a terminal: the <code>docker</code> CLI with Compose and buildx (downloaded once, checked
+          against their published checksums), <code>edock</code>, an <code>edock</code> docker context, and the engine
+          started at login. No package manager needed.
+        </p>
+        <label class="toggle"><Checkbox bind:checked={useAsCurrent} /> Make <code>edock</code> docker's current context</label>
+      {/if}
+    </div>
+    {#snippet actions()}
+      {#if cli && !cliReady}
+        <Button size="sm" variant="primary" loading={cli.busy} disabled={!daemon?.binary} onclick={setupCli}>Set up</Button>
+      {:else if cliReady}
+        <Button size="sm" loading={cli.busy} onclick={setupCli}>Set up again</Button>
+      {/if}
+    {/snippet}
+  </Card>
+
+  <p class="version-row muted">
+    eDock {s?.app_version ?? ""}
+    <button class="ghost-btn" onclick={checkForUpdates}>Check for updates</button>
+  </p>
 
   <h2>Contexts</h2>
   <p class="muted">
@@ -80,7 +179,11 @@
           {#if c.description}<div class="muted">{c.description}</div>{/if}
         </div>
         {#if s?.context === c.name}
-          <Badge variant={s.connected ? "success" : "warning"}>{s.connected ? "connected" : "not answering"}</Badge>
+          {#if s.state === "stopped"}
+            <Badge variant="warning">stopped</Badge>
+          {:else}
+            <Badge variant={s.connected ? "success" : "warning"}>{s.connected ? "connected" : "not answering"}</Badge>
+          {/if}
         {:else}
           <Button size="sm" onclick={() => useContext(c.name)}>Use</Button>
         {/if}

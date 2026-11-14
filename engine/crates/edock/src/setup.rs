@@ -515,10 +515,21 @@ fn bundled_cli(contents: &Path) -> io::Result<()> {
     }
     let mut bin = contents.join("Resources/bin");
     if !bin.join("docker").is_file() {
-        match crate::tools::dir() {
-            Ok(d) if crate::tools::installed() => bin = d,
-            _ => return Ok(()),
+        // eDock.app carries no docker CLI: fetch the pinned docker, Compose
+        // and buildx once, each checked against its SHA-256 (src/tools.rs),
+        // so no package manager is needed.
+        if !crate::tools::installed() {
+            println!("downloading the docker CLI, Compose and buildx…");
+            let mut last = (String::new(), 0u8);
+            crate::tools::ensure(&mut |file, i, n, pct| {
+                let step = pct / 25 * 25;
+                if last != (file.to_owned(), step) {
+                    last = (file.to_owned(), step);
+                    println!("  {file} ({i}/{n}): {step}%");
+                }
+            })?;
         }
+        bin = crate::tools::dir()?;
     }
     let link = ours.join("docker");
     let _ = std::fs::remove_file(&link);

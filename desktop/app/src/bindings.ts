@@ -3,6 +3,17 @@
 
 import { invoke } from "@elyra/runtime";
 
+export type CliStatus = {
+	/**  `~/.edock/bin/docker` is there (`edock setup` linked it). */
+	docker: boolean,
+	/**  The `edock` docker context exists. */
+	context: boolean,
+	/**  The LaunchAgent that starts the engine at login. */
+	agent: boolean,
+	/**  `edock setup` is running. */
+	busy: boolean,
+};
+
 export type ContainerDetail = {
 	id: string,
 	name: string,
@@ -56,16 +67,31 @@ export type Context = {
 export type DaemonInfo = {
 	/**  The engine binary, when the app found one. */
 	binary: string | null,
-	/**  The engine's socket answers. */
-	running: boolean,
-	/**  This app started it (and can stop it). */
-	ours: boolean,
+	state: EngineState,
 };
+
+/**  eDock's engine as the app sees it. */
+export type EngineState = 
+/**  No daemon answers on the socket. */
+"off" | 
+/**  Turned off with Stop: the daemon answers, the VM stays off until Start. */
+"stopped" | 
+/**  Running, its VM asleep (it wakes on the next request). */
+"asleep" | 
+/**  Running, its VM up. */
+"running";
 
 export type EngineStatus = {
 	context: string,
 	host: string,
 	connected: boolean,
+	/**
+	 *  "running", "asleep" (eDock's VM sleeps until needed), "stopped"
+	 *  (eDock turned off with Stop) or "off" (nothing answers).
+	 */
+	state: string,
+	/**  This app's version; eDock's engine should run the same. */
+	app_version: string,
 	error: string | null,
 	name: string,
 	version: string,
@@ -86,6 +112,25 @@ export type ImageRow = {
 	created: number,
 	/**  Containers using it (-1: unknown). */
 	containers: number,
+};
+
+export type K8sItems = {
+	pods: PodRow[],
+	services: ServiceRow[],
+};
+
+export type K8sStatus = {
+	/**  The app is on eDock's engine (the cluster lives there). */
+	on_edock: boolean,
+	/**  "absent", "running", "exited", "created", …: the node container's state. */
+	state: string,
+	/**  The node answers and is Ready. */
+	ready: boolean,
+	/**  The Mac port of the API server. */
+	port: number | null,
+	version: string,
+	/**  "start", "stop" or "delete" while `edock k8s` runs one. */
+	busy: string | null,
 };
 
 export type KeyValue = {
@@ -114,11 +159,54 @@ export type NetworkRow = {
 	containers: string[],
 };
 
+export type PodContainer = {
+	name: string,
+	image: string,
+	ready: boolean,
+	restarts: number,
+	/**  running, waiting or terminated. */
+	state: string,
+	reason: string,
+};
+
+export type PodRow = {
+	namespace: string,
+	name: string,
+	/**  What `kubectl get pods` says: Running, Pending, CrashLoopBackOff, … */
+	status: string,
+	ready: string,
+	restarts: number,
+	/**  RFC 3339. */
+	created: string,
+	ip: string,
+	/**  Its Deployment, StatefulSet, DaemonSet or Job, as `Kind/name`. */
+	owner: string | null,
+	containers: PodContainer[],
+};
+
 export type PortRow = {
 	ip: string,
 	private: number,
 	public: number | null,
 	proto: string,
+};
+
+export type ServicePort = {
+	name: string,
+	port: number,
+	target: string,
+	node_port: number | null,
+	protocol: string,
+};
+
+export type ServiceRow = {
+	namespace: string,
+	name: string,
+	/**  ClusterIP, NodePort, LoadBalancer, ExternalName. */
+	kind: string,
+	cluster_ip: string,
+	ports: ServicePort[],
+	created: string,
 };
 
 export type VolumeRow = {
@@ -133,6 +221,20 @@ export type VolumeRow = {
 };
 
 export const api = {
+  /**
+   * `edock setup`: the `edock` docker context, `docker` and `edock` on PATH
+   * (the docker CLI, Compose and buildx downloaded the first time, checked
+   * against their SHA-256), the LaunchAgent and the build builder. Output on
+   * `setup:progress`. `use_context` makes `edock` docker's current context.
+   * `*.edock.local` names (which need an administrator) are left to
+   * `edock setup --domains`.
+   */
+  cli_setup(use_context: boolean): Promise<null> {
+    return invoke("cli_setup", use_context);
+  },
+  cli_status(): Promise<CliStatus> {
+    return invoke("cli_status");
+  },
   /**
    * start, stop, restart, pause, unpause, kill or remove one container.
    */
@@ -173,13 +275,23 @@ export const api = {
     return invoke("daemon_info");
   },
   /**
-   * Start eDock's engine, and switch the app to it once it answers.
+   * Run the engine again from this app's `edock`: after an update, the
+   * engine that ran keeps the old version until it starts again. A stopped
+   * engine stays stopped; a running one comes back running.
+   */
+  daemon_restart(): Promise<null> {
+    return invoke("daemon_restart");
+  },
+  /**
+   * Start eDock's engine: run the daemon if none runs, turn it on if it was
+   * stopped, wake its VM, and switch the app to it.
    */
   daemon_start(): Promise<null> {
     return invoke("daemon_start");
   },
   /**
-   * Stop the engine this app started.
+   * Stop eDock's engine: its containers stop and its VM powers off, until
+   * Start. Works whoever started the engine.
    */
   daemon_stop(): Promise<null> {
     return invoke("daemon_stop");
@@ -234,6 +346,49 @@ export const api = {
    */
   images_prune(all: boolean): Promise<number> {
     return invoke("images_prune", all);
+  },
+  /**
+   * Start, stop or delete the cluster: `edock k8s <action>`, with its lines
+   * on `k8s:progress`. Returns at once; the last line says how it ended.
+   * `use_context` (start) makes `edock` kubectl's current context.
+   */
+  k8s_cluster(action: string, use_context: boolean): Promise<null> {
+    return invoke("k8s_cluster", action, use_context);
+  },
+  /**
+   * A shell in a pod's container (`kubectl exec -it`), on `exec:<id>` like
+   * a container's terminal.
+   */
+  k8s_exec_start(namespace: string, pod: string, container: string, cols: number, rows: number): Promise<number> {
+    return invoke("k8s_exec_start", namespace, pod, container, cols, rows);
+  },
+  /**
+   * Every pod and service, in every namespace.
+   */
+  k8s_items(): Promise<K8sItems> {
+    return invoke("k8s_items");
+  },
+  /**
+   * Follow a pod container's log (`kubectl logs -f`), on `logs:<id>` like a
+   * container's.
+   */
+  k8s_logs_follow(namespace: string, pod: string, container: string, tail: number, timestamps: boolean): Promise<number> {
+    return invoke("k8s_logs_follow", namespace, pod, container, tail, timestamps);
+  },
+  /**
+   * Delete a pod; its Deployment (if any) makes a new one.
+   */
+  k8s_pod_delete(namespace: string, pod: string): Promise<null> {
+    return invoke("k8s_pod_delete", namespace, pod);
+  },
+  /**
+   * Restart a Deployment's pods, one by one (`kubectl rollout restart`).
+   */
+  k8s_rollout_restart(namespace: string, deployment: string): Promise<null> {
+    return invoke("k8s_rollout_restart", namespace, deployment);
+  },
+  k8s_status(): Promise<K8sStatus> {
+    return invoke("k8s_status");
   },
   /**
    * Follow a container's log, from its last `tail` lines. Lines arrive on
