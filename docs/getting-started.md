@@ -8,7 +8,7 @@
 
 ## Install
 
-1. Download `eDock-<version>-arm64.dmg` from the [releases](https://github.com/kwhorne/edock/releases).
+1. Download `eDock-<version>-arm64.dmg` from [elyracode.com/edock](https://elyracode.com/edock), or from the [releases on GitHub](https://github.com/kwhorne/edock/releases).
 2. Optionally, check it: `shasum -a 256 -c eDock-<version>-arm64.dmg.sha256`.
 3. Open the dmg and drag **eDock** into **Applications**.
 

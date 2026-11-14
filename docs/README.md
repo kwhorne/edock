@@ -2,7 +2,7 @@
 
 eDock is a small, fast container runtime for the Mac. It runs containers in one Linux VM with its own engine, and that engine serves the Docker Engine API. So `docker`, Docker Compose, buildx and every tool built on them work unchanged. A desktop app and a menu bar item manage it all, including a single-node Kubernetes cluster.
 
-eDock runs on **Apple silicon Macs with macOS 14 or later**.
+eDock runs on **Apple silicon Macs with macOS 14 or later**. Download it, and read this documentation online, at **[elyracode.com/edock](https://elyracode.com/edock)**.
 
 ## Using eDock
 

@@ -12,7 +12,7 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 [![Apple silicon](https://img.shields.io/badge/macOS%2014%2B-Apple%20silicon-black?logo=apple)](https://github.com/kwhorne/edock/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[**Download**](https://github.com/kwhorne/edock/releases/latest) · [Documentation](docs/README.md) · [Getting started](docs/getting-started.md)
+[**Download**](https://elyracode.com/edock) · [Documentation](https://elyracode.com/edock) · [Getting started](docs/getting-started.md)
 
 </div>
 
@@ -45,7 +45,7 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 
 ## Install
 
-1. Download **`eDock-<version>-arm64.dmg`** from the [latest release](https://github.com/kwhorne/edock/releases/latest).
+1. Download **`eDock-<version>-arm64.dmg`** from **[elyracode.com/edock](https://elyracode.com/edock)**, or from the [latest release](https://github.com/kwhorne/edock/releases/latest) here.
 2. Open it, and drag **eDock** into **Applications**.
 3. Open eDock. It appears in the menu bar. Go to **Engine** and press **Start**.
 
@@ -58,7 +58,7 @@ docker compose up -d
 
 eDock needs an Apple silicon Mac with macOS 14 or later. It's signed with a Developer ID and notarized by Apple.
 
-→ **[Getting started](docs/getting-started.md)** walks through it, and the **[documentation](docs/README.md)** covers the rest.
+→ **[Getting started](docs/getting-started.md)** walks through it, and the **[documentation](https://elyracode.com/edock)** covers the rest. Its source is in [`docs/`](docs/README.md).
 
 ## How it works
 
