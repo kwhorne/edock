@@ -44,7 +44,9 @@ fn builders() -> io::Result<Vec<String>> {
     if buildx(&["version"]).is_err() {
         return Ok(Vec::new());
     }
-    let (out, _) = buildx(&["ls", "--format", "json"])?;
+    // No `edock` docker context yet (before `edock setup`): no builder of
+    // eDock's either, so no builds, not an error.
+    let Ok((out, _)) = buildx(&["ls", "--format", "json"]) else { return Ok(Vec::new()) };
     let have: Vec<String> = crate::client::get_background("/containers/json?all=1")?
         .as_array()
         .into_iter()
@@ -444,4 +446,26 @@ mod tests {
 fn image_layers_live() {
     let name = std::env::var("EDOCK_LIVE_IMAGE").unwrap();
     println!("{}", serde_json::to_string_pretty(&image_layers(&name).unwrap()).unwrap());
+}
+
+/// `edock builds [list] | show BUILDER ID | rm BUILDER ID`: the build
+/// history as JSON, for the app's Builds view (and scripts).
+pub fn run(args: &[String]) -> io::Result<()> {
+    let out = match args.first().map(String::as_str) {
+        None | Some("list" | "ls") => serde_json::to_string(&list()?),
+        Some("show") => match (args.get(1), args.get(2)) {
+            (Some(b), Some(id)) => serde_json::to_string(&detail(b, id)?),
+            _ => return Err(io::Error::other("usage: edock builds show BUILDER ID")),
+        },
+        Some("rm") => match (args.get(1), args.get(2)) {
+            (Some(b), Some(id)) => {
+                remove(b, id)?;
+                return Ok(());
+            }
+            _ => return Err(io::Error::other("usage: edock builds rm BUILDER ID")),
+        },
+        _ => return Err(io::Error::other("usage: edock builds [list] | show BUILDER ID | rm BUILDER ID")),
+    };
+    println!("{}", out.map_err(io::Error::other)?);
+    Ok(())
 }
