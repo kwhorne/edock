@@ -155,7 +155,7 @@ pub fn run(_args: &[String]) -> io::Result<()> {
     let routers = !crate::flavor::dev() || domains::own_ports();
     if crate::flavor::dev() {
         if !routers {
-            diag::info!(format!("{}: container domains off (ports in Settings → Domains turn them on)", crate::flavor::APP));
+            diag::info!(format!("{}: container domains off (ports of its own in ~/.edock/domains.json turn them on)", crate::flavor::APP));
         }
     } else if let Err(e) = dns::start() {
         diag::warn!("*.edock.local off", error = e);

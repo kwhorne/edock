@@ -17,7 +17,7 @@ use crate::client;
 pub const SOURCES: [(&str, &str); 2] = [("orbstack", "OrbStack"), ("desktop-linux", "Docker Desktop")];
 
 fn docker() -> io::Result<PathBuf> {
-    client::docker_cli().ok_or_else(|| io::Error::other("no docker CLI found (eDock.app bundles one)"))
+    client::docker_cli().ok_or_else(|| io::Error::other("no docker CLI found: run `edock setup` (Engine › Command line › Set up in the app)"))
 }
 
 fn known(source: &str) -> io::Result<&'static str> {

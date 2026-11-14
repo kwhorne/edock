@@ -24,6 +24,7 @@
 #   --skip-engine   reuse engine/target/edock-engine
 #   --dmg           also make the .dmg
 #   --notarize      sign with EDOCK_SIGN_ID, notarize and staple (implies --dmg),
+#                   regenerate desktop/NOTICE, make the kernel source archive,
 #                   and make the update: dist/eDock-<version>-<arch>.zip and
 #                   dist/latest.json, signed with the update key
 #
@@ -81,16 +82,17 @@ for f in "$DESKTOP/Cargo.toml" "$ENGINE/Cargo.toml"; do
   v=$(version_of "$f")
   [ "$v" = "$VERSION" ] || die "$f says $v but desktop/elyra.toml says $VERSION: run with --version $VERSION"
 done
-ARCH=$(uname -m)   # arm64 on Apple silicon
+ARCH=$(uname -m)
+[ "$ARCH" = arm64 ] || die "eDock is built for Apple silicon only; this Mac is $ARCH"
 echo "== eDock $VERSION ($ARCH)"
 
 # ── Signing ────────────────────────────────────────────────────────────
 if [ "$NOTARIZE" = 1 ]; then
   [ "$SIGN_ID" != "-" ] || die "--notarize needs EDOCK_SIGN_ID (a Developer ID Application identity)"
   if [ -n "${EDOCK_NOTARY_PROFILE:-}" ]; then
-    NOTARY_AUTH="--keychain-profile $EDOCK_NOTARY_PROFILE"
+    NOTARY_MODE=profile
   elif [ -n "${EDOCK_NOTARY_KEY:-}" ] && [ -n "${EDOCK_NOTARY_KEY_ID:-}" ] && [ -n "${EDOCK_NOTARY_ISSUER:-}" ]; then
-    NOTARY_AUTH="--key $EDOCK_NOTARY_KEY --key-id $EDOCK_NOTARY_KEY_ID --issuer $EDOCK_NOTARY_ISSUER"
+    NOTARY_MODE=key
   else
     die "--notarize needs EDOCK_NOTARY_PROFILE, or EDOCK_NOTARY_KEY + EDOCK_NOTARY_KEY_ID + EDOCK_NOTARY_ISSUER"
   fi
@@ -122,6 +124,12 @@ fi
 ENGINE_VERSION=$(cd "$ENGINE" && cargo pkgid -p edock 2>/dev/null | sed 's/.*[#@]//')
 [ "$ENGINE_VERSION" = "$VERSION" ] || [ "$SKIP_ENGINE" = 1 ] || die "the engine built as $ENGINE_VERSION, not $VERSION"
 
+if [ "$NOTARIZE" = 1 ]; then
+  # A release carries current notices: the app's from what it's built of.
+  echo "== notices"
+  "$ROOT/scripts/notices.sh"
+fi
+
 echo "== desktop"
 (cd "$DESKTOP/app" && npm run build --silent)
 (cd "$DESKTOP" && "$RATA" bundle)
@@ -134,6 +142,9 @@ mkdir -p "$APP/Contents/Resources/engine"
 for f in LICENSE NOTICE KERNEL_SOURCE_OFFER.md; do
   cp "$ENGINE/target/edock-engine/Resources/$f" "$APP/Contents/Resources/engine/$f"
 done
+# The app's own licence, and its third-party notices.
+cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
+cp "$DESKTOP/NOTICE" "$APP/Contents/Resources/NOTICE"
 xattr -cr "$APP"   # Finder info and the like break a signature
 
 echo "== sign ($([ "$SIGN_ID" = "-" ] && echo "ad hoc" || echo "Developer ID"))"
@@ -144,16 +155,24 @@ codesign -d --entitlements - "$APP/Contents/MacOS/edock" 2>/dev/null | grep -q c
   || die "the engine lost its virtualization entitlement"
 du -sh "$APP"
 
+# notarytool with the credentials chosen above, each argument quoted.
+notary() {
+  sub=$1; shift
+  if [ "$NOTARY_MODE" = profile ]; then
+    xcrun notarytool "$sub" "$@" --keychain-profile "$EDOCK_NOTARY_PROFILE"
+  else
+    xcrun notarytool "$sub" "$@" --key "$EDOCK_NOTARY_KEY" --key-id "$EDOCK_NOTARY_KEY_ID" --issuer "$EDOCK_NOTARY_ISSUER"
+  fi
+}
+
 notarize() {
   echo "== notarize $(basename "$1") (usually a few minutes)"
-  # shellcheck disable=SC2086
-  out=$(xcrun notarytool submit "$1" $NOTARY_AUTH --wait --output-format plist) || true
+  out=$(notary submit "$1" --wait --output-format plist) || true
   status=$(printf '%s' "$out" | plutil -extract status raw -o - - 2>/dev/null || echo "")
   id=$(printf '%s' "$out" | plutil -extract id raw -o - - 2>/dev/null || echo "")
   if [ "$status" != "Accepted" ]; then
     echo "$out" >&2
-    # shellcheck disable=SC2086
-    [ -n "$id" ] && xcrun notarytool log "$id" $NOTARY_AUTH >&2 || true
+    [ -n "$id" ] && notary log "$id" >&2 || true
     die "notarization of $(basename "$1") came back \"${status:-no answer}\""
   fi
   echo "accepted ($id)"
@@ -176,9 +195,15 @@ if [ "$NOTARIZE" = 1 ]; then
   ZIP_NAME="eDock-$VERSION-$ARCH.zip"
   rm -f "$DIST/$ZIP_NAME"
   ditto -c -k --keepParent --norsrc "$APP" "$DIST/$ZIP_NAME"
-  # shellcheck disable=SC2086
-  "$UPDATE_KEY_TOOL" manifest "$VERSION" "https://github.com/$REPO/releases/download/v$VERSION/$ZIP_NAME" "$DIST/$ZIP_NAME" ${EDOCK_RELEASE_NOTES:-} > "$DIST/latest.json"
+  set -- "$VERSION" "https://github.com/$REPO/releases/download/v$VERSION/$ZIP_NAME" "$DIST/$ZIP_NAME"
+  [ -n "${EDOCK_RELEASE_NOTES:-}" ] && set -- "$@" "$EDOCK_RELEASE_NOTES"
+  "$UPDATE_KEY_TOOL" manifest "$@" > "$DIST/latest.json"
   echo "== update: $DIST/$ZIP_NAME, $DIST/latest.json"
+
+  # GPL-2.0: the guest kernel's complete corresponding source, published
+  # beside the binaries (guest/kernel/SOURCE_OFFER.md names this file).
+  echo "== kernel source"
+  (cd "$ENGINE" && scripts/ci/kernel-source.sh "$DIST/eDock-$VERSION-kernel-source.tar.xz")
 fi
 
 # ── The .dmg: eDock.app and a link to /Applications ────────────────────

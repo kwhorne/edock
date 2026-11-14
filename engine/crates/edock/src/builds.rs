@@ -18,7 +18,7 @@ use crate::flavor::{CONTEXT, Name};
 pub const BUILDER: Name = Name("edock-build", "edock-dev-build");
 
 fn buildx(args: &[&str]) -> io::Result<(String, String)> {
-    let docker = crate::client::docker_cli().ok_or_else(|| io::Error::other("no docker CLI found (eDock.app bundles one)"))?;
+    let docker = crate::client::docker_cli().ok_or_else(|| io::Error::other("no docker CLI found: run `edock setup` (Engine › Command line › Set up in the app)"))?;
     let mut cmd = Command::new(docker);
     // No console window flashing up from eDock's window on Windows.
     #[cfg(windows)]

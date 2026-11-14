@@ -866,8 +866,8 @@ fn pull_hint(e: &edock_image::registry::Error, registry: &str, proxy: Option<&st
                 Some(p) if timeout => format!("no answer from the proxy {p}"),
                 Some(p) if lookup => format!("couldn't look up the proxy {p}"),
                 Some(p) => format!("couldn't reach {name} through the proxy {p}"),
-                None if lookup => format!("couldn't look up {name}: check the network or DNS, or set a proxy in Settings → Network"),
-                None if refused || timeout || m.contains("unreachable") => format!("couldn't reach {name}: check the network, or set a proxy in Settings → Network"),
+                None if lookup => format!("couldn't look up {name}: check the network or DNS, or set a proxy in ~/.edock/proxy.json"),
+                None if refused || timeout || m.contains("unreachable") => format!("couldn't reach {name}: check the network, or set a proxy in ~/.edock/proxy.json"),
                 None => return None,
             })
         }
@@ -2916,7 +2916,7 @@ mod network_option_tests {
         let p = Some("http://127.0.0.1:7892");
         assert_eq!(super::pull_hint(&http("io: Connection refused (os error 111)"), "docker.io", p).unwrap(), "the proxy http://127.0.0.1:7892 refused the connection or closed it: is it running?");
         assert_eq!(super::pull_hint(&http("timeout: connect"), "docker.io", p).unwrap(), "no answer from the proxy http://127.0.0.1:7892");
-        assert_eq!(super::pull_hint(&http("timeout: connect"), "docker.io", None).unwrap(), "couldn't reach Docker Hub: check the network, or set a proxy in Settings → Network");
+        assert_eq!(super::pull_hint(&http("timeout: connect"), "docker.io", None).unwrap(), "couldn't reach Docker Hub: check the network, or set a proxy in ~/.edock/proxy.json");
         assert!(super::pull_hint(&http("io: failed to lookup address information"), "ghcr.io", None).unwrap().starts_with("couldn't look up ghcr.io"));
         let status = |status| Error::Status { url: "u".into(), status, body: String::new() };
         assert!(super::pull_hint(&status(429), "docker.io", None).unwrap().starts_with("Docker Hub limits"));

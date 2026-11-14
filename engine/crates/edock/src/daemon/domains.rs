@@ -171,7 +171,7 @@ fn bind_router(engine: Arc<Engine>, port: u16, tls: Option<Arc<rustls::ServerCon
 
 fn start_router(engine: Arc<Engine>, kind: Kind, tls: Option<Arc<rustls::ServerConfig>>) -> io::Result<u16> {
     let port = kind.port();
-    let how = if env_port(kind.var()).is_some() { format!("set {}", kind.var()) } else { "pick another in Settings → Domains".into() };
+    let how = if env_port(kind.var()).is_some() { format!("set {}", kind.var()) } else { "pick others in ~/.edock/domains.json, or with POST /edock/domains".into() };
     register(bind_router(engine, port, tls).map_err(|_| io::Error::new(io::ErrorKind::AddrInUse, format!("port {port} is taken; {how}")))?)?;
     Ok(port)
 }

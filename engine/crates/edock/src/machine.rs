@@ -175,7 +175,7 @@ fn urlish(s: &str) -> String {
 /// it is under HOMES, else in the user's home. The docker CLI handles the
 /// terminal.
 fn shell(name: &str, cmd: &[&str]) -> io::Result<()> {
-    let docker = client::docker_cli().ok_or_else(|| io::Error::other("no docker CLI found (eDock.app bundles one)"))?;
+    let docker = client::docker_cli().ok_or_else(|| io::Error::other("no docker CLI found: run `edock setup` (Engine › Command line › Set up in the app)"))?;
     let (user, _, _) = user();
     let home = home(&user);
     let cwd = std::env::current_dir().ok().filter(|d| d.starts_with(HOMES)).map_or_else(|| home.clone(), |d| d.display().to_string());

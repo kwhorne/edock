@@ -28,7 +28,7 @@ const MEMORY_FLOOR: u64 = 256 << 20;
 const MEMORY_GROW: u64 = 1 << 30;
 
 /// What a request that needs the VM gets while eDock is stopped.
-pub const STOPPED: &str = "eDock is stopped: press Start in the eDock window to run containers again";
+pub const STOPPED: &str = "eDock is stopped: press Start on the Engine page or in the menu bar to run containers again";
 
 /// The file that keeps "stopped" across engine restarts.
 fn stopped_marker() -> Option<std::path::PathBuf> {

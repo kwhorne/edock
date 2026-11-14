@@ -1,0 +1,20 @@
+eDock app third-party notices
+
+The eDock app (desktop/) is MIT-licensed. This file holds the licence and
+attribution notices for the code built into it. The engine inside the app
+has its own notices, in Contents/Resources/engine/NOTICE.
+
+Rust crates
+===========
+
+{{#each licenses}}
+{{name}}
+----------------------------------------------------------------------
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}
