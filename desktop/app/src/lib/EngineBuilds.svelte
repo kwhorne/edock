@@ -28,7 +28,7 @@
     e.preventDefault();
     const cache = bform.cache.trim() === "" ? null : Number(bform.cache);
     const idle = Number(bform.idle);
-    if ((cache !== null && !(cache > 0)) || !(idle > 0)) return toast("Use whole numbers above 0", { variant: "danger" });
+    if ((cache !== null && !(cache > 0)) || !(idle > 0)) return toast("Use whole numbers above 0", { variant: "error" });
     busy = "builder";
     const b = await attempt(() => api.builder_set(cache, idle * 60), "Saved: the builder uses it from its next start");
     busy = null;
@@ -66,7 +66,7 @@
     if (p.line) lines = [...lines.slice(-40), p.line];
     if (p.done) {
       importing = false;
-      if (p.error) toast(p.error, { variant: "danger", duration: 8000 });
+      if (p.error) toast(p.error, { variant: "error", duration: 8000 });
       else toast("Imported", { variant: "success" });
       look();
     }

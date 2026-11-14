@@ -235,13 +235,92 @@ export type FileChoice =
 /**  A folder picked in an open dialog: a new file may be written in it. */
 "folder";
 
+export type FileEntry = {
+	name: string,
+	/**  dir, file, link or other. */
+	kind: string,
+	/**  Permission bits, 0o755 and the like. */
+	mode: number,
+	size: number,
+	/**  Unix time, seconds. */
+	mtime: number,
+};
+
+export type FilePreview = {
+	/**  The start of the file, when it reads as text. */
+	text: string | null,
+	binary: boolean,
+	size: number,
+	/**  Longer than the preview: this is its start. */
+	cut: boolean,
+	/**  Where a link points. */
+	link: string | null,
+};
+
+/**
+ *  A port on the Mac (127.0.0.1) that reaches an address in the cluster.
+ *  The engine holds them, so they're the same whenever the app asks.
+ */
 export type Forward = {
-	/**  What it reaches: `namespace/name`. */
-	target: string,
 	ip: string,
 	port: number,
-	/**  `127.0.0.1:<local>` on the Mac. */
 	local: number,
+};
+
+export type HttpBody = {
+	/**  The body as text (gzip and deflate undone), when it is text. */
+	text: string | null,
+	binary: boolean,
+	/**  Longer than the inspector keeps (32 KB): this is its start. */
+	cut: boolean,
+};
+
+export type HttpExchange = {
+	row: HttpRow,
+	req_headers: ([string, string])[],
+	res_headers: ([string, string])[],
+	req_body: HttpBody | null,
+	res_body: HttpBody | null,
+};
+
+export type HttpLog = {
+	/**  Recording. */
+	on: boolean,
+	/**  Ask from this next time, for what changed since. */
+	version: number,
+	/**  The oldest kept: rows before it are gone. */
+	first: number | null,
+	/**  New or changed since the version asked from, oldest first. */
+	items: HttpRow[],
+};
+
+export type HttpRow = {
+	seq: number,
+	/**  Unix time, seconds. */
+	at: number,
+	/**  http or https. */
+	scheme: string,
+	/**  As the client sent it, with its port. */
+	host: string,
+	/**  The container that answered. */
+	container: string,
+	method: string,
+	/**  The path and query. */
+	url: string,
+	/**  None until the response's head arrives. */
+	status: number | null,
+	reason: string,
+	/**  The response's Content-Type. */
+	content_type: string,
+	req_size: number,
+	res_size: number,
+	/**  Milliseconds until the response's head. */
+	wait_ms: number | null,
+	/**  Milliseconds until the response's end. */
+	ms: number | null,
+	done: boolean,
+	/**  Why it ended without a whole response. */
+	error: string | null,
 };
 
 export type ImageLayers = {
@@ -404,6 +483,28 @@ export type ProxyInfo = {
 	pac: boolean,
 };
 
+export type RecipeRow = {
+	id: string,
+	title: string,
+	about: string,
+	image: string,
+};
+
+export type Restored = {
+	/**  The container made from the snapshot. */
+	container: string,
+	/**  The one it replaced, stopped and renamed; None when there was none. */
+	previous: string | null,
+};
+
+export type RunResult = {
+	exit_code: number,
+	/**  stdout and stderr, in the order written. */
+	output: string,
+	/**  It ran past its time and was stopped. */
+	timed_out: boolean,
+};
+
 export type ScanResult = {
 	scanned: number,
 	packages: number,
@@ -438,6 +539,57 @@ export type ServiceRow = {
 	cluster_ip: string,
 	ports: ServicePort[],
 	created: string,
+};
+
+export type Snapshot = {
+	/**  container or volume. */
+	kind: string,
+	/**  The container or volume it was taken of. */
+	of: string,
+	/**
+	 *  What identifies it: the image (`edock-snapshots/web:20261114-221503`)
+	 *  or the file name.
+	 */
+	id: string,
+	/**  Unix time, seconds. */
+	created: number,
+	size: number,
+	note: string,
+};
+
+export type Started = {
+	container: string,
+	/**  How an app connects: `postgres://postgres:postgres@localhost:5432/postgres`. */
+	connect: string,
+	/**  Its web UI, if it has one. */
+	ui: string | null,
+	port: number,
+};
+
+export type UsbDevice = {
+	key: string,
+	name: string,
+	/**  `vendor:product`. */
+	id: string,
+	speed: string,
+	/**  "edock" (in the VM, for containers) or "host" (on the Mac). */
+	state: string,
+	/**  serial, hid, storage, …: what kind of device it is. */
+	kind: string,
+	maker: string,
+	/**  Where containers find it, while it's in eDock. */
+	paths: UsbPath[],
+};
+
+export type UsbList = {
+	devices: UsbDevice[],
+	error: string | null,
+};
+
+export type UsbPath = {
+	/**  `/dev/ttyACM0`, `/dev/input/event3`… */
+	path: string,
+	what: string,
 };
 
 export type VmInfo = {
@@ -539,21 +691,109 @@ export const api = {
   },
   /**
    * start, stop, restart, pause, unpause, kill or remove one container.
+   *
+   * @remarks Needs `edock.manage`.
    */
   container_action(id: string, action: string): Promise<null> {
     return invoke("container_action", id, action);
   },
   /**
-   * `docker inspect` for a container, in parts.
+   * Run a shell command in a running container, as its default user, and
+   * return its exit code and output. Stops waiting after `timeout_secs` (60
+   * when not given, at most 600). For looking around (`ls`, `cat`, `env`,
+   * `ps`) or a quick fix; it changes the container for real.
+   *
+   * @remarks Needs `edock.exec`.
+   */
+  container_exec(container: string, command: string, timeout_secs: number | null): Promise<RunResult> {
+    return invoke("container_exec", container, command, timeout_secs);
+  },
+  /**
+   * The start of a file in a container (256 KB), as text when it is text.
+   * Works on stopped containers too.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  container_file_preview(container: string, path: string): Promise<FilePreview> {
+    return invoke("container_file_preview", container, path);
+  },
+  /**
+   * Remove a file or folder in a container (`rm -rf`). The container must be
+   * running, with `rm` in it.
+   */
+  container_file_remove(container: string, path: string): Promise<null> {
+    return invoke("container_file_remove", container, path);
+  },
+  /**
+   * Show a running container's file in Finder, through `~/eDock` (eDock's
+   * engine only).
+   */
+  container_file_reveal(container: string, path: string): Promise<null> {
+    return invoke("container_file_reveal", container, path);
+  },
+  /**
+   * Save a file from a container where the user chose; a folder is saved
+   * as a .tar of it. Works on stopped containers too.
+   */
+  container_file_save(container: string, path: string, file: ChosenFile): Promise<null> {
+    return invoke("container_file_save", container, path, file);
+  },
+  /**
+   * A folder's entries in a container: folders first, then by name. The
+   * container must be running.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  container_files(container: string, path: string): Promise<FileEntry[]> {
+    return invoke("container_files", container, path);
+  },
+  /**
+   * Put files (and folders) from the Mac into a folder of a container. Its
+   * owner is root, as with `docker cp`. Returns how many files went in.
+   */
+  container_files_upload(container: string, dir: string, files: ChosenFile[]): Promise<number> {
+    return invoke("container_files_upload", container, dir, files);
+  },
+  /**
+   * One container in detail: image, command, environment, mounts, labels,
+   * networks, ports, and the whole `docker inspect`.
+   *
+   * @remarks Needs `edock.view`.
    */
   container_inspect(id: string): Promise<ContainerDetail> {
     return invoke("container_inspect", id);
   },
   /**
-   * What a container publishes, and what it really listens on.
+   * A container's recent log, as text: its last `tail` lines (200 when not
+   * given, at most 2000). With `errors_only`, only lines written to stderr
+   * or that read like an error (error, fatal, panic, exception, failed…):
+   * the quick way to see why a service is unhappy.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  container_logs(container: string, tail: number | null, errors_only: boolean | null): Promise<string> {
+    return invoke("container_logs", container, tail, errors_only);
+  },
+  /**
+   * What a container publishes, and the TCP ports it really listens on (also
+   * ones nothing publishes, and ones bound only to its own loopback). eDock only.
+   *
+   * @remarks Needs `edock.view`.
    */
   container_ports(id: string): Promise<ContainerPorts> {
     return invoke("container_ports", id);
+  },
+  /**
+   * Run a shell command once in a fresh, throwaway container from `image`
+   * (pulled if needed), and return its exit code and output. The container
+   * is removed afterwards. It has no network unless `network` is true, and
+   * stops after `timeout_secs` (60 when not given, at most 600). A safe place
+   * to try something: it touches nothing on the Mac.
+   *
+   * @remarks Needs `edock.run`.
+   */
+  container_run(image: string, command: string, network: boolean | null, timeout_secs: number | null): Promise<RunResult> {
+    return invoke("container_run", image, command, network, timeout_secs);
   },
   /**
    * Replace a container's environment (`NAME=value` each). A running
@@ -569,7 +809,32 @@ export const api = {
     return invoke("container_set_ports", id, ports);
   },
   /**
-   * Every container, running or not.
+   * Snapshot a container's filesystem now (`docker commit`), with an
+   * optional note. Its volumes aren't in it: snapshot those on their own.
+   * Returns the snapshot's image.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  container_snapshot(container: string, note: string | null): Promise<string> {
+    return invoke("container_snapshot", container, note);
+  },
+  /**
+   * Go back to a container's snapshot: the container is made again from it,
+   * with the same name and settings, and started if it was running. The
+   * container it replaces is stopped and kept, renamed `<name>-before-<time>`,
+   * so nothing is lost; remove it once happy.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  container_snapshot_restore(image: string): Promise<Restored> {
+    return invoke("container_snapshot_restore", image);
+  },
+  /**
+   * Every container, running or not: name, image, state and health, published
+   * ports, Compose project and service, and on eDock its address
+   * (`<domain>.edock.localhost`). `size` adds each one's disk use (slower).
+   *
+   * @remarks Needs `edock.view`.
    */
   containers_list(size: boolean): Promise<ContainerRow[]> {
     return invoke("containers_list", size);
@@ -624,6 +889,12 @@ export const api = {
   diag_report(file: ChosenFile): Promise<null> {
     return invoke("diag_report", file);
   },
+  /**
+   * eDock's container domains: the suffix and ports at which containers answer
+   * (`http://<name>.edock.localhost:<port>`), and whether HTTPS is trusted.
+   *
+   * @remarks Needs `edock.view`.
+   */
   domains_info(): Promise<DomainsInfo> {
     return invoke("domains_info");
   },
@@ -635,7 +906,10 @@ export const api = {
     return invoke("domains_set_ports", http, https);
   },
   /**
-   * Which engine the app is on, and whether it answers.
+   * The engine eDock is connected to: its name and version, CPUs and memory, and
+   * how many of the user's containers run. Start here.
+   *
+   * @remarks Needs `edock.view`.
    */
   engine_status(): Promise<EngineStatus> {
     return invoke("engine_status");
@@ -660,12 +934,60 @@ export const api = {
   exec_start(container: string, cols: number, rows: number, command: string | null): Promise<number> {
     return invoke("exec_start", container, cols, rows, command);
   },
+  /**
+   * Forget what was recorded.
+   */
+  http_clear(): Promise<null> {
+    return invoke("http_clear");
+  },
+  /**
+   * Start or stop recording.
+   */
+  http_record(on: boolean): Promise<null> {
+    return invoke("http_record", on);
+  },
+  /**
+   * The request again, as recorded, through the HTTP router; it shows up as
+   * a new request. Not when its body was cut, or it was a WebSocket.
+   */
+  http_replay(seq: number): Promise<null> {
+    return invoke("http_replay", seq);
+  },
+  /**
+   * One recorded request in full: its headers and the response's, and both
+   * bodies (their first 32 KB, as text when they are text).
+   *
+   * @remarks Needs `edock.view`.
+   */
+  http_request(seq: number): Promise<HttpExchange> {
+    return invoke("http_request", seq);
+  },
+  /**
+   * HTTP requests to containers through `*.edock.localhost` (and
+   * `https://…`), with their status, timing and size, oldest first, while
+   * the inspector records. `since` (a version from an earlier answer) gives
+   * only what's new or changed since. The quick way to see what a web app in
+   * a container answers, and which requests fail.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  http_requests(since: number | null): Promise<HttpLog> {
+    return invoke("http_requests", since);
+  },
+  /**
+   * An image's layers: each Dockerfile line, what it added, and which came
+   * with the base image. eDock only.
+   *
+   * @remarks Needs `edock.view`.
+   */
   image_layers(name: string): Promise<ImageLayers> {
     return invoke("image_layers", name);
   },
   /**
-   * Pull an image. Progress goes out on the `pull` channel; the promise
-   * settles when the pull is done.
+   * Pull an image (`nginx:alpine`, `ghcr.io/org/app:1.2`); returns when it's
+   * pulled. A missing tag means `latest`.
+   *
+   * @remarks Needs `edock.manage`.
    */
   image_pull(reference: string): Promise<null> {
     return invoke("image_pull", reference);
@@ -691,18 +1013,25 @@ export const api = {
   },
   /**
    * One scan's findings (`at`), or the newest when `at` is none.
+   *
+   * @remarks Needs `edock.view`.
    */
   image_scan_result(name: string, at: number | null): Promise<ScanResult | null> {
     return invoke("image_scan_result", name, at);
   },
   /**
    * The image's scans, newest first.
+   *
+   * @remarks Needs `edock.view`.
    */
   image_scans(name: string): Promise<ScanSummary[]> {
     return invoke("image_scans", name);
   },
   /**
-   * Every image, one row per tag (untagged ones as `<none>`).
+   * Every image, one row per tag (untagged ones as `<none>`), with size, age
+   * and how many containers use it.
+   *
+   * @remarks Needs `edock.view`.
    */
   images_list(): Promise<ImageRow[]> {
     return invoke("images_list");
@@ -746,19 +1075,22 @@ export const api = {
   },
   /**
    * Reach a ClusterIP service (or a pod) from the Mac: a port on
-   * 127.0.0.1 forwarding to `ip:port` in the cluster.
+   * 127.0.0.1 forwarding to `ip:port` in the cluster. Asking again for the
+   * same address gives the same port.
    */
-  k8s_forward(target: string, ip: string, port: number): Promise<Forward> {
-    return invoke("k8s_forward", target, ip, port);
+  k8s_forward(ip: string, port: number): Promise<Forward> {
+    return invoke("k8s_forward", ip, port);
   },
   /**
-   * The forwards this app opened that are still open.
+   * The forwards open now, as the engine has them.
    */
   k8s_forwards(): Promise<Forward[]> {
     return invoke("k8s_forwards");
   },
   /**
    * Every pod and service, in every namespace.
+   *
+   * @remarks Needs `edock.view`.
    */
   k8s_items(): Promise<K8sItems> {
     return invoke("k8s_items");
@@ -782,6 +1114,12 @@ export const api = {
   k8s_rollout_restart(namespace: string, deployment: string): Promise<null> {
     return invoke("k8s_rollout_restart", namespace, deployment);
   },
+  /**
+   * eDock's Kubernetes cluster: whether it exists, runs and is ready, its
+   * version, and the API server's port on the Mac.
+   *
+   * @remarks Needs `edock.view`.
+   */
   k8s_status(): Promise<K8sStatus> {
     return invoke("k8s_status");
   },
@@ -818,8 +1156,21 @@ export const api = {
   machine_shell(name: string, cols: number, rows: number): Promise<number> {
     return invoke("machine_shell", name, cols, rows);
   },
+  /**
+   * eDock's Linux machines (`edock machine`): name, distribution, state, and
+   * whether systemd runs them.
+   *
+   * @remarks Needs `edock.view`.
+   */
   machines_list(): Promise<MachineRow[]> {
     return invoke("machines_list");
+  },
+  /**
+   * The command that makes this app an MCP server for AI agents: its own
+   * binary, with `--mcp`.
+   */
+  mcp_command(): Promise<string> {
+    return invoke("mcp_command");
   },
   network_create(name: string): Promise<null> {
     return invoke("network_create", name);
@@ -827,6 +1178,11 @@ export const api = {
   network_remove(id: string): Promise<null> {
     return invoke("network_remove", id);
   },
+  /**
+   * Every network: driver, subnet, Compose project, and the containers on it.
+   *
+   * @remarks Needs `edock.view`.
+   */
   networks_list(): Promise<NetworkRow[]> {
     return invoke("networks_list");
   },
@@ -835,6 +1191,8 @@ export const api = {
   },
   /**
    * The same action on every container of a Compose project.
+   *
+   * @remarks Needs `edock.manage`.
    */
   project_action(project: string, action: string): Promise<null> {
     return invoke("project_action", project, action);
@@ -847,6 +1205,40 @@ export const api = {
   },
   proxy_set(mode: string, http: string, https: string, no_proxy: string, containers: boolean): Promise<ProxyInfo> {
     return invoke("proxy_set", mode, http, https, no_proxy, containers);
+  },
+  /**
+   * Start a recipe's service (see `recipes_list`): pulls its image if
+   * needed, keeps its data in the volume `<name>-data`, publishes its port on
+   * the Mac's loopback (the usual one, or the next free one) and restarts it
+   * with the engine. Returns how to connect. `name` defaults to the recipe's id.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  recipe_start(recipe: string, name: string | null): Promise<Started> {
+    return invoke("recipe_start", recipe, name);
+  },
+  /**
+   * The services a recipe starts: PostgreSQL, MySQL, MariaDB, Redis,
+   * MongoDB, RabbitMQ, Mailpit (a mail catcher) and MinIO (S3).
+   *
+   * @remarks Needs `edock.view`.
+   */
+  recipes_list(): Promise<RecipeRow[]> {
+    return invoke("recipes_list");
+  },
+  /**
+   * Delete a snapshot: a container's (its image) or a volume's (its file).
+   */
+  snapshot_delete(kind: string, of: string, id: string): Promise<null> {
+    return invoke("snapshot_delete", kind, of, id);
+  },
+  /**
+   * Every snapshot, newest first: containers' (images) and volumes' (files).
+   *
+   * @remarks Needs `edock.view`.
+   */
+  snapshots_list(): Promise<Snapshot[]> {
+    return invoke("snapshots_list");
   },
   /**
    * Follow a container's CPU, memory, network and disk, about once a
@@ -868,6 +1260,23 @@ export const api = {
    */
   tls_trust(trust: boolean): Promise<null> {
     return invoke("tls_trust", trust);
+  },
+  /**
+   * Hand a device to eDock: it leaves the Mac until it's given back.
+   */
+  usb_attach(key: string): Promise<null> {
+    return invoke("usb_attach", key);
+  },
+  /**
+   * Give a device back to the Mac: the engine closes its pipe, and the
+   * helper hands the device back (as `edock usb detach` does, by location,
+   * so it works for a device that's in eDock but not on the Mac's bus).
+   */
+  usb_detach(key: string): Promise<null> {
+    return invoke("usb_detach", key);
+  },
+  usb_list(): Promise<UsbList> {
+    return invoke("usb_list");
   },
   vm_info(): Promise<VmInfo> {
     return invoke("vm_info");
@@ -892,7 +1301,29 @@ export const api = {
     return invoke("volume_remove", name);
   },
   /**
+   * Snapshot a volume's files now, owners kept, to a `.tar.gz` on the Mac
+   * (`~/.edock/snapshots/volumes/<volume>/`). Best with the containers that
+   * write to it stopped, as with any copy of a database's files. Returns the
+   * file's name.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  volume_snapshot(volume: string, note: string | null): Promise<string> {
+    return invoke("volume_snapshot", volume, note);
+  },
+  /**
+   * Put a volume back as it was in a snapshot: what's in it now is replaced.
+   * Refused while a running container uses the volume: stop it first.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  volume_snapshot_restore(volume: string, file: string): Promise<null> {
+    return invoke("volume_snapshot_restore", volume, file);
+  },
+  /**
    * Every volume, and the containers that mount it.
+   *
+   * @remarks Needs `edock.view`.
    */
   volumes_list(): Promise<VolumeRow[]> {
     return invoke("volumes_list");

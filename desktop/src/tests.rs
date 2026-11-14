@@ -216,13 +216,18 @@ async fn kubernetes() {
         if let Some(s) = items.services.iter().find(|s| s.name == "web" && !s.cluster_ip.is_empty()) { break s.clone(); }
         tokio::time::sleep(Duration::from_millis(500)).await;
     };
-    let fw: crate::k8s::Forward = app.invoke("k8s_forward", ("default/web".to_string(), svc.cluster_ip.clone(), 8080u32)).await.unwrap();
+    let fw: crate::k8s::Forward = app.invoke("k8s_forward", (svc.cluster_ip.clone(), 8080u32)).await.unwrap();
+    // The same address again: the same port, not a second forward.
+    let again: crate::k8s::Forward = app.invoke("k8s_forward", (svc.cluster_ip.clone(), 8080u32)).await.unwrap();
+    assert_eq!(again.local, fw.local);
     let curl = |port: u32| std::process::Command::new("curl").args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5", &format!("http://127.0.0.1:{port}/")]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     assert_eq!(curl(fw.local), "200", "the forward didn't answer");
     let listed: Vec<crate::k8s::Forward> = app.invoke("k8s_forwards", ()).await.unwrap();
-    assert!(listed.iter().any(|f| f.local == fw.local && f.target == "default/web"));
-    assert!(app.invoke_err("k8s_forward", ("x".to_string(), "8.8.8.8".to_string(), 53u32)).await.contains("Kubernetes"));
+    assert_eq!(listed.iter().filter(|f| f.ip == svc.cluster_ip && f.port == 8080).map(|f| f.local).collect::<Vec<_>>(), vec![fw.local]);
+    assert!(app.invoke_err("k8s_forward", ("8.8.8.8".to_string(), 53u32)).await.contains("Kubernetes"));
     let _: () = app.invoke("k8s_unforward", (fw.local,)).await.unwrap();
+    let listed: Vec<crate::k8s::Forward> = app.invoke("k8s_forwards", ()).await.unwrap();
+    assert!(listed.iter().all(|f| f.local != fw.local));
     assert_ne!(curl(fw.local), "200");
 
     // Restart the deployment, then delete the pod: a new one takes its place.
@@ -672,5 +677,339 @@ async fn the_proxy_setting() {
         None => {
             let _ = std::fs::remove_file(&file);
         }
+    }
+}
+
+/// USB: a software serial device (the engine's `edock usb fake serial`)
+/// goes into eDock, shows in the list with its /dev path, a container sees
+/// it, and it's given back: `EDOCK_TEST_HOST=…`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn a_usb_device_in_and_out() {
+    use crate::usb::UsbList;
+    if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
+        eprintln!("skipped: needs EDOCK_TEST_HOST on eDock's socket");
+        return;
+    }
+    let _alone = ENGINE.write().await;
+    let app = app();
+    let bin = crate::daemon::engine_binary().unwrap();
+    let mut fake = std::process::Command::new(bin).args(["usb", "fake", "serial", "--location", "t-serial"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let start = Instant::now();
+    let dev = loop {
+        let l: UsbList = app.invoke("usb_list", ()).await.unwrap();
+        if let Some(d) = l.devices.into_iter().find(|d| d.key == "t-serial" && !d.paths.is_empty()) {
+            break d;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "the fake device never showed");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    assert_eq!(dev.state, "edock");
+    let tty = dev.paths.iter().find(|p| p.path.starts_with("/dev/tty")).map(|p| p.path.clone()).expect("a tty");
+
+    // A container with --device sees it.
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    use bollard::query_parameters as q;
+    let body = bollard::models::ContainerCreateBody {
+        image: Some("alpine:latest".into()),
+        cmd: Some(vec!["ls".into(), tty.clone()]),
+        host_config: Some(bollard::models::HostConfig {
+            devices: Some(vec![bollard::models::DeviceMapping { path_on_host: Some(tty.clone()), path_in_container: Some(tty.clone()), cgroup_permissions: Some("rwm".into()) }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let id = docker.create_container(None::<q::CreateContainerOptions>, body).await.unwrap().id;
+    docker.start_container(&id, None::<q::StartContainerOptions>).await.unwrap();
+    let _ = docker.wait_container(&id, None::<q::WaitContainerOptions>).collect::<Vec<_>>().await;
+    use futures_util::StreamExt;
+    let logs: Vec<_> = docker.logs(&id, Some(q::LogsOptionsBuilder::default().stdout(true).stderr(true).build())).collect().await;
+    let out: String = logs.into_iter().filter_map(Result::ok).map(|l| l.to_string()).collect();
+    let _ = docker.remove_container(&id, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    assert!(out.contains(&tty), "the container didn't see {tty}: {out}");
+
+    // Given back: gone from eDock, and the device's process ends.
+    let _: () = app.invoke("usb_detach", ("t-serial".to_string(),)).await.unwrap();
+    let start = Instant::now();
+    loop {
+        let l: UsbList = app.invoke("usb_list", ()).await.unwrap();
+        if !l.devices.iter().any(|d| d.key == "t-serial") { break; }
+        assert!(start.elapsed() < Duration::from_secs(15), "still listed after detach");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let _ = fake.kill();
+    let _ = fake.wait();
+    assert!(app.invoke_err("usb_attach", ("--all".to_string(),)).await.contains("isn't a USB device"));
+}
+
+/// The HTTP inspector: requests through a container's domain are recorded,
+/// read back whole, replayed and cleared; recording is left as it was.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn the_http_inspector() {
+    use crate::inspector::{HttpExchange, HttpLog};
+    use futures_util::StreamExt;
+    use bollard::query_parameters as q;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
+        eprintln!("skipped: needs EDOCK_TEST_HOST on eDock's socket");
+        return;
+    }
+    let _alone = ENGINE.write().await;
+    let app = app();
+    let was: HttpLog = app.invoke("http_requests", (Some(f64::MAX),)).await.unwrap();
+    let _: () = app.invoke("http_record", (true,)).await.unwrap();
+
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let name = format!("edock-test-http-{}", std::process::id());
+    let body = bollard::models::ContainerCreateBody {
+        image: Some("nginx:alpine".into()),
+        labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
+        ..Default::default()
+    };
+    let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image("nginx").tag("alpine").build()), None, None);
+    while pull.next().await.is_some() {}
+    docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await.unwrap();
+    docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
+
+    let port = crate::daemon::engine_request("GET", "/edock/domains").await.unwrap().1["http"]["port"].as_u64().unwrap() as u16;
+    let ask = |path: &'static str, payload: &'static str| {
+        let host = format!("{name}.edock.localhost");
+        async move {
+            let mut c = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let req = format!("POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len());
+            c.write_all(req.as_bytes()).await.unwrap();
+            let mut out = Vec::new();
+            let _ = c.read_to_end(&mut out).await;
+            String::from_utf8_lossy(&out).into_owned()
+        }
+    };
+    // nginx needs a moment before it answers.
+    let start = Instant::now();
+    while !ask("/", "{}").await.starts_with("HTTP/1.1 405") {
+        assert!(start.elapsed() < Duration::from_secs(20), "nginx never answered");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    ask("/api/orders", r#"{"n":1}"#).await;
+
+    let mine = |l: &HttpLog| l.items.iter().filter(|r| r.container == name && r.url == "/api/orders").map(|r| r.seq).collect::<Vec<_>>();
+    let log: HttpLog = app.invoke("http_requests", (None::<f64>,)).await.unwrap();
+    let seqs = mine(&log);
+    assert_eq!(seqs.len(), 1, "one request to /api/orders");
+    let d: HttpExchange = app.invoke("http_request", (seqs[0],)).await.unwrap();
+    assert_eq!((d.row.method.as_str(), d.row.status, d.row.done), ("POST", Some(404), true));
+    assert_eq!(d.req_body.and_then(|b| b.text).as_deref(), Some(r#"{"n":1}"#));
+    assert!(d.res_headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("server") && v.starts_with("nginx")));
+
+    // Only what changed since: nothing.
+    let since: HttpLog = app.invoke("http_requests", (Some(log.version),)).await.unwrap();
+    assert!(mine(&since).is_empty());
+
+    // Replayed: a second, the same.
+    let _: () = app.invoke("http_replay", (seqs[0],)).await.unwrap();
+    let log: HttpLog = app.invoke("http_requests", (None::<f64>,)).await.unwrap();
+    let again = mine(&log);
+    assert_eq!(again.len(), 2, "the replay shows");
+    let d: HttpExchange = app.invoke("http_request", (again[1],)).await.unwrap();
+    assert_eq!(d.req_body.and_then(|b| b.text).as_deref(), Some(r#"{"n":1}"#));
+
+    let _ = docker.remove_container(&name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    let _: () = app.invoke("http_clear", ()).await.unwrap();
+    let log: HttpLog = app.invoke("http_requests", (None::<f64>,)).await.unwrap();
+    assert!(log.items.is_empty());
+    let _: () = app.invoke("http_record", (was.on,)).await.unwrap();
+}
+
+/// Snapshots: a container's files and a volume's, changed and put back.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine"]
+async fn snapshots_of_a_container_and_a_volume() {
+    use crate::snapshots::{Restored, Snapshot};
+    use bollard::query_parameters as q;
+    use futures_util::StreamExt;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let tag = std::process::id();
+    let (name, vol) = (format!("edock-test-snap-{tag}"), format!("edock-test-snapvol-{tag}"));
+    let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image("alpine").tag("latest").build()), None, None);
+    while pull.next().await.is_some() {}
+    let labels: std::collections::HashMap<String, String> = [("app.edock.test".to_string(), "1".to_string())].into();
+    docker.create_volume(bollard::models::VolumeCreateRequest { name: Some(vol.clone()), labels: Some(labels.clone()), ..Default::default() }).await.unwrap();
+    let body = bollard::models::ContainerCreateBody {
+        image: Some("alpine:latest".into()),
+        cmd: Some(vec!["sleep".into(), "300".into()]),
+        env: Some(vec!["KEPT=yes".into()]),
+        labels: Some(labels),
+        host_config: Some(bollard::models::HostConfig { binds: Some(vec![format!("{vol}:/data")]), ..Default::default() }),
+        ..Default::default()
+    };
+    docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await.unwrap();
+    docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
+    let sh = |cmd: &str| {
+        let (app, name, cmd) = (&app, name.clone(), cmd.to_owned());
+        async move {
+            let r: crate::agent::RunResult = app.invoke("container_exec", (name, cmd, None::<u32>)).await.unwrap();
+            r.output.trim().to_owned()
+        }
+    };
+    sh("echo before > /etc/marker; echo v1 > /data/v; chown 70:70 /data/v").await;
+
+    let image: String = app.invoke("container_snapshot", (name.clone(), Some("first".to_string()))).await.unwrap();
+    // A volume is best snapshotted with its writers stopped, but it works anyway.
+    let file: String = app.invoke("volume_snapshot", (vol.clone(), None::<String>)).await.unwrap();
+    let list: Vec<Snapshot> = app.invoke("snapshots_list", ()).await.unwrap();
+    assert!(list.iter().any(|s| s.kind == "container" && s.id == image && s.of == name && s.note == "first"), "{image} listed");
+    assert!(list.iter().any(|s| s.kind == "volume" && s.id == file && s.of == vol && s.size > 0.0));
+
+    sh("echo after > /etc/marker; echo v2 > /data/v; touch /data/new").await;
+
+    // The volume can't be restored under a running container.
+    let refused = app.invoke::<()>("volume_snapshot_restore", (vol.clone(), file.clone())).await;
+    assert!(format!("{:?}", refused.unwrap_err()).contains("running"));
+
+    let r: Restored = app.invoke("container_snapshot_restore", (image.clone(),)).await.unwrap();
+    let previous = r.previous.expect("the replaced one is kept");
+    assert_eq!(sh("cat /etc/marker; echo $KEPT").await, "before\nyes", "files and settings back");
+    let old = docker.inspect_container(&previous, None::<q::InspectContainerOptions>).await.unwrap();
+    assert_eq!(old.state.and_then(|s| s.running), Some(false));
+    let _ = docker.remove_container(&previous, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+
+    docker.stop_container(&name, Some(q::StopContainerOptionsBuilder::default().t(1).build())).await.unwrap();
+    let _: () = app.invoke("volume_snapshot_restore", (vol.clone(), file.clone())).await.unwrap();
+    docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
+    assert_eq!(sh("cat /data/v; ls /data; stat -c %u /data/v").await, "v1\nv\n70", "the volume as it was, owner kept");
+
+    let _ = docker.remove_container(&name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    let _: () = app.invoke("snapshot_delete", ("container".to_string(), name.clone(), image.clone())).await.unwrap();
+    let _: () = app.invoke("snapshot_delete", ("volume".to_string(), vol.clone(), file.clone())).await.unwrap();
+    let _ = docker.remove_volume(&vol, None::<q::RemoveVolumeOptions>).await;
+    let list: Vec<Snapshot> = app.invoke("snapshots_list", ()).await.unwrap();
+    assert!(!list.iter().any(|s| s.id == image || s.id == file), "deleted");
+}
+
+/// The Files tab: list, preview, save, upload and remove in a container.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine"]
+async fn a_containers_files() {
+    use crate::files::{FileEntry, FilePreview};
+    use bollard::query_parameters as q;
+    use elyra::files::ChosenFile;
+    use futures_util::StreamExt;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let name = format!("edock-test-files-{}", std::process::id());
+    let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image("nginx").tag("alpine").build()), None, None);
+    while pull.next().await.is_some() {}
+    let body = bollard::models::ContainerCreateBody {
+        image: Some("nginx:alpine".into()),
+        labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
+        ..Default::default()
+    };
+    docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await.unwrap();
+    docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
+
+    let ls = |path: &str| {
+        let (app, name, path) = (&app, name.clone(), path.to_owned());
+        async move { app.invoke::<Vec<FileEntry>>("container_files", (name, path)).await }
+    };
+    let etc = ls("/etc/nginx").await.unwrap();
+    assert_eq!(etc[0].kind, "dir", "folders first");
+    assert!(etc.iter().any(|e| e.name == "nginx.conf" && e.kind == "file" && e.size > 100.0));
+    assert!(ls("/nope").await.is_err());
+
+    let p: FilePreview = app.invoke("container_file_preview", (name.clone(), "/etc/nginx/nginx.conf".to_string())).await.unwrap();
+    assert!(p.text.unwrap().contains("worker_processes") && !p.cut && !p.binary);
+    let p: FilePreview = app.invoke("container_file_preview", (name.clone(), "/usr/sbin/nginx".to_string())).await.unwrap();
+    assert!(p.binary && p.size > 1000.0);
+    let p: FilePreview = app.invoke("container_file_preview", (name.clone(), "/bin/sh".to_string())).await.unwrap();
+    assert!(p.link.is_some(), "/bin/sh is a link in alpine");
+    assert!(app.invoke::<FilePreview>("container_file_preview", (name.clone(), "/etc".to_string())).await.is_err());
+
+    let dir = std::env::temp_dir().join(format!("edock-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("up/sub")).unwrap();
+    let out = dir.join("nginx.conf");
+    let _: () = app.invoke("container_file_save", (name.clone(), "/etc/nginx/nginx.conf".to_string(), ChosenFile::for_saving(&out))).await.unwrap();
+    assert!(std::fs::read_to_string(&out).unwrap().contains("worker_processes"));
+    let tar = dir.join("conf.tar");
+    let _: () = app.invoke("container_file_save", (name.clone(), "/etc/nginx".to_string(), ChosenFile::for_saving(&tar))).await.unwrap();
+    let listing = std::process::Command::new("tar").arg("tf").arg(&tar).output().unwrap();
+    assert!(String::from_utf8_lossy(&listing.stdout).contains("nginx/nginx.conf"));
+
+    // Up: a file and a folder with a file in it, with a name past tar's 100.
+    let long = "l".repeat(110);
+    std::fs::write(dir.join("up/hello.txt"), "hi from the mac").unwrap();
+    std::fs::write(dir.join("up/sub").join(&long), "deep").unwrap();
+    let n: u32 = app.invoke("container_files_upload", (name.clone(), "/tmp".to_string(), vec![ChosenFile::from_path(dir.join("up"))])).await.unwrap();
+    assert_eq!(n, 2);
+    let up = ls("/tmp/up").await.unwrap();
+    assert_eq!(up.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["sub", "hello.txt"]);
+    let p: FilePreview = app.invoke("container_file_preview", (name.clone(), format!("/tmp/up/sub/{long}"))).await.unwrap();
+    assert_eq!(p.text.as_deref(), Some("deep"));
+
+    let _: () = app.invoke("container_file_remove", (name.clone(), "/tmp/up".to_string())).await.unwrap();
+    assert!(!ls("/tmp").await.unwrap().iter().any(|e| e.name == "up"));
+    assert!(app.invoke::<()>("container_file_remove", (name.clone(), "/".to_string())).await.is_err());
+
+    // Stopped: no listing, but a preview still works.
+    docker.stop_container(&name, Some(q::StopContainerOptionsBuilder::default().t(1).build())).await.unwrap();
+    assert!(format!("{:?}", ls("/").await.unwrap_err()).contains("Start the container"));
+    let p: FilePreview = app.invoke("container_file_preview", (name.clone(), "/etc/nginx/nginx.conf".to_string())).await.unwrap();
+    assert!(p.text.is_some());
+
+    let _ = docker.remove_container(&name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Recipes: Redis answers on its Mac port; Mailpit's UI on its own.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine"]
+async fn recipes_start_services() {
+    use crate::recipes::Started;
+    use bollard::query_parameters as q;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let _alone = ENGINE.read().await;
+    let app = app();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let tag = std::process::id();
+    let wait_for = |port: u16, req: &'static [u8], want: &'static str| async move {
+        let start = Instant::now();
+        loop {
+            if let Ok(mut c) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                let _ = c.write_all(req).await;
+                let mut buf = vec![0u8; 512];
+                if let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(2), c.read(&mut buf)).await {
+                    if String::from_utf8_lossy(&buf[..n]).contains(want) {
+                        return;
+                    }
+                }
+            }
+            assert!(start.elapsed() < Duration::from_secs(60), "nothing answered {want} on {port}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    };
+
+    let redis: Started = app.invoke("recipe_start", ("redis".to_string(), Some(format!("edock-test-redis-{tag}")))).await.unwrap();
+    assert_eq!(redis.connect, format!("redis://localhost:{}", redis.port));
+    wait_for(redis.port, b"PING\r\n", "+PONG").await;
+    let info = docker.inspect_container(&redis.container, None::<q::InspectContainerOptions>).await.unwrap();
+    assert_eq!(info.host_config.and_then(|h| h.restart_policy).and_then(|r| r.name).map(|n| n.to_string()), Some("unless-stopped".into()));
+
+    // The same name again: the next one.
+    let again: Started = app.invoke("recipe_start", ("redis".to_string(), Some(format!("edock-test-redis-{tag}")))).await.unwrap();
+    assert_eq!(again.container, format!("edock-test-redis-{tag}-2"));
+    assert_ne!(again.port, redis.port);
+
+    let mail: Started = app.invoke("recipe_start", ("mailpit".to_string(), Some(format!("edock-test-mail-{tag}")))).await.unwrap();
+    let ui: u16 = mail.ui.as_deref().and_then(|u| u.rsplit(':').next()).and_then(|p| p.parse().ok()).unwrap();
+    wait_for(ui, b"GET / HTTP/1.0\r\n\r\n", "200 OK").await;
+    wait_for(mail.port, b"", "220").await;
+
+    assert!(app.invoke::<Started>("recipe_start", ("nope".to_string(), None::<String>)).await.is_err());
+    for c in [&redis.container, &again.container, &mail.container] {
+        let _ = docker.remove_container(c, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+        let _ = docker.remove_volume(&format!("{c}-data"), None::<q::RemoveVolumeOptions>).await;
     }
 }

@@ -58,7 +58,7 @@
     if (!p) return;
     if (p.line) progress = [...progress.slice(-30), p.line];
     if (p.done) {
-      if (p.error) toast(p.error, { variant: "danger", duration: 8000 });
+      if (p.error) toast(p.error, { variant: "error", duration: 8000 });
       loadStatus().then(loadItems);
     }
   });
@@ -115,7 +115,7 @@
   loadForwards();
   const fwFor = (s, p) => forwards.find((f) => f.ip === s.cluster_ip && f.port === p.port);
   async function forward(s, p) {
-    const f = await attempt(() => api.k8s_forward(`${s.namespace}/${s.name}`, s.cluster_ip, p.port));
+    const f = await attempt(() => api.k8s_forward(s.cluster_ip, p.port));
     if (f) {
       await loadForwards();
       toast(`${s.name}:${p.port} is on localhost:${f.local}`, { variant: "success" });

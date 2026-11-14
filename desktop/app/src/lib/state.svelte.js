@@ -61,7 +61,7 @@ export async function attempt(fn, done) {
     if (done) toast(done, { variant: "success" });
     return r;
   } catch (e) {
-    toast(e?.message ?? String(e), { variant: "danger", duration: 6000 });
+    toast(e?.message ?? String(e), { variant: "error", duration: 6000 });
   }
 }
 

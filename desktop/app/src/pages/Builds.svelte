@@ -26,10 +26,15 @@
   });
 
   const TONE = { Completed: "success", Running: "accent", Error: "danger", Canceled: "warning" };
+  // How long it ran. A build still running, or cut off, has Go's zero time
+  // (0001-01-01) for its end: no length.
   function took(b) {
-    if (!b.started || !b.completed) return "—";
+    if (!b.started || !b.completed || b.completed.startsWith("0001-")) return "—";
     const s = (Date.parse(b.completed) - Date.parse(b.started)) / 1000;
-    return s < 60 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`;
+    if (!(s >= 0)) return "—";
+    if (s < 60) return `${s.toFixed(1)} s`;
+    const whole = Math.round(s);
+    return `${Math.floor(whole / 60)} min ${whole % 60} s`;
   }
 </script>
 

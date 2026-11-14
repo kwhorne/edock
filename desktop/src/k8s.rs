@@ -96,7 +96,9 @@ pub struct K8sStatus {
     pub busy: Option<String>,
 }
 
-#[command]
+/// eDock's Kubernetes cluster: whether it exists, runs and is ready, its
+/// version, and the API server's port on the Mac.
+#[command(can = "edock.view")]
 pub async fn k8s_status(ctx: Ctx) -> K8sStatus {
     let busy = ctx.get::<Cluster>().busy.lock().clone();
     let mut st = K8sStatus { on_edock: on_edock(&ctx), state: "absent".into(), ready: false, port: None, version: String::new(), busy };
@@ -303,7 +305,7 @@ fn service(v: &Value) -> ServiceRow {
 }
 
 /// Every pod and service, in every namespace.
-#[command]
+#[command(can = "edock.view")]
 pub async fn k8s_items(ctx: Ctx) -> Result<K8sItems, String> {
     let (code, out, err) = node_exec(&ctx, &["kubectl", "get", "pods,services", "--all-namespaces", "-o", "json", "--request-timeout=20s"], 30).await?;
     if code != 0 {
@@ -375,25 +377,20 @@ pub async fn k8s_exec_start(ctx: Ctx, namespace: String, pod: String, container:
 
 // ── Forward to the Mac ─────────────────────────────────────────────────
 
-/// Ports on the Mac that reach a service or pod in the cluster, opened
-/// here; the engine closes them when it stops.
-#[derive(Default)]
-pub struct Forwards(Mutex<Vec<Forward>>);
-
+/// A port on the Mac (127.0.0.1) that reaches an address in the cluster.
+/// The engine holds them, so they're the same whenever the app asks.
 #[derive(Serialize, Deserialize, specta::Type, Clone)]
 pub struct Forward {
-    /// What it reaches: `namespace/name`.
-    pub target: String,
     pub ip: String,
     pub port: u32,
-    /// `127.0.0.1:<local>` on the Mac.
     pub local: u32,
 }
 
 /// Reach a ClusterIP service (or a pod) from the Mac: a port on
-/// 127.0.0.1 forwarding to `ip:port` in the cluster.
+/// 127.0.0.1 forwarding to `ip:port` in the cluster. Asking again for the
+/// same address gives the same port.
 #[command]
-pub async fn k8s_forward(ctx: Ctx, target: String, ip: String, port: u32) -> Result<Forward, String> {
+pub async fn k8s_forward(ctx: Ctx, ip: String, port: u32) -> Result<Forward, String> {
     if !on_edock(&ctx) {
         return Err("Kubernetes runs on the eDock engine: switch to it first".into());
     }
@@ -401,44 +398,38 @@ pub async fn k8s_forward(ctx: Ctx, target: String, ip: String, port: u32) -> Res
     if !(1..=65535).contains(&port) {
         return Err(format!("{port} isn't a port"));
     }
-    let existing = ctx.get::<Forwards>().0.lock().iter().find(|f| f.ip == ip && f.port == port).cloned();
-    if let Some(f) = existing {
-        return Ok(f);
-    }
     let body = serde_json::json!({"ip": addr.to_string(), "port": port});
-    let v = match crate::daemon::engine_call("POST", "/edock/k8s/forward", Some(&body)).await {
-        Some((s, v)) if s < 300 => v,
-        Some((_, v)) => return Err(v["message"].as_str().unwrap_or("The engine refused").to_owned()),
-        None => return Err("eDock's engine isn't running".into()),
-    };
-    let local = v["port"].as_u64().unwrap_or(0) as u32;
-    let f = Forward { target, ip, port, local };
-    ctx.get::<Forwards>().0.lock().push(f.clone());
-    Ok(f)
+    match crate::daemon::engine_call("POST", "/edock/k8s/forward", Some(&body)).await {
+        Some((s, v)) if s < 300 => Ok(Forward { ip, port, local: v["port"].as_u64().unwrap_or(0) as u32 }),
+        Some((_, v)) => Err(v["message"].as_str().unwrap_or("The engine refused").to_owned()),
+        None => Err("eDock's engine isn't running".into()),
+    }
 }
 
 #[command]
-pub async fn k8s_unforward(ctx: Ctx, local: u32) -> Result<(), String> {
-    let _ = crate::daemon::engine_call("DELETE", &format!("/edock/k8s/forward/{local}"), None).await;
-    ctx.get::<Forwards>().0.lock().retain(|f| f.local != local);
-    Ok(())
+pub async fn k8s_unforward(_ctx: Ctx, local: u32) -> Result<(), String> {
+    match crate::daemon::engine_call("DELETE", &format!("/edock/k8s/forward/{local}"), None).await {
+        Some((s, _)) if s < 300 => Ok(()),
+        Some((_, v)) => Err(v["message"].as_str().unwrap_or("The engine refused").to_owned()),
+        None => Err("eDock's engine isn't running".into()),
+    }
 }
 
-/// The forwards this app opened that are still open.
+/// The forwards open now, as the engine has them.
 #[command]
 pub async fn k8s_forwards(ctx: Ctx) -> Vec<Forward> {
-    let forwards = ctx.get::<Forwards>();
-    let list = forwards.0.lock().clone();
-    // The engine forgets them when it (or Kubernetes) restarts: keep only
-    // the ones that still answer.
-    let mut alive = vec![];
-    for f in list {
-        if tokio::net::TcpStream::connect(("127.0.0.1", f.local as u16)).await.is_ok() {
-            alive.push(f);
-        }
+    if !on_edock(&ctx) {
+        return vec![];
     }
-    *forwards.0.lock() = alive.clone();
-    alive
+    match crate::daemon::engine_request("GET", "/edock/k8s/forward").await {
+        Some((200, v)) => v
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|f| Forward { ip: f["ip"].as_str().unwrap_or("").into(), port: f["port"].as_u64().unwrap_or(0) as u32, local: f["local"].as_u64().unwrap_or(0) as u32 })
+            .collect(),
+        _ => vec![],
+    }
 }
 
 #[cfg(test)]

@@ -8,6 +8,8 @@
   import EngineDomains from "../lib/EngineDomains.svelte";
   import EngineBuilds from "../lib/EngineBuilds.svelte";
   import EngineProxy from "../lib/EngineProxy.svelte";
+  import EngineUsb from "../lib/EngineUsb.svelte";
+  import EngineAgents from "../lib/EngineAgents.svelte";
   import { api } from "../bindings";
   import { engine, changes, refreshEngine, useContext, attempt } from "../lib/state.svelte.js";
   import { bytes } from "../lib/format.js";
@@ -70,7 +72,7 @@
     if (!p) return;
     if (p.line) setupLines = [...setupLines.slice(-30), p.line];
     if (p.done) {
-      if (p.error) toast(p.error, { variant: "danger", duration: 8000 });
+      if (p.error) toast(p.error, { variant: "error", duration: 8000 });
       else toast("docker and edock are set up. Open a new terminal to use them.", { variant: "success" });
       loadCli();
       refreshEngine();
@@ -109,6 +111,8 @@
       { id: "resources", label: "Resources", disabled: !edockOn },
       { id: "domains", label: "Network", disabled: !edockOn },
       { id: "builds", label: "Builds & import", disabled: !edockOn },
+      { id: "usb", label: "USB", disabled: !edockOn },
+      { id: "agents", label: "AI agents" },
     ]}
     bind:value={tab}
     label="Engine"
@@ -120,6 +124,10 @@
         <div class="tab-cards"><EngineDomains /><EngineProxy /></div>
       {:else if id === "builds"}
         <div class="tab-cards"><EngineBuilds /></div>
+      {:else if id === "usb"}
+        <div class="tab-cards"><EngineUsb /></div>
+      {:else if id === "agents"}
+        <div class="tab-cards"><EngineAgents /></div>
       {:else}
       <div class="tab-cards">
 

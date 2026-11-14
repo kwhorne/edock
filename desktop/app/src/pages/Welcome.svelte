@@ -40,12 +40,22 @@
     if (p.line) lines = [...lines.slice(-6), p.line];
     if (p.done) {
       busy = null;
-      if (p.error) toast(p.error, { variant: "danger", duration: 8000 });
+      if (p.error) toast(p.error, { variant: "error", duration: 8000 });
       load();
     }
   });
   onDestroy(off);
+  // Steps 3 and 4 are about eDock's engine: be on it first (the welcome may
+  // open from ⌘K while the window shows another engine).
+  async function onEdock() {
+    if (engine.status?.context !== "edock") await useContext("edock");
+  }
+  async function importStep() {
+    await onEdock();
+    finish("/engine?tab=builds");
+  }
   async function trust() {
+    await onEdock();
     busy = "tls";
     await attempt(() => api.tls_trust(true), "HTTPS trusted");
     busy = null;
@@ -93,7 +103,7 @@
     <Card title="3 · Bring things over from {other.label}">
       <p class="muted text">Your images, volumes and containers, copied into eDock. {other.label} is only read.</p>
       {#snippet actions()}
-        <Button size="sm" disabled={!engineOn} onclick={() => finish("/engine?tab=builds")}>Choose what to import</Button>
+        <Button size="sm" disabled={!engineOn} onclick={importStep}>Choose what to import</Button>
       {/snippet}
     </Card>
   {/if}

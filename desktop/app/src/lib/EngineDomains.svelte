@@ -15,7 +15,7 @@
   async function savePorts(e) {
     e.preventDefault();
     const http = Number(portForm.http), https = Number(portForm.https);
-    if (!(http > 0 && http < 65536 && https > 0 && https < 65536)) return toast("Ports are 1 to 65535", { variant: "danger" });
+    if (!(http > 0 && http < 65536 && https > 0 && https < 65536)) return toast("Ports are 1 to 65535", { variant: "error" });
     busy = "ports";
     const d = await attempt(() => api.domains_set_ports(http, https), "Container domains moved");
     busy = null;

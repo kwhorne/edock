@@ -74,7 +74,9 @@ pub struct MachineRow {
     pub created: f64,
 }
 
-#[command]
+/// eDock's Linux machines (`edock machine`): name, distribution, state, and
+/// whether systemd runs them.
+#[command(can = "edock.view")]
 pub async fn machines_list(ctx: Ctx) -> Result<Vec<MachineRow>, String> {
     on_edock(&ctx)?;
     let docker = ctx.get::<Engine>().docker()?;

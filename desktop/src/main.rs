@@ -4,6 +4,11 @@
 
 mod daemon;
 mod edock;
+mod agent;
+mod inspector;
+mod snapshots;
+mod files;
+mod recipes;
 mod builds;
 mod engine;
 mod images;
@@ -11,6 +16,7 @@ mod k8s;
 mod machines;
 mod resources;
 mod streams;
+mod usb;
 mod vm;
 
 use std::sync::Arc;
@@ -40,19 +46,13 @@ impl Provider for Watcher {
                 let (context, _) = engine.context();
                 // eDock's engine: one background look at /info, which
                 // doesn't keep its VM awake, says both. Others: Docker's.
-                let (running, stopped) = if !connected {
-                    (0, false)
-                } else if context == engine::EDOCK {
-                    match daemon::engine_request("GET", "/info").await {
-                        Some((200, i)) => (i["ContainersRunning"].as_u64().unwrap_or(0) as i64, i["EdockStopped"] == true),
-                        _ => (0, false),
-                    }
-                } else {
-                    match engine.docker() {
-                        Ok(d) => (d.info().await.ok().and_then(|i| i.containers_running).unwrap_or(0), false),
-                        Err(_) => (0, false),
-                    }
-                };
+                // The user's running containers (not eDock's own: machines,
+                // Kubernetes, BuildKit), and whether eDock is stopped; both
+                // as background looks on eDock's engine.
+                let stopped = connected
+                    && context == engine::EDOCK
+                    && matches!(daemon::engine_request("GET", "/info").await, Some((200, i)) if i["EdockStopped"] == true);
+                let running = if connected { resources::user_counts(&engine).await.map_or(0, |(r, _)| r) } else { 0 };
                 tray.set_title(if running > 0 { Some(running.to_string()) } else { None }.as_deref());
                 tray.set_tooltip(Some(&if stopped {
                     "eDock — engine stopped".to_owned()
@@ -91,7 +91,6 @@ fn core(engine: Arc<engine::Engine>) -> App {
         .bind_as::<machines::Creating>(Arc::new(machines::Creating::default()))
         .bind_as::<images::Scanning>(Arc::new(images::Scanning::default()))
         .bind_as::<vm::Importing>(Arc::new(vm::Importing::default()))
-        .bind_as::<k8s::Forwards>(Arc::new(k8s::Forwards::default()))
         .commands(commands![
             resources::engine_status,
             resources::contexts_list,
@@ -166,8 +165,34 @@ fn core(engine: Arc<engine::Engine>) -> App {
             builds::builds_list,
             builds::build_detail,
             builds::build_remove,
+            mcp_command,
             welcome_needed,
             welcome_done,
+            usb::usb_list,
+            usb::usb_attach,
+            usb::usb_detach,
+            agent::container_logs,
+            agent::container_run,
+            agent::container_exec,
+            inspector::http_requests,
+            inspector::http_request,
+            inspector::http_record,
+            inspector::http_clear,
+            inspector::http_replay,
+            snapshots::snapshots_list,
+            snapshots::container_snapshot,
+            snapshots::container_snapshot_restore,
+            snapshots::volume_snapshot,
+            snapshots::volume_snapshot_restore,
+            snapshots::snapshot_delete,
+            files::container_files,
+            files::container_file_preview,
+            files::container_file_save,
+            files::container_files_upload,
+            files::container_file_remove,
+            files::container_file_reveal,
+            recipes::recipes_list,
+            recipes::recipe_start,
             window_open,
         ])
 }
@@ -182,6 +207,13 @@ const UPDATE_MANIFEST: &str = "https://github.com/kwhorne/edock/releases/latest/
 /// Who signs eDock (the Developer ID's team), and its bundle id.
 const TEAM_ID: &str = "52AT44QFCM";
 const BUNDLE_ID: &str = "app.edock.app";
+
+/// The command that makes this app an MCP server for AI agents: its own
+/// binary, with `--mcp`.
+#[command]
+async fn mcp_command(_ctx: Ctx) -> String {
+    std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "/Applications/eDock.app/Contents/MacOS/edock-desktop".into())
+}
 
 /// Whether to show the welcome: the first time the app opens.
 #[command]
@@ -218,6 +250,19 @@ fn main() -> elyra::Result<()> {
                 .auto_check(true),
         )
         .allow_frontend(elyra::security::Capability::UpdaterInstall)
+        // The window may call every eDock command; agents (MCP, below)
+        // only what's granted to them.
+        .allow_abilities(["edock.*"])
+        // AI agents: `eDock --mcp` gives Claude, Cursor or VS Code eDock's
+        // commands as tools. Looking is free; changing anything is asked
+        // in the agent's client first.
+        .mcp(
+            elyra::Mcp::new()
+                .allow_abilities(["edock.view", "edock.manage", "edock.run", "edock.exec"])
+                .confirm("edock.manage")
+                .confirm("edock.run")
+                .confirm("edock.exec"),
+        )
         .stay_in_tray()
         .tray(
             TrayConfig::new()

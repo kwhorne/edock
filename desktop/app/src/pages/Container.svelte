@@ -1,11 +1,12 @@
 <script>
-  import { navigate, clipboard, toast, confirm } from "@elyra/runtime";
+  import { navigate, clipboard, toast, confirm, prompt } from "@elyra/runtime";
   import { Badge, Button, Callout, Skeleton, Tabs } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import Logs from "../lib/Logs.svelte";
   import Stats from "../lib/Stats.svelte";
   import Terminal from "../lib/Terminal.svelte";
   import Ports from "../lib/Ports.svelte";
+  import Files from "../lib/Files.svelte";
   import { Modal } from "@elyra/ui";
   import { api } from "../bindings";
   import { changes, engine, attempt } from "../lib/state.svelte.js";
@@ -50,10 +51,21 @@
     if (await confirm(`Remove ${detail.name}?`, { danger: true, confirmLabel: "Remove" })) act("remove");
   }
 
+  // Its files as they are now, to go back to (Snapshots page).
+  async function snapshot() {
+    const note = await prompt(`Snapshot ${detail.name}'s files. A note, if you like:`, { placeholder: "before the upgrade", confirmLabel: "Take snapshot" });
+    if (note == null) return;
+    busy = "snapshot";
+    const image = await attempt(() => api.container_snapshot(params.id, note.trim() || null));
+    busy = null;
+    if (image) toast(`Snapshot taken: ${image}. Its volumes aren't in it.`, { variant: "success", duration: 6000 });
+  }
+
   const tabs = $derived([
     { id: "logs", label: "Logs" },
     { id: "stats", label: "Stats", disabled: !running },
     { id: "terminal", label: "Terminal", disabled: !running },
+    { id: "files", label: "Files" },
     { id: "ports", label: "Ports" },
     { id: "inspect", label: "Inspect" },
   ]);
@@ -71,7 +83,7 @@
   async function saveEnv() {
     const rows = envRows.filter((r) => r.key.trim() !== "" || r.value !== "");
     const bad = rows.find((r) => !/^[^=\s]+$/.test(r.key.trim()));
-    if (bad) return toast(`“${bad.key}” isn't a variable name: no spaces or =`, { variant: "danger" });
+    if (bad) return toast(`“${bad.key}” isn't a variable name: no spaces or =`, { variant: "error" });
     const env = rows.map((r) => `${r.key.trim()}=${r.value}`);
     if (running && !(await confirm(`${detail.name} restarts with the new environment. Its files are kept.`, { confirmLabel: "Save and restart" }))) return;
     envBusy = true;
@@ -115,6 +127,7 @@
         <Button size="sm" variant="primary" loading={busy === "start"} onclick={() => act("start")}><Icon name="play" size={14} /> Start</Button>
       {/if}
       <Button size="sm" loading={busy === "restart"} onclick={() => act("restart")}><Icon name="restart" size={14} /> Restart</Button>
+      <Button size="sm" loading={busy === "snapshot"} onclick={snapshot} title="Snapshot its files"><Icon name="camera" size={14} /> Snapshot</Button>
       <Button size="sm" variant="danger" onclick={remove}><Icon name="trash" size={14} /></Button>
     {:else}
       <h1>Container</h1>
@@ -145,6 +158,8 @@
           <Stats container={params.id} />
         {:else if id === "terminal"}
           <Terminal container={params.id} />
+        {:else if id === "files"}
+          <Files container={params.id} {running} />
         {:else if id === "ports"}
           <Ports id={params.id} row={{ state: detail.state, domain: detail.domain }} />
         {:else if id === "inspect"}

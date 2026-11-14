@@ -22,7 +22,11 @@
       .catch((e) => (error = e?.message ?? String(e)));
   });
 
-  const secs = (s) => (s.started && s.completed ? (Date.parse(s.completed) - Date.parse(s.started)) / 1000 : null);
+  const secs = (s) => {
+    if (!s.started || !s.completed || s.completed.startsWith("0001-")) return null;
+    const t = (Date.parse(s.completed) - Date.parse(s.started)) / 1000;
+    return t >= 0 ? t : null;
+  };
   const TONE = { Completed: "success", Running: "accent", Error: "danger", Canceled: "warning" };
 
   async function remove() {

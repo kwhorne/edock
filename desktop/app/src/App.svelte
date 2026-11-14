@@ -1,10 +1,12 @@
 <script>
   import Router from "./Router.svelte";
   import { routes } from "./routes.js";
-  import { appWindow, channel, navigate, registerCommands, route } from "@elyra/runtime";
+  import { appWindow, channel, navigate, onAgent, registerCommands, route, toast } from "@elyra/runtime";
   import { NavItem, Select, Sidebar, Toolbar } from "@elyra/ui";
   import Icon from "./lib/Icon.svelte";
   import { checkForUpdates } from "./lib/updates.js";
+  import { startSearch } from "./lib/search.js";
+  import { startRecipe } from "./lib/recipes.js";
   import { engine, startWatching, useContext, attempt } from "./lib/state.svelte.js";
   import { getTheme, applyTheme } from "./theme.js";
   import { api } from "./bindings";
@@ -34,21 +36,46 @@
     channel("navigate").subscribe((path) => {
       if (path) navigate(path);
     });
+    // An AI agent at work (MCP): said when it changes something; reading is quiet.
+    const CHANGES = new Set(["container_action", "project_action", "image_pull", "container_run", "container_exec"]);
+    onAgent((a) => {
+      if (a.phase === "started" && CHANGES.has(a.tool)) toast(`${a.client} runs ${a.tool.replace(/_/g, " ")}…`);
+      if (a.phase === "finished" && CHANGES.has(a.tool) && a.ok === false) toast(`${a.client}: ${a.tool.replace(/_/g, " ")} failed`, { variant: "error" });
+    });
   }
 
-  registerCommands([
+  const COMMANDS = [
     { id: "go.containers", title: "Containers", action: () => navigate("/") },
     { id: "go.images", title: "Images", action: () => navigate("/images") },
     { id: "go.volumes", title: "Volumes", action: () => navigate("/volumes") },
     { id: "go.networks", title: "Networks", action: () => navigate("/networks") },
     { id: "go.machines", title: "Linux machines", action: () => navigate("/machines") },
     { id: "go.builds", title: "Builds", action: () => navigate("/builds") },
+    { id: "go.snapshots", title: "Snapshots", action: () => navigate("/snapshots") },
+    { id: "go.requests", title: "Requests: HTTP inspector", action: () => navigate("/requests") },
     { id: "go.welcome", title: "Welcome: set eDock up", action: () => navigate("/welcome") },
     { id: "go.kubernetes", title: "Kubernetes", action: () => navigate("/kubernetes") },
     { id: "go.engine", title: "Engine & contexts", action: () => navigate("/engine") },
     { id: "app.update", title: "Check for updates", action: checkForUpdates },
     { id: "engine.start", title: "Start eDock engine", action: () => attempt(() => api.daemon_start(), "eDock engine started") },
-  ]);
+  ];
+  registerCommands(COMMANDS);
+  // ⌘K: find things by name, and start a service from a recipe.
+  if (!location.hash.startsWith("#/quick")) {
+    startSearch();
+    api.recipes_list().then((recipes) =>
+      registerCommands([
+        ...COMMANDS,
+        ...recipes.map((r) => ({
+          id: `recipe.${r.id}`,
+          title: `New service: ${r.title}`,
+          subtitle: r.about,
+          keywords: `${r.id} ${r.image} database recipe start run`,
+          action: () => startRecipe(r),
+        })),
+      ]),
+    );
+  }
 
   function cycleTheme() {
     theme = theme === "auto" ? "light" : theme === "light" ? "dark" : "auto";
@@ -109,6 +136,14 @@
         <NavItem path="/networks">
           {#snippet icon()}<Icon name="network" />{/snippet}
           Networks
+        </NavItem>
+        <NavItem path="/snapshots">
+          {#snippet icon()}<Icon name="camera" />{/snippet}
+          Snapshots
+        </NavItem>
+        <NavItem path="/requests">
+          {#snippet icon()}<Icon name="activity" />{/snippet}
+          Requests
         </NavItem>
         <NavItem path="/builds">
           {#snippet icon()}<Icon name="hammer" />{/snippet}

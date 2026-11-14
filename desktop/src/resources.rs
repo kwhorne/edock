@@ -56,8 +56,35 @@ pub struct EngineStatus {
     pub images: u32,
 }
 
-/// Which engine the app is on, and whether it answers.
-#[command]
+/// One of eDock's own containers (a Linux machine, the Kubernetes node,
+/// BuildKit), from `docker ps`'s JSON: kept out of the user's counts.
+pub(crate) fn is_system(c: &Value) -> bool {
+    let labels = &c["Labels"];
+    labels.get("app.edock.machine").is_some()
+        || labels.get("app.edock.k8s").is_some()
+        || c["Names"][0].as_str().is_some_and(|n| n.trim_start_matches('/').starts_with("buildx_buildkit_"))
+}
+
+/// The user's containers, running and in all, leaving out eDock's own. On
+/// eDock's engine as a background look, which doesn't keep its VM awake.
+pub(crate) async fn user_counts(engine: &Engine) -> Option<(u32, u32)> {
+    let list: Value = if engine.context().0 == crate::engine::EDOCK {
+        match crate::daemon::engine_request("GET", "/containers/json?all=1").await {
+            Some((200, v)) => v,
+            _ => return None,
+        }
+    } else {
+        let d = engine.docker().ok()?;
+        json(&d.list_containers(Some(q::ListContainersOptionsBuilder::default().all(true).build())).await.ok()?)
+    };
+    let mine: Vec<&Value> = list.as_array()?.iter().filter(|c| !is_system(c)).collect();
+    let running = mine.iter().filter(|c| c["State"] == "running").count() as u32;
+    Some((running, mine.len() as u32))
+}
+
+/// The engine eDock is connected to: its name and version, CPUs and memory, and
+/// how many of the user's containers run. Start here.
+#[command(can = "edock.view")]
 pub async fn engine_status(ctx: Ctx) -> EngineStatus {
     let engine = ctx.get::<Engine>();
     let (context, host) = engine.context();
@@ -122,6 +149,14 @@ pub async fn engine_status(ctx: Ctx) -> EngineStatus {
             engine.reset();
         }
     }
+    // Yours only: eDock's own (machines, Kubernetes, BuildKit) aren't in
+    // the list, so they aren't in its counts either.
+    if st.connected {
+        if let Some((running, all)) = user_counts(&engine).await {
+            st.running = running;
+            st.containers = all;
+        }
+    }
     st
 }
 
@@ -173,8 +208,10 @@ pub struct ContainerRow {
     pub system: Option<String>,
 }
 
-/// Every container, running or not.
-#[command]
+/// Every container, running or not: name, image, state and health, published
+/// ports, Compose project and service, and on eDock its address
+/// (`<domain>.edock.localhost`). `size` adds each one's disk use (slower).
+#[command(can = "edock.view")]
 pub async fn containers_list(ctx: Ctx, size: bool) -> Result<Vec<ContainerRow>, String> {
     let docker = docker(&ctx)?;
     let on_edock = ctx.get::<Engine>().context().0 == crate::engine::EDOCK;
@@ -261,13 +298,13 @@ async fn act(docker: &bollard::Docker, id: &str, action: &str) -> Result<(), Str
 }
 
 /// start, stop, restart, pause, unpause, kill or remove one container.
-#[command]
+#[command(can = "edock.manage")]
 pub async fn container_action(ctx: Ctx, id: String, action: String) -> Result<(), String> {
     act(&docker(&ctx)?, &id, &action).await
 }
 
 /// The same action on every container of a Compose project.
-#[command]
+#[command(can = "edock.manage")]
 pub async fn project_action(ctx: Ctx, project: String, action: String) -> Result<(), String> {
     let docker = docker(&ctx)?;
     let mut filters = HashMap::new();
@@ -335,8 +372,9 @@ fn join(v: &Value) -> String {
     }
 }
 
-/// `docker inspect` for a container, in parts.
-#[command]
+/// One container in detail: image, command, environment, mounts, labels,
+/// networks, ports, and the whole `docker inspect`.
+#[command(can = "edock.view")]
 pub async fn container_inspect(ctx: Ctx, id: String) -> Result<ContainerDetail, String> {
     let docker = docker(&ctx)?;
     let info = docker.inspect_container(&id, None::<q::InspectContainerOptions>).await.map_err(err)?;
@@ -443,8 +481,9 @@ pub struct ImageRow {
     pub containers: i32,
 }
 
-/// Every image, one row per tag (untagged ones as `<none>`).
-#[command]
+/// Every image, one row per tag (untagged ones as `<none>`), with size, age
+/// and how many containers use it.
+#[command(can = "edock.view")]
 pub async fn images_list(ctx: Ctx) -> Result<Vec<ImageRow>, String> {
     let docker = docker(&ctx)?;
     let opts = q::ListImagesOptionsBuilder::default().all(false).build();
@@ -511,9 +550,9 @@ pub struct PullProgress {
     pub error: Option<String>,
 }
 
-/// Pull an image. Progress goes out on the `pull` channel; the promise
-/// settles when the pull is done.
-#[command]
+/// Pull an image (`nginx:alpine`, `ghcr.io/org/app:1.2`); returns when it's
+/// pulled. A missing tag means `latest`.
+#[command(can = "edock.manage")]
 pub async fn image_pull(ctx: Ctx, reference: String) -> Result<(), String> {
     use futures_util::StreamExt;
     let docker = docker(&ctx)?;
@@ -561,7 +600,7 @@ pub struct VolumeRow {
 }
 
 /// Every volume, and the containers that mount it.
-#[command]
+#[command(can = "edock.view")]
 pub async fn volumes_list(ctx: Ctx) -> Result<Vec<VolumeRow>, String> {
     let docker = docker(&ctx)?;
     let vols = docker.list_volumes(None::<q::ListVolumesOptions>).await.map_err(err)?;
@@ -643,7 +682,8 @@ pub struct NetworkRow {
     pub containers: Vec<String>,
 }
 
-#[command]
+/// Every network: driver, subnet, Compose project, and the containers on it.
+#[command(can = "edock.view")]
 pub async fn networks_list(ctx: Ctx) -> Result<Vec<NetworkRow>, String> {
     let docker = docker(&ctx)?;
     let nets = docker.list_networks(None::<q::ListNetworksOptions>).await.map_err(err)?;

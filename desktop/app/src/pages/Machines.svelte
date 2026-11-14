@@ -40,7 +40,7 @@
     if (p.line) lines = [...lines.slice(-30), p.line];
     if (p.done) {
       creating = false;
-      if (p.error) toast(p.error, { variant: "danger", duration: 8000 });
+      if (p.error) toast(p.error, { variant: "error", duration: 8000 });
       else {
         toast(`${made} is ready`, { variant: "success" });
         navigate(`/machines/${made}`);
@@ -54,7 +54,7 @@
   async function create(e) {
     e.preventDefault();
     const name = form.name.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(name)) return toast("A name is letters, digits and dashes", { variant: "danger" });
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(name)) return toast("A name is letters, digits and dashes", { variant: "error" });
     lines = [];
     made = name;
     creating = true;

@@ -29,6 +29,12 @@
     if (name?.trim()) await attempt(() => api.volume_create(name.trim()), `Created ${name.trim()}`);
   }
 
+  async function snapshot(v) {
+    const note = await prompt(`Snapshot ${v.name}'s files. A note, if you like:`, { placeholder: "before the migration", confirmLabel: "Take snapshot" });
+    if (note == null) return;
+    await attempt(() => api.volume_snapshot(v.name, note.trim() || null), `Snapshot of ${v.name} taken`);
+  }
+
   async function remove(v) {
     if (!(await confirm(`Remove ${v.name} and everything in it?`, { danger: true, confirmLabel: "Remove" }))) return;
     await attempt(() => api.volume_remove(v.name));
@@ -85,6 +91,7 @@
         {/if}
       {/snippet}
       {#snippet actions(row)}
+        <button class="icon-btn" title="Snapshot its files" onclick={() => snapshot(row)}><Icon name="camera" size={14} /></button>
         <button class="icon-btn danger" title="Remove" onclick={() => remove(row)}><Icon name="trash" size={14} /></button>
       {/snippet}
       {#snippet empty()}<span class="muted">No volumes.</span>{/snippet}

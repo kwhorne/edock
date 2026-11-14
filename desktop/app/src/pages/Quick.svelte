@@ -63,7 +63,7 @@
         <button class="icon-btn" title="Start" onclick={() => attempt(() => api.container_action(c.id, "start"))}><Icon name="play" size={13} /></button>
       </li>
     {/each}
-    {#if containers.length === 0}
+    {#if mine.length === 0}
       <li class="muted">No containers.</li>
     {/if}
   </ul>

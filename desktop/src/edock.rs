@@ -53,7 +53,9 @@ pub struct DomainsInfo {
     pub trusted: bool,
 }
 
-#[command]
+/// eDock's container domains: the suffix and ports at which containers answer
+/// (`http://<name>.edock.localhost:<port>`), and whether HTTPS is trusted.
+#[command(can = "edock.view")]
 pub async fn domains_info(ctx: Ctx) -> DomainsInfo {
     let mut d = DomainsInfo { available: false, http_port: 80, https_port: 443, http_on: false, https_on: false, suffix: "edock.localhost".into(), trusted: false };
     if on_edock(&ctx).is_err() {
@@ -122,8 +124,9 @@ pub struct ContainerPorts {
     pub local: Vec<u32>,
 }
 
-/// What a container publishes, and what it really listens on.
-#[command]
+/// What a container publishes, and the TCP ports it really listens on (also
+/// ones nothing publishes, and ones bound only to its own loopback). eDock only.
+#[command(can = "edock.view")]
 pub async fn container_ports(ctx: Ctx, id: String) -> Result<ContainerPorts, String> {
     on_edock(&ctx)?;
     let id = segment(&id)?;

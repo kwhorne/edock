@@ -60,7 +60,9 @@ pub struct ImageLayers {
     pub layers: Vec<Layer>,
 }
 
-#[command]
+/// An image's layers: each Dockerfile line, what it added, and which came
+/// with the base image. eDock only.
+#[command(can = "edock.view")]
 pub async fn image_layers(ctx: Ctx, name: String) -> Result<ImageLayers, String> {
     on_edock(&ctx)?;
     let v = answer(engine_request("GET", &format!("/edock/images/layers?name={}", enc(&name))).await)?;
@@ -104,7 +106,7 @@ fn counts(v: &Value) -> Counts {
 }
 
 /// The image's scans, newest first.
-#[command]
+#[command(can = "edock.view")]
 pub async fn image_scans(ctx: Ctx, name: String) -> Result<Vec<ScanSummary>, String> {
     on_edock(&ctx)?;
     let v = answer(engine_request("GET", &format!("/edock/images/scans?name={}", enc(&name))).await)?;
@@ -177,7 +179,7 @@ fn result(v: &Value) -> ScanResult {
 }
 
 /// One scan's findings (`at`), or the newest when `at` is none.
-#[command]
+#[command(can = "edock.view")]
 pub async fn image_scan_result(ctx: Ctx, name: String, at: Option<f64>) -> Result<Option<ScanResult>, String> {
     on_edock(&ctx)?;
     let at = at.map(|a| format!("&at={}", a as u64)).unwrap_or_default();

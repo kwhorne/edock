@@ -2,6 +2,7 @@
   import { contextMenu, navigate, shell, clipboard, confirm, toast } from "@elyra/runtime";
   import { Badge, Button, Callout, Empty, Input, Skeleton, Switch } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
+  import NewService from "../lib/NewService.svelte";
   import { api } from "../bindings";
   import { changes, engine, attempt, domainUrl } from "../lib/state.svelte.js";
   import { ago, shortId, stateTone } from "../lib/format.js";
@@ -9,10 +10,13 @@
   let containers = $state(null);
   let error = $state(null);
   let search = $state("");
+  let newService = $state(false);
   // eDock's own (Linux machines, the Kubernetes node, BuildKit) have their
   // own pages; here only when asked for.
   let showSystem = $state(false);
   const systemCount = $derived(containers?.filter((c) => c.system).length ?? 0);
+  // The user's own: what the header counts and the empty page speaks of.
+  const mine = $derived(containers?.filter((c) => !c.system) ?? []);
   let collapsed = $state({});
   let busy = $state({});
 
@@ -115,14 +119,16 @@
 <div class="page">
   <header class="page-head">
     <h1>Containers</h1>
-    <span class="muted">{containers ? `${containers.filter((c) => c.state === "running").length} running · ${containers.length} in all` : ""}</span>
+    <span class="muted">{containers ? `${mine.filter((c) => c.state === "running").length} running · ${mine.length} in all` : ""}</span>
     <span class="spacer"></span>
     <div class="search"><Icon name="search" size={14} /><Input bind:value={search} placeholder="Filter" aria-label="Filter containers" /></div>
     {#if systemCount}
       <label class="toggle" title="Linux machines, the Kubernetes node and BuildKit"><Switch bind:checked={showSystem} /> eDock's own ({systemCount})</label>
     {/if}
     <Button size="sm" variant="ghost" onclick={prune} title="Remove stopped containers (Linux machines and Kubernetes are kept)"><Icon name="broom" size={14} /> Prune</Button>
+    <Button size="sm" variant="primary" onclick={() => (newService = true)}><Icon name="plus" size={14} /> New service</Button>
   </header>
+  <NewService bind:open={newService} />
 
   {#if error}
     <Callout variant="warning" title="The engine didn't answer">
@@ -131,8 +137,13 @@
     </Callout>
   {:else if containers === null}
     <Skeleton lines={6} />
-  {:else if containers.length === 0}
-    <Empty title="No containers yet" description="Run one with `docker run`, or `docker compose up` in a project. It shows up here at once." />
+  {:else if mine.length === 0 && !showSystem}
+    <Empty
+      title="No containers yet"
+      description="Run one with `docker run`, or `docker compose up` in a project, or start a database or other service here. It shows up at once.{systemCount ? ` (eDock's own ${systemCount === 1 ? "one is" : `${systemCount} are`} hidden: “eDock's own” above shows ${systemCount === 1 ? "it" : "them"}.)` : ""}"
+    >
+      {#snippet action()}<Button onclick={() => (newService = true)}><Icon name="plus" size={14} /> New service</Button>{/snippet}
+    </Empty>
   {:else}
     {#each groups as g (g.project ?? "\u0000")}
       <section class="group">
@@ -144,7 +155,7 @@
             <span class="dot" class:on={g.running > 0} class:partial={g.running > 0 && g.running < g.items.length}></span>
             <strong>{g.project}</strong>
             <span class="muted">{g.running}/{g.items.length} running</span>
-            {#if g.dir}<span class="muted path" title={g.dir}>{g.dir.replace(/^\/Users\/[^/]+/, "~")}</span>{/if}
+            {#if g.dir}<span class="muted path" title={g.dir}>{g.dir.replace(/^\/(?:Users|home)\/[^/]+/, "~")}</span>{/if}
             <span class="spacer"></span>
             <div class="row-actions">
               {#if g.running < g.items.length}
@@ -215,7 +226,7 @@
       </section>
     {/each}
     {#if groups.length === 0}
-      <Empty title="Nothing matches" description="No container's name, image or project has “{search}”." />
+      <Empty title="Nothing matches" description={search.trim() ? `No container's name, image or project has “${search.trim()}”.` : "Nothing to show."} />
     {/if}
   {/if}
 </div>

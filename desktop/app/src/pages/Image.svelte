@@ -46,7 +46,7 @@
       picked = when;
       current = when != null ? await api.image_scan_result(name, when) : null;
     } catch (e) {
-      toast(e?.message ?? String(e), { variant: "danger" });
+      toast(e?.message ?? String(e), { variant: "error" });
     }
   }
 
@@ -61,7 +61,7 @@
     if (!p || p.name !== name) return;
     if (p.done) {
       progress = null;
-      if (p.error) toast(p.error, { variant: "danger", duration: 8000 });
+      if (p.error) toast(p.error, { variant: "error", duration: 8000 });
       else loadScans();
     } else progress = p;
   });
