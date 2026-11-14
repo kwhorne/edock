@@ -1,0 +1,28 @@
+# eDock on a Linux host: containers on this machine's kernel, no VM.
+# Install: cargo xtask linux, copy target/linux/release/{edock,edock-init} to
+# /usr/local/bin, then:  cp edock.service /etc/systemd/system/ &&
+#   groupadd -f edock && systemctl enable --now edock
+# Users in the `edock` group:  docker context create edock --docker host=unix:///run/edock/docker.sock
+# Membership of the `edock` group is root-equivalent (a member can mount any
+# path into a container as root), exactly like the `docker` group.
+[Unit]
+Description=eDock container engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/edock daemon
+Environment=EDOCK_SOCKET=/run/edock/docker.sock
+Environment=EDOCK_SOCKET_GROUP=edock
+Environment=HOME=/var/lib/edock-daemon
+# The daemon creates the cgroups its containers run in.
+Delegate=yes
+KillMode=mixed
+Restart=on-failure
+RuntimeDirectory=edock
+# 0755: members of edock reach the socket (itself 0660 root:edock) through it.
+RuntimeDirectoryMode=0755
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

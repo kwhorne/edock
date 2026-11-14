@@ -1,0 +1,41 @@
+name: Bug report
+description: Something in eDock doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: eDock version and system
+      description: From eDock's About window, or `edock version`.
+      placeholder: "0.2.0 on macOS 26.1 (Apple silicon)"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: The exact commands you ran, or the clicks in the window, so we can do the same.
+      placeholder: |
+        edock run --rm -p 8080:80 nginx
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: What happened
+      description: The full output or error, pasted as text. For a problem in the window, add a screenshot.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: For a Docker difference, what Docker does with the same command.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: How often it happens, a workaround you found, eDock's logs if they show the problem.

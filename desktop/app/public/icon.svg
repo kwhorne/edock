@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#0369a1"/>
+    </linearGradient>
+    <linearGradient id="box" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e0f2fe"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#bg)"/>
+  <!-- three containers on a dock -->
+  <g fill="url(#box)">
+    <rect x="252" y="452" width="232" height="168" rx="22"/>
+    <rect x="540" y="452" width="232" height="168" rx="22"/>
+    <rect x="396" y="260" width="232" height="168" rx="22"/>
+  </g>
+  <g stroke="#0ea5e9" stroke-width="16" stroke-linecap="round" opacity="0.55">
+    <path d="M310 490v92M368 490v92M426 490v92M598 490v92M656 490v92M714 490v92M454 298v92M512 298v92M570 298v92"/>
+  </g>
+  <path d="M212 676h600l-52 88H264z" fill="#0c4a6e" opacity="0.85"/>
+</svg>

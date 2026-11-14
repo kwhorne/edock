@@ -1,0 +1,24 @@
+# Standalone workspace so the project builds anywhere.
+[workspace]
+
+[package]
+name = "edock-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "eDock — a tiny, fast container runtime for the desktop"
+
+[[bin]]
+name = "edock-desktop"
+path = "src/main.rs"
+
+[dependencies]
+elyra = { git = "https://github.com/kwhorne/elyra-framework", tag = "v0.46.0", features = ["tray", "system"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+rust-embed = "8"
+bollard = "0.21"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "fs"] }
+futures-util = "0.3"
+parking_lot = "0.12"
+dirs = "6"

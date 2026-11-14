@@ -1,0 +1,211 @@
+//! The Docker engine the app talks to: a socket chosen from the docker
+//! contexts (eDock's own first), held behind a lock so switching context
+//! swaps it for every command at once.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use bollard::{Docker, API_DEFAULT_VERSION};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+
+/// The context eDock's own engine is known by.
+pub const EDOCK: &str = "edock";
+
+/// A docker context: a name and the socket behind it.
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+pub struct Context {
+    pub name: String,
+    pub description: String,
+    /// `unix:///…/docker.sock`
+    pub host: String,
+    /// The socket exists on disk (the engine may still be stopped).
+    pub available: bool,
+    /// The one `docker` itself uses (`docker context use`).
+    pub docker_current: bool,
+}
+
+pub struct Engine {
+    inner: RwLock<Current>,
+    /// Bumped on every switch, so long-running streams notice and end.
+    generation: std::sync::atomic::AtomicU64,
+}
+
+struct Current {
+    context: String,
+    host: String,
+    docker: Option<Docker>,
+}
+
+impl Engine {
+    pub fn new() -> Arc<Self> {
+        let saved = Settings::load().context;
+        let contexts = list_contexts();
+        // The saved one, else eDock's own when its socket is there, else
+        // docker's current context, else the first we know.
+        let pick = saved
+            .and_then(|s| contexts.iter().find(|c| c.name == s).cloned())
+            .or_else(|| contexts.iter().find(|c| c.name == EDOCK && c.available).cloned())
+            .or_else(|| contexts.iter().find(|c| c.docker_current).cloned())
+            .or_else(|| contexts.first().cloned());
+        let (context, host) = pick.map(|c| (c.name, c.host)).unwrap_or_else(|| (EDOCK.into(), edock_host()));
+        Arc::new(Engine {
+            inner: RwLock::new(Current { docker: connect(&host), context, host }),
+            generation: Default::default(),
+        })
+    }
+
+    /// An engine on one socket, for tests.
+    #[cfg(test)]
+    pub fn on(context: &str, host: &str) -> Arc<Self> {
+        Arc::new(Engine {
+            inner: RwLock::new(Current { docker: connect(host), context: context.into(), host: host.into() }),
+            generation: Default::default(),
+        })
+    }
+
+    /// The client for the current context; reconnects when the socket has
+    /// appeared since (an engine that was started after the app).
+    pub fn docker(&self) -> Result<Docker, String> {
+        if let Some(d) = self.inner.read().docker.clone() {
+            return Ok(d);
+        }
+        let mut cur = self.inner.write();
+        cur.docker = connect(&cur.host);
+        cur.docker.clone().ok_or_else(|| format!("No engine at {}", cur.host))
+    }
+
+    pub fn context(&self) -> (String, String) {
+        let c = self.inner.read();
+        (c.context.clone(), c.host.clone())
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn switch(&self, name: &str) -> Result<(), String> {
+        let ctx = list_contexts()
+            .into_iter()
+            .find(|c| c.name == name)
+            .ok_or_else(|| format!("No docker context named {name}"))?;
+        {
+            let mut cur = self.inner.write();
+            cur.docker = connect(&ctx.host);
+            cur.context = ctx.name.clone();
+            cur.host = ctx.host;
+        }
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut s = Settings::load();
+        s.context = Some(ctx.name);
+        s.save();
+        Ok(())
+    }
+
+    /// Drop the client, so the next call connects afresh (after the
+    /// engine restarted and its socket was made again).
+    pub fn reset(&self) {
+        let mut cur = self.inner.write();
+        cur.docker = connect(&cur.host);
+    }
+}
+
+fn connect(host: &str) -> Option<Docker> {
+    let path = host.strip_prefix("unix://")?;
+    if !std::path::Path::new(path).exists() {
+        return None;
+    }
+    Docker::connect_with_unix(host, 120, API_DEFAULT_VERSION).ok()
+}
+
+fn home() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// eDock's engine socket: `~/.edock/run/docker.sock`.
+pub fn edock_host() -> String {
+    format!("unix://{}", home().join(".edock/run/docker.sock").display())
+}
+
+fn exists(host: &str) -> bool {
+    host.strip_prefix("unix://").is_some_and(|p| std::path::Path::new(p).exists())
+}
+
+/// eDock's engine, docker's default socket, and every context in
+/// `~/.docker/contexts` with a unix socket.
+pub fn list_contexts() -> Vec<Context> {
+    let docker_dir = home().join(".docker");
+    let current = std::fs::read_to_string(docker_dir.join("config.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["currentContext"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "default".into());
+
+    let mut out = vec![];
+    let edock = edock_host();
+    out.push(Context {
+        name: EDOCK.into(),
+        description: "eDock engine".into(),
+        available: exists(&edock),
+        docker_current: current == EDOCK,
+        host: edock,
+    });
+    let default = std::env::var("DOCKER_HOST")
+        .ok()
+        .filter(|h| h.starts_with("unix://"))
+        .unwrap_or_else(|| "unix:///var/run/docker.sock".into());
+    out.push(Context {
+        name: "default".into(),
+        description: "Docker's default socket".into(),
+        available: exists(&default),
+        docker_current: current == "default",
+        host: default,
+    });
+
+    if let Ok(entries) = std::fs::read_dir(docker_dir.join("contexts/meta")) {
+        let mut found = vec![];
+        for e in entries.flatten() {
+            let Ok(text) = std::fs::read_to_string(e.path().join("meta.json")) else { continue };
+            let Ok(meta) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+            let Some(name) = meta["Name"].as_str() else { continue };
+            let Some(host) = meta["Endpoints"]["docker"]["Host"].as_str() else { continue };
+            if !host.starts_with("unix://") || out.iter().any(|c: &Context| c.name == name) {
+                continue;
+            }
+            found.push(Context {
+                name: name.into(),
+                description: meta["Metadata"]["Description"].as_str().unwrap_or("").into(),
+                available: exists(host),
+                docker_current: current == name,
+                host: host.into(),
+            });
+        }
+        found.sort_by(|a, b| a.name.cmp(&b.name));
+        out.extend(found);
+    }
+    out
+}
+
+/// The desktop app's own settings, in `~/.edock/desktop.json`.
+#[derive(Default, Serialize, Deserialize)]
+pub struct Settings {
+    pub context: Option<String>,
+}
+
+impl Settings {
+    fn path() -> PathBuf {
+        home().join(".edock/desktop.json")
+    }
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+    pub fn save(&self) {
+        let path = Self::path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, text);
+        }
+    }
+}

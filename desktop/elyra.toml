@@ -1,0 +1,16 @@
+[app]
+crate = "edock-desktop"
+
+[frontend]
+dir = "app"
+
+[codegen]
+out = "app/src/bindings.ts"
+
+[bundle]
+identifier = "app.edock.app"
+name = "eDock"
+version = "0.1.0"
+icon = "icons/app.svg"
+publisher = "eDock"
+description = "A tiny, fast container runtime"

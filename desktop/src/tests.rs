@@ -1,0 +1,126 @@
+//! The commands against a real engine. They need one, so they're ignored
+//! by default: `cargo test -- --ignored`, against docker's current context,
+//! or `EDOCK_TEST_HOST=unix:///…/docker.sock`.
+
+use std::time::{Duration, Instant};
+
+use elyra::testing::TestApp;
+
+use crate::engine::{list_contexts, Engine};
+use crate::resources::ContainerRow;
+use crate::streams::{LogBatch, TermChunk};
+
+fn app() -> TestApp {
+    let host = std::env::var("EDOCK_TEST_HOST").ok().unwrap_or_else(|| {
+        let cs = list_contexts();
+        cs.iter().find(|c| c.docker_current && c.available).or_else(|| cs.iter().find(|c| c.available)).expect("no docker engine to test against").host.clone()
+    });
+    TestApp::new(crate::core(Engine::on("test", &host)))
+}
+
+/// A container of our own, removed when the test ends.
+struct Scratch {
+    docker: bollard::Docker,
+    id: String,
+}
+
+impl Scratch {
+    async fn new(app: &TestApp, name: &str) -> Scratch {
+        use bollard::query_parameters as q;
+        let docker = app.ctx().get::<Engine>().docker().unwrap();
+        let _ = docker.remove_container(name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+        let _: () = app.invoke("image_pull", ("alpine:latest",)).await.unwrap();
+        let body = bollard::models::ContainerCreateBody {
+            image: Some("alpine:latest".into()),
+            cmd: Some(vec!["sh".into(), "-c".into(), "i=0; while true; do echo tick $i; i=$((i+1)); sleep 0.2; done".into()]),
+            labels: Some([("com.docker.compose.project".to_string(), "edock-test".to_string())].into()),
+            ..Default::default()
+        };
+        let id = docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(name).build()), body).await.unwrap().id;
+        docker.start_container(&id, None::<q::StartContainerOptions>).await.unwrap();
+        Scratch { docker, id }
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let (docker, id) = (self.docker.clone(), self.id.clone());
+        let _ = std::thread::spawn(move || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async move {
+                let o = bollard::query_parameters::RemoveContainerOptionsBuilder::default().force(true).build();
+                let _ = docker.remove_container(&id, Some(o)).await;
+            })
+        })
+        .join();
+    }
+}
+
+async fn wait_for<T: serde::de::DeserializeOwned>(app: &TestApp, channel: &str, mut done: impl FnMut(&[T]) -> bool) -> Vec<T> {
+    // events_on drains what's pending: keep what came before.
+    let start = Instant::now();
+    let mut got: Vec<T> = vec![];
+    loop {
+        got.extend(app.events_on::<T>(channel).await);
+        if done(&got) {
+            return got;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "nothing on {channel} in time");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a docker engine"]
+async fn lists_actions_logs_and_a_terminal() {
+    let app = app();
+    app.listen();
+    let c = Scratch::new(&app, "edock-desktop-test").await;
+
+    // The list has it, under its Compose project.
+    let rows: Vec<ContainerRow> = app.invoke("containers_list", (false,)).await.unwrap();
+    let row = rows.iter().find(|r| r.id == c.id).expect("listed");
+    assert_eq!(row.state, "running");
+    assert_eq!(row.project.as_deref(), Some("edock-test"));
+
+    // Its log streams.
+    let logs: u32 = app.invoke("logs_follow", (c.id.clone(), 10u32, false)).await.unwrap();
+    let batches: Vec<LogBatch> = wait_for(&app, &format!("logs:{logs}"), |b: &[LogBatch]| b.iter().flat_map(|b| &b.lines).filter(|l| l.text.starts_with("tick")).count() >= 3).await;
+    assert!(batches.iter().flat_map(|b| &b.lines).all(|l| l.stream == "out"));
+    let _: () = app.invoke("stream_stop", (logs,)).await.unwrap();
+
+    // A terminal: what's typed runs, and its output comes back.
+    let term: u32 = app.invoke("exec_start", (c.id.clone(), 80u32, 24u32, None::<String>)).await.unwrap();
+    let _: () = app.invoke("exec_resize", (term, 100u32, 30u32)).await.unwrap();
+    let _: () = app.invoke("exec_input", (term, "echo edock-$((40+2))\r".to_string())).await.unwrap();
+    wait_for(&app, &format!("exec:{term}"), |c: &[TermChunk]| c.iter().map(|c| c.data.as_str()).collect::<String>().contains("edock-42")).await;
+    let _: () = app.invoke("exec_input", (term, "stty size\r".to_string())).await.unwrap();
+    wait_for(&app, &format!("exec:{term}"), |c: &[TermChunk]| c.iter().map(|c| c.data.as_str()).collect::<String>().contains("30 100")).await;
+    let _: () = app.invoke("exec_input", (term, "exit\r".to_string())).await.unwrap();
+    wait_for(&app, &format!("exec:{term}"), |c: &[TermChunk]| c.iter().any(|c| c.ended)).await;
+
+    // Stop, then the Compose project's start.
+    let _: () = app.invoke("container_action", (c.id.clone(), "stop".to_string())).await.unwrap();
+    let detail: crate::resources::ContainerDetail = app.invoke("container_inspect", (c.id.clone(),)).await.unwrap();
+    assert_eq!(detail.state, "exited");
+    let _: () = app.invoke("project_action", ("edock-test".to_string(), "start".to_string())).await.unwrap();
+    let detail: crate::resources::ContainerDetail = app.invoke("container_inspect", (c.id.clone(),)).await.unwrap();
+    assert_eq!(detail.state, "running");
+
+    // An unknown action is refused, not sent.
+    assert!(app.invoke_err("container_action", (c.id.clone(), "explode".to_string())).await.contains("Unknown action"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a docker engine"]
+async fn images_volumes_and_networks_list() {
+    let app = app();
+    let _: Vec<crate::resources::ImageRow> = app.invoke("images_list", ()).await.unwrap();
+    let _: () = app.invoke("volume_create", ("edock-desktop-test-vol".to_string(),)).await.unwrap();
+    let vols: Vec<crate::resources::VolumeRow> = app.invoke("volumes_list", ()).await.unwrap();
+    assert!(vols.iter().any(|v| v.name == "edock-desktop-test-vol"));
+    let _: () = app.invoke("volume_remove", ("edock-desktop-test-vol".to_string(),)).await.unwrap();
+    let nets: Vec<crate::resources::NetworkRow> = app.invoke("networks_list", ()).await.unwrap();
+    assert!(nets.iter().any(|n| n.name == "bridge" && n.builtin));
+    let status: crate::resources::EngineStatus = app.invoke("engine_status", ()).await.unwrap();
+    assert!(status.connected, "{:?}", status.error);
+}

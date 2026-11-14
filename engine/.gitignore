@@ -1,0 +1,19 @@
+/target
+# Raw benchmark output: kept outside this repository.
+/bench/results/
+/guest/out/
+.wrangler/
+
+# Built binaries and downloaded installers: never in the repo.
+*.exe
+*.dll
+*.pdb
+*.msi
+*.wsl
+*.zip
+*.tar.gz
+
+# Local assistant notes (each machine keeps its own)
+CLAUDE.md
+CLAUDE.local.md
+.claude/

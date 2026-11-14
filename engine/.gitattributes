@@ -1,0 +1,5 @@
+# Scripts that run in WSL or on Linux keep LF, even in a Windows checkout
+# (core.autocrlf would make install.sh fail under sh).
+*.sh text eol=lf
+# Files that run inside WSL or Linux, whatever their extension.
+contrib/linux/* text eol=lf
