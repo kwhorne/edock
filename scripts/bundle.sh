@@ -76,6 +76,10 @@ if [ -n "$SET_VERSION" ]; then
   for f in "$DESKTOP/elyra.toml" "$DESKTOP/Cargo.toml" "$ENGINE/Cargo.toml"; do
     sed -i '' "s/^version = \".*\"/version = \"$SET_VERSION\"/" "$f"
   done
+  # The lock files name the workspace's own versions too: bring them along
+  # (only those: no dependency moves), so --locked builds and CI agree.
+  (cd "$DESKTOP" && cargo update --workspace --offline -q)
+  (cd "$ENGINE" && cargo update --workspace --offline -q)
 fi
 VERSION=$(version_of "$DESKTOP/elyra.toml")
 for f in "$DESKTOP/Cargo.toml" "$ENGINE/Cargo.toml"; do
