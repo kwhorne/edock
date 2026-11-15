@@ -67,8 +67,21 @@ On eDock's engine, click an image to open it. The shield on a row opens its secu
 | Action | What it does |
 |---|---|
 | **New volume** | Creates a named volume |
+| **Import…** | Makes a new volume from a `.tar` (as **Export** writes them, or any tar of a folder's contents) |
+| Folder | Opens the volume's page, with its files |
+| Camera | Takes a [snapshot](snapshots.md) of its files |
+| **Clone** | Copies it into a new volume, owners and all |
+| **Export** | Saves its files to one `.tar`, owners kept: a seeded database to share, say |
 | **Remove** | Removes a volume and its data, after asking. A volume in use can't be removed. |
 | **Prune unused** | Removes every volume no container uses, named ones included, with their data |
+
+### A volume
+
+Click a volume for its page: what uses it, its project and driver, and **its files**, browsed as a container's are (see [Files](containers.md#files)): preview, save to the Mac, put files in, remove. No container of yours needs to run: a small `alpine` helper mounts the volume, with no network, and is removed when you leave the page (or after half an hour). It's one of eDock's own, so the list hides it.
+
+Changes there are changes to the volume, seen at once by a container that uses it. For a database's files, stop the database first.
+
+The page also has **Snapshot**, **Clone**, **Export** and **Remove**.
 
 ## Networks
 

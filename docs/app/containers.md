@@ -54,8 +54,10 @@ A project's header shows:
 
 - **A status dot:** green when all of its containers run, amber when only some do.
 - **How many run**, for example `2/3 running`.
-- **The project's folder**, from Compose's `working_dir` label.
+- **The project's folder**, from Compose's `working_dir` label. Click it to open it in **Finder**, **Terminal** or your editor (Cursor, VS Code, Zed, Windsurf, Sublime Text or Nova, whichever is installed), or to copy it.
 - **Actions for the whole project:**
+  - **All its logs**: every service's log as one, in time order, each line with its service in its own colour. Click a service's name above the log to hide it; filter, timestamps and copy work as for one container.
+  - **Rebuild & up**: `docker compose up -d --build`, from the project's own Compose files and folder (from the containers' labels), on the engine the app shows. Its output shows as it runs. It needs the `docker` command with Compose: [Set up](engine-and-contexts.md#command-line) installs them.
   - **Start all**, which skips the containers already running.
   - **Stop all**, which skips the stopped ones.
   - **Restart all**.

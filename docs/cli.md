@@ -91,10 +91,11 @@ A single-node Kubernetes cluster (k3s) in the `edock-k8s` container. See [Kubern
 ```sh
 edock builds
 edock builds show BUILDER ID
+edock builds layers BUILDER ID
 edock builds rm BUILDER ID
 ```
 
-The build history, as JSON: every `docker build` on eDock's builders, newest first. `show` gives one build's steps (with their logs), its error and warnings; `rm` takes it off the history. The app's [Builds](app/builds.md) page reads it.
+The build history, as JSON: every `docker build` on eDock's builders, newest first. `show` gives one build's steps (with their logs), its error and warnings; `layers` the image it made (its size, ID and each layer); `rm` takes it off the history. The app's [Builds](app/builds.md) page reads it.
 
 ## `edock tls`
 
@@ -111,9 +112,10 @@ Whether macOS trusts eDock's certificate authority for websites, so `https://<na
 ```sh
 edock build-with edock    # docker build uses eDock's BuildKit builder
 edock build-with docker   # docker build uses docker's classic builder
+edock build-with --json   # which one, as JSON
 ```
 
-Which builder a plain `docker build` uses. See [Builds](docker.md#builds).
+Which builder a plain `docker build` uses. The app's **Engine › Builds & import › docker build uses** sets the same. See [Builds](docker.md#builds).
 
 ## `edock import`
 
@@ -133,7 +135,7 @@ The source is only read: images through `docker save`, and volumes through a sho
 ## `edock machine`
 
 ```sh
-edock machine create NAME [--distro D | --image IMAGE] [--systemd]
+edock machine create NAME [--distro D | --image IMAGE] [--systemd] [--ssh-agent]
 edock machine list
 edock machine shell NAME [-- CMD...]
 edock machine start | stop | restart | delete NAME

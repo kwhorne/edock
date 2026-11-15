@@ -22,7 +22,8 @@ On **Machines**, under **New machine**:
    - Rocky Linux 9
    - openSUSE Tumbleweed
 3. Tick **systemd** if you want services managed as on a real server. systemd runs as the machine's init, which makes the machine privileged.
-4. Press **Create**.
+4. Leave **Mac's SSH agent** ticked for `git` and `ssh` in the machine to use your Mac's keys (GitHub, servers, private package registries). The keys stay on the Mac: the machine only asks the Mac's agent to sign, through `SSH_AUTH_SOCK` (`/run/host-services/ssh-auth.sock`).
+5. Press **Create**.
 
 The first machine of a distribution pulls its image; after that, a new one is ready in seconds. Then its page opens, with a shell.
 
@@ -38,6 +39,8 @@ edock machine shell dev -- uname -a     # one command
 ```
 
 On the **Machines** list, each machine has **Shell**, **Start** or **Stop**, **Restart** and **Delete**. Machines start again with the engine, unless you stopped them.
+
+A machine made before eDock 0.6.0, or without the SSH agent, doesn't get it later: make it again with it ticked.
 
 ## Delete one
 

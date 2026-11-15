@@ -31,7 +31,7 @@ When the engine goes away or comes back, the app notices within two seconds, rec
 
 ## The Engine page
 
-**Engine**, at the bottom of the sidebar, has six tabs. **Overview** shows eDock's engine, the command line setup, the version and the contexts. **Resources**, **Network**, **Builds & import** and **USB** are for eDock's own engine. **AI agents** connects Claude, Cursor and VS Code to eDock.
+**Engine**, at the bottom of the sidebar, has six tabs. **Overview** shows eDock's engine, the command line setup, notifications, the version and the contexts. **Resources**, **Network**, **Builds & import** and **USB** are for eDock's own engine. **AI agents** connects Claude, Cursor and VS Code to eDock.
 
 ### eDock engine
 
@@ -60,6 +60,8 @@ An update replaces the app, but the engine that was running keeps running the ol
 
 Under the card are eDock's version and **Check for updates**. See [Updates](updates.md).
 
+If another `edock` comes first on your PATH (an older copy in `/usr/local/bin` or `~/.local/bin`, say), the card warns and names it: terminals run that one, not this eDock's, so an update seems not to have happened. eDock never removes it; delete it, or put `~/.edock/bin` before its folder in your PATH.
+
 The engine's output goes to `~/.edock/desktop-engine.log`.
 
 The app looks for the engine binary in this order:
@@ -68,6 +70,10 @@ The app looks for the engine binary in this order:
 2. next to the app's own binary (inside `eDock.app`, the normal case);
 3. `~/.edock/bin/edock`;
 4. `engine/target/release/edock` in a source checkout (development).
+
+### Notifications
+
+**Tell me when a container runs out of memory or turns unhealthy** (on by default) shows a macOS notification when the kernel kills a container for using all the memory it may have, or when its health check starts failing. Click it for the container's log. Each container gets at most one of each every ten minutes, and eDock's own containers (Linux machines, Kubernetes, helpers) none. It works on any engine the app shows, as long as the app runs.
 
 ### Contexts
 
@@ -118,11 +124,15 @@ The new size applies from the VM's next start. **Restart VM** starts it now; run
 ## Builds & import
 
 - **Builds** sets how big `docker build`'s cache may grow, and how long BuildKit waits without a build before it stops. **Empty cache** frees all of it; the next builds start from scratch.
+- **docker build uses** picks the builder for a plain `docker build`, `docker compose build` and `docker buildx build`:
+  - **docker's context** (the default when another engine is on the Mac): builds go where docker's context points, so OrbStack's stay OrbStack's.
+  - **eDock, always**: every build runs on eDock's BuildKit and the image lands in eDock, whatever the context. Everything else (`docker run`, `ps`, `compose up`) still follows the context. Choosing **docker's context** again puts back exactly what eDock changed in `~/.docker`.
+- **Speed test** times a container's whole life (create, start, run `true`, exit, removed) 20 times on each engine running here: eDock, OrbStack, Docker Desktop. It shows the median and the slowest 10%, and how many times eDock's the others take. It pulls `alpine` where it's missing, and removes every container it makes.
 - **Import** brings images, volumes and containers over from OrbStack or Docker Desktop, while that engine runs.
   - It shows how many of each eDock doesn't have yet.
   - The other engine is only read.
   - Volumes keep their files' owners, and containers arrive stopped.
-- **Diagnostics** saves a report of eDock's state and recent logs, with tokens taken out, where you choose. Nothing is sent anywhere.
+- **Diagnostics** saves a report of eDock's state and recent logs, with tokens taken out, where you choose. Nothing is sent anywhere. **Engine log** shows the engine's last 500 lines, or only its warnings and errors.
 
 ## USB (beta)
 

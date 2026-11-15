@@ -38,7 +38,7 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 | **Each container** | A live log with filter and timestamps, CPU, memory, network and disk graphs, a full terminal (xterm), its files (browse, preview, save, upload), and `docker inspect` |
 | **Images, volumes, networks** | Pull with progress, prune, create and remove, and see what each is used by |
 | **Image security** | Each Dockerfile line's size, a vulnerability scan with Grype (without waking the VM), fixable filters and a CycloneDX SBOM |
-| **Linux machines** | Ubuntu, Debian, Fedora, Arch and more, with your user, `sudo` and `/Users` in place, and a shell a click away |
+| **Linux machines** | Ubuntu, Debian, Fedora, Arch and more, with your user, `sudo`, `/Users` in place and your Mac's SSH agent, and a shell a click away |
 | **Kubernetes** | Start, stop and delete a k3s cluster. Pods with kubectl's statuses, their logs and shells, restarts and deletes. Services, with LoadBalancer ports on `localhost`. |
 | **Any engine** | Switch to OrbStack, Docker Desktop, Colima or Podman from the toolbar. eDock manages any Docker Engine API. |
 | **Menu bar** | What's running, start and stop, and ports, a click away |
@@ -46,9 +46,12 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 | **Container domains** | `http://<name>.edock.localhost` on every running container, and trusted HTTPS in one click |
 | **New service** | PostgreSQL, MySQL, MariaDB, Redis, MongoDB, RabbitMQ, Mailpit or MinIO in one click, with its data in a volume and the connection string copied |
 | **⌘K everywhere** | Find any container, image, machine or pod by name |
+| **Compose projects** | All of a project's logs as one, colour by service; its folder in Finder, Terminal or your editor; Rebuild & up |
+| **Volumes** | Browse a volume's files without a container; clone it; export and import it as one file |
+| **Notifications** | A macOS note when a container runs out of memory or turns unhealthy |
 | **Snapshots** | A container's or a volume's files as they are now, and back to them later, on any engine |
 | **HTTP inspector** | Each request through `*.edock.localhost` with headers, bodies and timing; copy as curl, or replay it |
-| **Builds** | Each `docker build`'s steps, cache hits, logs and the reason it failed |
+| **Builds** | Each `docker build`'s steps, cache hits, logs and the reason it failed, and its image: size against the last build, layers and scan |
 | **Kubernetes forward** | Reach a ClusterIP service from the Mac with one click, no kubectl |
 | **Welcome** | Engine, terminal, import from OrbStack or Docker Desktop, and HTTPS: four clicks on first launch |
 | **Engine settings** | The VM's CPUs and memory, and what it uses now; a proxy; the build cache; import from OrbStack or Docker Desktop; a diagnostics report |
