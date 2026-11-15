@@ -90,6 +90,11 @@
       toast("That link points outside it", { variant: "error" });
       return;
     }
+    // The root itself (a link to the volume's top): there, not a child named like it.
+    if (to === root) {
+      open = null;
+      return load(root);
+    }
     const dir = parent(to);
     await load(dir);
     const e = entries?.find((x) => x.name === to.split("/").pop());

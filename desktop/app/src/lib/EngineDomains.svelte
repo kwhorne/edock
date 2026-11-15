@@ -41,7 +41,7 @@
       </p>
       {#if !engine.domains.http_on}
         <Callout variant="warning" title="Port {engine.domains.http_port} is taken">
-          Another server has it, so container domains are off. Give them ports of their own below.
+          Another server has it, or a container publishes it, so container domains are off. Give them ports of their own below.
         </Callout>
       {/if}
       <form class="port-form" onsubmit={savePorts}>

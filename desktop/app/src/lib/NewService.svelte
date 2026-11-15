@@ -50,7 +50,8 @@
         <span class="mono folder-path">{folder ?? "No folder chosen"}</span>
         <Button size="sm" onclick={pickFolder}>Choose folder…</Button>
       </div>
-      <p class="muted small">Laravel (a folder with <code>artisan</code>) runs in worker mode; any other PHP is served from its <code>public/</code> folder. It runs as you, so it can write <code>storage/</code>. Composer's <code>vendor/</code> must be installed already.</p>
+      <p class="muted small">Laravel (a folder with <code>artisan</code>) runs in worker mode; any other PHP is served from its <code>public/</code> folder. It runs as you, so it can write <code>storage/</code>. Composer's <code>vendor/</code> must be installed already. A database on your Mac (one of these services, say) is
+        <code>DB_HOST=host.docker.internal</code> from inside it, not <code>127.0.0.1</code>.</p>
     {/if}
     <label class="recipe-name">
       <span class="muted">Name</span>

@@ -1056,6 +1056,12 @@ async fn recipes_start_services() {
     let esql: Started = app.invoke("recipe_start", ("elyrasql".to_string(), Some(format!("edock-test-esql-{tag}")), None::<String>)).await.unwrap();
     assert_eq!(esql.connect, format!("mysql://root:elyrasql@localhost:{}/elyra", esql.port));
     wait_for(esql.port, b"", "ElyraSQL").await;
+    // A scratch image, no find in it: on eDock the engine shows its volume's
+    // files as the container sees them.
+    if std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
+        let data: Vec<crate::files::FileEntry> = app.invoke("container_files", (esql.container.clone(), "/var/lib/elyrasql".to_string())).await.unwrap();
+        assert!(data.iter().any(|e| e.name == "elyra.edb"), "the volume's file: {:?}", data.iter().map(|e| &e.name).collect::<Vec<_>>());
+    }
 
     // SQL Anywhere: sqld's health and version over HTTP.
     let sqla: Started = app.invoke("recipe_start", ("sqlanywhere".to_string(), Some(format!("edock-test-sqla-{tag}")), None::<String>)).await.unwrap();

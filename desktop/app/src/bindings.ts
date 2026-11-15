@@ -226,7 +226,10 @@ export type DomainsInfo = {
 	available: boolean,
 	http_port: number,
 	https_port: number,
-	/**  The routers serve (off when another server has their port). */
+	/**
+	 *  The routers serve (off when another server, or a container
+	 *  publishing it, has their port).
+	 */
 	http_on: boolean,
 	https_on: boolean,
 	/**  `edock.localhost`, or `edock.local` once its resolver is set up. */

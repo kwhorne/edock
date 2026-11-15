@@ -113,7 +113,9 @@ const RECIPES: [Recipe; 11] = [
         image: "ghcr.io/kwhorne/askr:1.9",
         port: 8080,
         ui_port: None,
-        env: &["ASKR_APP_BASE=/var/www/app"],
+        // HOME: the Mac's uid has no entry in the image, so it'd be / (not
+        // writable): PsySH and cache fallbacks want a home they can write.
+        env: &["ASKR_APP_BASE=/var/www/app", "HOME=/tmp"],
         cmd: &[],
         data: None,
         connect: "http://localhost:{port}",
@@ -228,7 +230,9 @@ fn free_name(want: &str, containers: &[String], volumes: &[String]) -> String {
 }
 
 /// Folders the engines share from the Mac (eDock's, Docker Desktop's).
-const SHARED: [&str; 4] = ["/Users/", "/Volumes/", "/private/", "/tmp/"];
+/// Not all of /private: /etc and /var are links into it. Its temporary
+/// folders only (/tmp and $TMPDIR are links to these).
+const SHARED: [&str; 4] = ["/Users/", "/Volumes/", "/private/tmp/", "/private/var/folders/"];
 
 /// A folder from the Mac to serve: there, a folder, and shared with the
 /// engine. Its real path.
@@ -399,6 +403,9 @@ mod tests {
         assert_eq!(super::name_from(std::path::Path::new("/Users/x/My App_2")), "my-app-2");
         assert!(super::mac_folder("relative").is_err());
         assert!(super::mac_folder("/usr").is_err(), "not shared with the engine");
+        assert!(super::mac_folder("/etc").is_err(), "/etc is /private/etc: not a project");
+        assert!(super::mac_folder("/var/log").is_err(), "/var is /private/var");
+        assert!(super::mac_folder(dir.to_str().unwrap()).is_ok(), "a project in $TMPDIR (/private/var/folders)");
         assert!(super::mac_folder(dir.join("artisan").to_str().unwrap()).is_err(), "a file");
         let _ = std::fs::remove_dir_all(&dir);
     }

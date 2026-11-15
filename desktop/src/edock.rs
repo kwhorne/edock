@@ -44,7 +44,8 @@ pub struct DomainsInfo {
     pub available: bool,
     pub http_port: u32,
     pub https_port: u32,
-    /// The routers serve (off when another server has their port).
+    /// The routers serve (off when another server, or a container
+    /// publishing it, has their port).
     pub http_on: bool,
     pub https_on: bool,
     /// `edock.localhost`, or `edock.local` once its resolver is set up.
@@ -65,8 +66,10 @@ pub async fn domains_info(ctx: Ctx) -> DomainsInfo {
         d.available = true;
         d.http_port = v["http"]["port"].as_u64().unwrap_or(80) as u32;
         d.https_port = v["https"]["port"].as_u64().unwrap_or(443) as u32;
-        d.http_on = v["http"]["running"] == true;
-        d.https_on = v["https"]["running"] == true;
+        // Serving, not only running: a router steps aside while a container
+        // publishes its port, and then names don't answer.
+        d.http_on = v["http"]["serving"] == true;
+        d.https_on = v["https"]["serving"] == true;
         d.suffix = v["suffix"].as_str().unwrap_or("edock.localhost").into();
         d.trusted = v["trusted"] == true;
     }
