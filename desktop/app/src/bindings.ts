@@ -541,7 +541,10 @@ export type RecipeRow = {
 export type Restored = {
 	/**  The container made from the snapshot. */
 	container: string,
-	/**  The one it replaced, stopped and renamed; None when there was none. */
+	/**
+	 *  The one it replaced: stopped and renamed, or for a Compose service
+	 *  a snapshot (`edock-snapshots/…`); None when there was none.
+	 */
 	previous: string | null,
 };
 
