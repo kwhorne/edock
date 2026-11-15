@@ -1661,17 +1661,38 @@ fn links_from(list: &[String], engine: &Engine) -> Result<Vec<super::engine::Lin
     Ok(out)
 }
 
+/// A duration as `docker ps` words it (go-units' HumanDuration): "About a
+/// minute", "3 hours", "2 weeks".
+fn human_duration(d: Duration) -> String {
+    let s = d.as_secs_f64();
+    let (minutes, hours) = ((s / 60.0) as u64, (s / 3600.0 + 0.5) as u64);
+    if s < 1.0 {
+        "Less than a second".into()
+    } else if s < 2.0 {
+        "1 second".into()
+    } else if s < 60.0 {
+        format!("{} seconds", s as u64)
+    } else if minutes == 1 {
+        "About a minute".into()
+    } else if minutes < 60 {
+        format!("{minutes} minutes")
+    } else if hours == 1 {
+        "About an hour".into()
+    } else if hours < 48 {
+        format!("{hours} hours")
+    } else if hours < 24 * 7 * 2 {
+        format!("{} days", hours / 24)
+    } else if hours < 24 * 30 * 2 {
+        format!("{} weeks", hours / 24 / 7)
+    } else if hours < 24 * 365 * 2 {
+        format!("{} months", hours / 24 / 30)
+    } else {
+        format!("{} years", (s / 3600.0 / 24.0 / 365.0) as u64)
+    }
+}
+
 fn status_text(c: &Container) -> String {
-    let ago = |t: Option<std::time::SystemTime>| {
-        let s = t.and_then(|t| t.elapsed().ok()).map_or(0, |d| d.as_secs());
-        match s {
-            0..=1 => "Less than a second".to_owned(),
-            2..=59 => format!("{s} seconds"),
-            60..=3599 => format!("{} minutes", s / 60),
-            3600..=86399 => format!("{} hours", s / 3600),
-            _ => format!("{} days", s / 86400),
-        }
-    };
+    let ago = |t: Option<std::time::SystemTime>| human_duration(t.and_then(|t| t.elapsed().ok()).unwrap_or_default());
     match c.status {
         Status::Created => "Created".into(),
         Status::Running if c.paused => format!("Up {} (Paused)", ago(c.started)),
@@ -2695,6 +2716,22 @@ mod tests {
         assert_eq!(upload_compression(&[0x28, 0xb5, 0x2f, 0xfd, 0, 0]), Upload::Unsupported("zstd"));
         assert_eq!(upload_compression(b"etc/ho"), Upload::Tar);
         assert_eq!(upload_compression(b""), Upload::Tar);
+    }
+
+    #[test]
+    fn durations_read_as_docker_ps_words_them() {
+        let d = |s: u64| super::human_duration(Duration::from_secs(s));
+        assert_eq!(d(0), "Less than a second");
+        assert_eq!(d(1), "1 second");
+        assert_eq!(d(45), "45 seconds");
+        assert_eq!(d(90), "About a minute");
+        assert_eq!(d(150), "2 minutes");
+        assert_eq!(d(3600), "About an hour");
+        assert_eq!(d(5 * 3600), "5 hours");
+        assert_eq!(d(3 * 86400), "3 days");
+        assert_eq!(d(20 * 86400), "2 weeks");
+        assert_eq!(d(90 * 86400), "3 months");
+        assert_eq!(d(800 * 86400), "2 years");
     }
 
     /// DDEV's CopyIntoVolume sends a gzipped tar: the guest gets the tar.

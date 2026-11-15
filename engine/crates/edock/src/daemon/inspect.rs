@@ -313,9 +313,11 @@ impl Tap {
             }
             let waiting: Vec<u64> = st.waiting.drain(..).map(|(s, _)| s).collect();
             for seq in waiting.into_iter().chain(st.res_seq.take()) {
+                let started = st.started(seq);
                 update(seq, |e| {
                     if !e.done {
                         e.done = true;
+                        e.ms = ms(started);
                         e.error = Some(if e.status.is_some() { "the connection closed mid-response" } else { "no response: the container closed the connection" }.into());
                     }
                 });

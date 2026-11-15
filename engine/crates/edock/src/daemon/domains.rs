@@ -173,7 +173,25 @@ fn bind_router(engine: Arc<Engine>, port: u16, tls: Option<Arc<rustls::ServerCon
 fn start_router(engine: Arc<Engine>, kind: Kind, tls: Option<Arc<rustls::ServerConfig>>) -> io::Result<u16> {
     let port = kind.port();
     let how = if env_port(kind.var()).is_some() { format!("set {}", kind.var()) } else { "pick others in ~/.edock/domains.json, or with POST /edock/domains".into() };
-    register(bind_router(engine, port, tls).map_err(|_| io::Error::new(io::ErrorKind::AddrInUse, format!("port {port} is taken; {how}")))?)?;
+    match bind_router(engine.clone(), port, tls.clone()) {
+        Ok(router) => register(router)?,
+        Err(_) => {
+            // An engine restarted a moment ago may still hold it: tried
+            // again for a while before it's left off.
+            std::thread::Builder::new().name("edock-domains-wait".into()).spawn(move || {
+                for _ in 0..40 {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    if let Ok(router) = bind_router(engine.clone(), port, tls.clone()) {
+                        if register(router).is_ok() {
+                            crate::diag::info!("container domains on, once the port was free", port = port);
+                        }
+                        return;
+                    }
+                }
+            })?;
+            return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("port {port} is taken (trying again for 10 s); {how}")));
+        }
+    }
     Ok(port)
 }
 
@@ -421,7 +439,14 @@ fn route(client: &mut impl ReadWrite, engine: &Engine, scheme: &'static str) -> 
         respond(client, 404, "Not Found", &body)?;
         return Ok(None);
     };
-    let port = web_port(engine, &target);
+    let (port, on) = web_port(engine, &target);
+    // Nothing there for a browser: a page that says why, not a connection
+    // that closes empty (a worker without ports, a database, a server still
+    // starting).
+    if let Some(on) = on.filter(|on| !on.contains(&port) || NOT_WEB.contains(&port)) {
+        respond(client, 502, "Bad Gateway", &no_web_port(&target.name, &on))?;
+        return Ok(None);
+    }
     match engine.relay_to(target.ip, port) {
         Ok(g) => Ok(Some((head, g, Tap::new(scheme, &host, &target.name)))),
         Err(e) => {
@@ -485,31 +510,52 @@ fn choose(cands: &[u16], listening: Option<&[u16]>) -> u16 {
     cands[0]
 }
 
-/// The web port for a request: certain ones at once; otherwise asks the
-/// container what it listens on, remembered for a few seconds since a page
-/// opens many connections.
-fn web_port(engine: &Engine, t: &Target) -> u16 {
+/// The web port for a request, and what the container listens on when
+/// that was asked: certain ones at once; otherwise asks the container,
+/// remembered for a few seconds since a page opens many connections.
+fn web_port(engine: &Engine, t: &Target) -> (u16, Option<Vec<u16>>) {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
-    static SEEN: Mutex<Option<HashMap<String, (Instant, u16)>>> = Mutex::new(None);
+    type Seen = HashMap<String, (Instant, u16, Option<Vec<u16>>)>;
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
     let (cands, sure) = candidates(t);
-    if sure || cands.len() == 1 && !t.exposed.is_empty() {
-        return cands[0];
+    // A database's port, even the only one, is looked at: the page then
+    // says it isn't a web page. The owner's label is always taken.
+    if t.label.is_some() || (sure || cands.len() == 1 && !t.exposed.is_empty()) && !NOT_WEB.contains(&cands[0]) {
+        return (cands[0], None);
     }
     let fresh = |at: Instant| at.elapsed() < Duration::from_secs(10);
-    if let Some(&(at, p)) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(&t.id) {
-        if fresh(at) {
-            return p;
+    if let Some((at, p, on)) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(&t.id) {
+        if fresh(*at) {
+            return (*p, on.clone());
         }
     }
     let on = engine.listening(&t.id).ok().map(|(reach, _)| reach);
     let port = choose(&cands, on.as_deref());
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     let seen = seen.get_or_insert_with(HashMap::new);
-    seen.retain(|_, (at, _)| fresh(*at));
-    seen.insert(t.id.clone(), (Instant::now(), port));
-    port
+    seen.retain(|_, (at, _, _)| fresh(*at));
+    seen.insert(t.id.clone(), (Instant::now(), port, on.clone()));
+    (port, on)
+}
+
+/// The page for a container with nothing a browser can open.
+fn no_web_port(name: &str, on: &[u16]) -> String {
+    let what = match on {
+        [] => "doesn't listen on any port (yet: reload in a moment if it's starting)".to_owned(),
+        ports => format!(
+            "listens only on {}, not a web page",
+            ports.iter().map(u16::to_string).collect::<Vec<_>>().join(", ")
+        ),
+    };
+    format!(
+        "<!doctype html><meta charset=utf-8><title>eDock</title><body style=\"font:15px -apple-system,sans-serif;margin:40px\">\
+         <h1>{} {}</h1><p>A container's web address reaches its web server. If it has one on another port, \
+         add the label <code>app.edock.http.port</code> with that port.</p>",
+        escape(name),
+        escape(&what)
+    )
 }
 
 trait ReadWrite: Read + Write {}
