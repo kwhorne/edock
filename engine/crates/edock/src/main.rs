@@ -6,15 +6,11 @@ use std::process::ExitCode;
 mod bench;
 #[cfg(target_os = "macos")]
 mod boot;
-// builds, cli_pins, scan and tools on Linux too: the daemon reads an
-// image's layers and scans it for edock-win, whose window can't reach the
-// store inside WSL (daemon/api.rs).
 #[cfg(unix)]
 // Some helpers here served only the removed eDock window; kept for the eDock desktop.
 #[allow(dead_code)]
 mod builds;
-// The engine stops when its app is deleted under it (edock-win includes it
-// for Windows).
+// The engine stops when its app is deleted under it.
 #[cfg(unix)]
 mod appwatch;
 // Which builder plain `docker build` uses: Docker's or eDock's.
@@ -22,13 +18,6 @@ mod appwatch;
 // Some helpers here served only the removed eDock window; kept for the eDock desktop.
 #[allow(dead_code)]
 mod buildwith;
-// Linux only, but its tests run anywhere with unix sockets.
-#[cfg(any(target_os = "linux", all(test, unix)))]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-mod bridge;
-// Linux only (WSL's end of edock-win's proxy relay); its tests run anywhere.
-#[cfg(unix)]
-mod hostrelay;
 #[cfg(unix)]
 mod cli_pins;
 #[cfg(unix)]
@@ -39,7 +28,7 @@ mod client;
 mod daemon;
 #[cfg(unix)]
 mod diag;
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 mod docker;
 mod flavor;
 mod images;
@@ -76,8 +65,6 @@ mod usb;
 // Some helpers here served only the removed eDock window; kept for the eDock desktop.
 #[allow(dead_code)]
 mod stale;
-#[cfg(windows)]
-mod wsl;
 #[cfg(unix)]
 // Some helpers here served only the removed eDock window; kept for the eDock desktop.
 #[allow(dead_code)]
@@ -87,7 +74,7 @@ const USAGE: &str = "\
 usage: edock COMMAND          docker's commands, on eDock: edock run, ps, exec,
                              logs, stop, rm, images, pull, build, compose…
        edock daemon
-       edock setup [--use] [--no-agent] | edock setup --uninstall
+       edock setup [--use] [--no-agent] [--no-domains] | --domains | --docker-socket | --uninstall
        edock build-with [docker|edock] [--json]   which builder docker build uses
        edock diag logs [-f] [--engine|--cli] [--errors] [-n N]
        edock diag report [--out PATH]   (a local file, tokens taken out)
@@ -95,8 +82,9 @@ usage: edock COMMAND          docker's commands, on eDock: edock run, ps, exec,
        edock builds [list] | show|layers|rm BUILDER ID   build history, as JSON
        edock tls status | trust | untrust   HTTPS for *.edock.local(host) in browsers
        edock usb [list] | attach DEVICE | detach DEVICE   USB devices for containers, beta (Mac: pass through to the VM)
-       edock machine create NAME [--distro D] | list | shell NAME | stop | delete NAME
-       edock import [orbstack | desktop-linux] [--list]
+       edock machine create NAME [--distro D | --image IMAGE] [--systemd] [--ssh-agent]
+       edock machine list | shell NAME [-- CMD...] | start | stop | restart | delete NAME
+       edock import [orbstack | desktop-linux] [--list] | orbstack image|volume|container NAME
        edock bench [--runs N] [--image IMAGE] [--network none|bridge]
        edock boot [--console] [--pings N]
        edock raw run [--rm] [-e KEY=VALUE]... IMAGE [COMMAND...]   (its own guest, no daemon)
@@ -114,10 +102,6 @@ fn main() -> ExitCode {
     let result: std::io::Result<()> = match args.first().map(String::as_str) {
         #[cfg(unix)]
         Some("daemon") => daemon::run(&args[1..]),
-        #[cfg(target_os = "linux")]
-        Some("bridge") => bridge::run(&args[1..]),
-        #[cfg(target_os = "linux")]
-        Some("hostrelay") => hostrelay::run(),
         // Linux hosts: what the window's onboarding needs root for (through pkexec).
         #[cfg(target_os = "linux")]
         Some("host-access") => match hostaccess::run(&args[1..]) {
@@ -161,14 +145,11 @@ fn main() -> ExitCode {
         // (the desktop app is the window).
         #[cfg(target_os = "macos")]
         None if setup::launched_from_app() => setup::first_launch(),
-        #[cfg(any(unix, windows))]
+        #[cfg(unix)]
         Some(c) if docker::handles(c) => {
             engine_version_check();
             docker::run(&args)
         }
-        // Windows: the engine's commands, by the `edock` in WSL.
-        #[cfg(windows)]
-        Some(c) if wsl::COMMANDS.contains(&c) => wsl::run(&args),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::FAILURE;
@@ -187,9 +168,6 @@ fn main() -> ExitCode {
         }
     }
 }
-
-#[cfg(not(unix))]
-fn engine_version_check() {}
 
 /// Before a docker command: when the engine runs another version than this
 /// `edock`, say so (on stderr, so output stays clean). Either an update whose

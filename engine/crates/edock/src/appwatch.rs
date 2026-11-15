@@ -1,14 +1,9 @@
 //! Noticing that eDock's own program is gone from where it started: the app
-//! dragged to the Trash, a development build's folder deleted, or (on
-//! Windows, where a running program can't be deleted) its folder renamed
-//! or moved. What's left running can't do its job any more (on the Mac the
-//! VM's kernel went with the app), yet it still holds what "Build with
-//! eDock" took, buildx's builder for every context, and every `docker
-//! build` fails on it. The daemon (daemon/mod.rs) and edock-win both watch,
-//! hand the builder back and stop.
-//!
-//! The same file serves the Mac and Linux (crates/edock) and Windows
-//! (edock-win includes it).
+//! dragged to the Trash, or a development build's folder deleted. What's
+//! left running can't do its job any more (the VM's kernel went with the
+//! app), yet it still holds what "Build with eDock" took, buildx's builder
+//! for every context, and every `docker build` fails on it. The daemon
+//! (daemon/mod.rs) watches, hands the builder back and stops.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

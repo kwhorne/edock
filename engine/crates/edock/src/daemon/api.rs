@@ -106,7 +106,6 @@ fn route(req: &Request, engine: &Arc<Engine>, w: &mut UnixStream, r: &mut BufRea
         ("POST", "/edock/sleep") => return reply(w, engine.sleep_now().map(|()| Value::Null), 204),
         ("GET", "/edock/proxy") => return reply(w, Ok(super::proxy::report()), 200),
         ("POST", "/edock/proxy") => return reply(w, set_proxy(req), 200),
-        ("PUT", "/edock/proxy/system") => return reply(w, set_host_proxy(req), 200),
         ("GET", "/edock/resources") => return reply(w, Ok(resources(engine)), 200),
         // Settings → Domains: the container-domain routers' ports.
         ("GET", "/edock/domains") => return reply(w, Ok(super::domains::report()), 200),
@@ -625,21 +624,6 @@ fn resources(engine: &Engine) -> Value {
         "max_memory_mib": e::physical_memory_bytes() >> 20,
         "overridden": std::env::var_os("EDOCK_CPUS").is_some() || std::env::var_os("EDOCK_MEMORY_MIB").is_some(),
     })
-}
-
-/// The host's system proxy, from edock-win on Windows: `{http, https,
-/// no_proxy: [..], pac}`, used while the mode is "system".
-fn set_host_proxy(req: &Request) -> Result<Value, Error> {
-    let body: Value = serde_json::from_slice(&req.body).map_err(|e| Error::BadRequest(format!("invalid JSON: {e}")))?;
-    let url = |k: &str| body[k].as_str().map(str::trim).filter(|v| !v.is_empty()).map(|v| if v.contains("://") { v.to_owned() } else { format!("http://{v}") });
-    let no_proxy = body["no_proxy"].as_array().into_iter().flatten().filter_map(|v| v.as_str()).map(str::to_owned).collect();
-    super::proxy::set_host(super::proxy::Effective { http: url("http"), https: url("https"), no_proxy, pac: body["pac"].as_bool().unwrap_or(false) });
-    // edock-win's relay to Windows' loopback: {"7892": 41234}. A edock-win
-    // without one sends none, and proxies are dialled as set.
-    if let Some(relay) = body["relay"].as_object() {
-        super::proxy::set_relay(relay.iter().filter_map(|(k, v)| Some((k.parse().ok()?, u16::try_from(v.as_u64()?).ok()?))).collect());
-    }
-    Ok(super::proxy::report())
 }
 
 fn set_proxy(req: &Request) -> Result<Value, Error> {
@@ -2582,9 +2566,16 @@ fn upload_reader<'a>(head: Vec<u8>, rest: impl io::Read + 'a) -> Result<Box<dyn 
 fn archive_put(req: &Request, engine: &Engine, id: &str, w: &mut UnixStream, r: &mut BufReader<UnixStream>) -> io::Result<Next> {
     use edock_proto::copy_flags;
     let path = req.query("path").unwrap_or("/");
-    let mut flags = copy_flags::CHUNKED;
+    // As Docker: files keep the owners the archive gives them (what `docker
+    // cp` sends is the Mac user's); copyUIDGID (`docker cp -a`) makes them
+    // the container user's, here root's when it runs as root. A named user
+    // isn't looked up: those keep the archive's owners.
+    let mut flags = copy_flags::CHUNKED | copy_flags::KEEP_OWNERS;
     if req.flag("copyUIDGID") {
-        flags |= copy_flags::KEEP_OWNERS;
+        let user = engine.with(id, |c| c.spec.user.clone()).unwrap_or_default();
+        if matches!(user.split(':').next().unwrap_or(""), "" | "0" | "root") {
+            flags &= !copy_flags::KEEP_OWNERS;
+        }
     }
     if req.flag("noOverwriteDirNonDir") {
         flags |= copy_flags::NO_OVERWRITE_DIR_NON_DIR;

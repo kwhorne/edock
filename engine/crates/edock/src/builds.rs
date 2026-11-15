@@ -20,9 +20,6 @@ pub const BUILDER: Name = Name("edock-build", "edock-dev-build");
 fn buildx(args: &[&str]) -> io::Result<(String, String)> {
     let docker = crate::client::docker_cli().ok_or_else(|| io::Error::other("no docker CLI found: run `edock setup` (Engine › Command line › Set up in the app)"))?;
     let mut cmd = Command::new(docker);
-    // No console window flashing up from eDock's window on Windows.
-    #[cfg(windows)]
-    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000);
     let out = cmd.args(["--context", CONTEXT.get(), "buildx"]).args(args).stdin(Stdio::null()).output()?;
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());
     if !out.status.success() {
@@ -201,9 +198,7 @@ pub fn layers(builder: &str, id: &str) -> io::Result<Value> {
 }
 
 /// An image in eDock's store, pulled or built, the same way: read from the
-/// store's files, so the engine isn't asked and the VM isn't woken. Not on
-/// Windows, whose store is inside WSL.
-#[cfg(not(windows))]
+/// store's files, so the engine isn't asked and the VM isn't woken.
 pub fn image_layers(name: &str) -> io::Result<Value> {
     let store = edock_image::Store::open(edock_image::Store::default_root()?)?;
     let (i, manifest, config) = stored(&store, name)?;
@@ -212,7 +207,6 @@ pub fn image_layers(name: &str) -> io::Result<Value> {
 
 /// An image in the store by name or ID, with a manifest made from its layers
 /// and its config.
-#[cfg(not(windows))]
 pub(crate) fn stored(store: &edock_image::Store, name: &str) -> io::Result<(edock_image::Image, Value, Value)> {
     let found = match store.find(name)? {
         Some(i) => Some(i),
@@ -439,8 +433,6 @@ mod tests {
 
 /// An image in a real store:
 /// `EDOCK_LIVE_IMAGE=name EDOCK_DATA_DIR=... cargo test -p edock image_layers_live -- --ignored --nocapture`.
-/// Not on Windows, where edock-win includes this file without `image_layers`.
-#[cfg(not(windows))]
 #[test]
 #[ignore]
 fn image_layers_live() {

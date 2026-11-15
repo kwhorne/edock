@@ -2,9 +2,7 @@
 //! a container that keeps running, from a distro image, with the host user's
 //! name and uid inside (and passwordless sudo), and the homes folder
 //! (`/Users` on a Mac, `/home` on Linux) at the same path as on the host.
-//! `edock machine shell` opens a login shell in it. On Windows the commands
-//! run as root in eDock's WSL distro (crates/edock/src/wsl.rs), so the
-//! machine's user is root there.
+//! `edock machine shell` opens a login shell in it.
 
 use std::io;
 use std::process::Command;
@@ -73,9 +71,9 @@ pub fn run(args: &[String]) -> io::Result<()> {
 /// The host's homes folder, mounted at the same path in every machine.
 const HOMES: &str = if cfg!(target_os = "macos") { "/Users" } else { "/home" };
 
-/// The host user's name, uid and gid. root is always `root`: under
-/// `wsl -u root` (Windows) USER is not set, and a made-up name with uid 0
-/// was a user no machine had ("unknown user user").
+/// The host user's name, uid and gid. root is always `root`: when USER
+/// isn't set, a made-up name with uid 0 was a user no machine had
+/// ("unknown user user").
 fn user() -> (String, u32, u32) {
     // SAFETY: getuid/getgid cannot fail.
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };

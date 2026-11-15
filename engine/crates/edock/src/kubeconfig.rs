@@ -1,10 +1,8 @@
 //! The cluster's entry in kubectl's own file, written by eDock itself with
-//! no kubectl: `edock k8s` on the Mac and Linux (crates/edock/src/k8s.rs) and
-//! the window on Windows (crates/edock-win/src/k8s.rs, which includes this
-//! file) use it.
+//! no kubectl: `edock k8s` (crates/edock/src/k8s.rs) uses it.
 //!
 //! The file is the first of `$KUBECONFIG`, else `.kube/config` in the home
-//! folder (`%USERPROFILE%` on Windows), where kubectl looks. Only the
+//! folder, where kubectl looks. Only the
 //! cluster, user and context named after the engine (`edock`, `edock-dev`,
 //! …) are added, replaced or removed; every other line stays as it was, in
 //! its place, comments too. `current-context` changes only when asked
@@ -25,9 +23,6 @@ const LISTS: [&str; 3] = ["clusters", "contexts", "users"];
 
 /// kubectl's file: the first of `$KUBECONFIG`, else `.kube/config` at home.
 pub fn path() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let home = std::env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
     let home = std::env::var_os("HOME");
     pick(std::env::var_os("KUBECONFIG"), home.map(PathBuf::from))
 }
@@ -122,15 +117,8 @@ fn write(path: &Path, before: Option<&str>, text: &str) -> io::Result<()> {
     done
 }
 
-#[cfg(unix)]
 fn private(path: &Path) -> io::Result<()> {
     std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
-}
-
-// %USERPROFILE% is the user's own already.
-#[cfg(not(unix))]
-fn private(_: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 /// One top-level key and the lines under it (the first is the key's own);

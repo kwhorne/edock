@@ -1,12 +1,10 @@
 //! Proxies, for networks that need one. Settings → Network picks the mode
 //! (`~/.edock/proxy.json`): the system's own settings (the default: macOS's;
-//! on Windows, Windows' as edock-win sends them; on a Linux host, the proxy
-//! variables), a custom proxy, or none. Image pulls, pushes, search and login go through it, and
+//! on a Linux host, the proxy variables), a custom proxy, or none. Image pulls, pushes, search and login go through it, and
 //! when "pass to containers" is on, new containers get `HTTP_PROXY`,
 //! `HTTPS_PROXY` and `NO_PROXY`, as Docker Desktop does. VPNs need nothing
 //! here: container traffic leaves through macOS's own networking.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::sync::Mutex;
@@ -70,22 +68,9 @@ pub fn effective() -> Effective {
     e
 }
 
-/// The host's own settings when the daemon runs in WSL2: edock-win reads
-/// Windows' and sends them (`PUT /edock/proxy/system`).
-static HOST: Mutex<Option<Effective>> = Mutex::new(None);
-
-pub fn set_host(e: Effective) {
-    *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
-    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-}
-
-/// Windows' settings if edock-win sent them, else this machine's proxy
-/// variables, as Linux programs take them.
+/// This machine's proxy variables, as Linux programs take them.
 #[cfg(not(target_os = "macos"))]
 fn system() -> Effective {
-    if let Some(e) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-        return e;
-    }
     let var = |k: &str| std::env::var(k).or_else(|_| std::env::var(k.to_ascii_lowercase())).ok().filter(|v| !v.trim().is_empty());
     let no_proxy = var("NO_PROXY").map(|v| v.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_owned).collect()).unwrap_or_default();
     Effective { http: var("HTTP_PROXY"), https: var("HTTPS_PROXY"), no_proxy, pac: false }
@@ -129,26 +114,10 @@ fn parse_scutil(text: &str) -> Effective {
     Effective { http: proxy("HTTP"), https: proxy("HTTPS"), no_proxy, pac: field("ProxyAutoConfigEnable").as_deref() == Some("1") }
 }
 
-/// Windows loopback ports and the distro ports that lead to them, from
-/// edock-win's relay (crates/edock/src/hostrelay.rs): in WSL2, a proxy on
-/// Windows' 127.0.0.1 is reached there.
-static RELAY: Mutex<Option<HashMap<u16, u16>>> = Mutex::new(None);
-
-pub fn set_relay(map: HashMap<u16, u16>) {
-    *RELAY.lock().unwrap_or_else(|e| e.into_inner()) = Some(map);
-}
-
-/// The address a proxy is dialled at: through edock-win's relay when it is
-/// on Windows' loopback, else as set.
-fn dialled(url: String) -> String {
-    let relay = RELAY.lock().unwrap_or_else(|e| e.into_inner());
-    relay.as_ref().and_then(|m| crate::hostrelay::relayed(&url, m)).unwrap_or(url)
-}
-
 /// For edock-image: the proxy registry requests use. Registries are https.
 pub fn for_registry() -> Option<Option<(String, Vec<String>)>> {
     let e = effective();
-    Some(e.https.or(e.http).map(|url| (dialled(url), e.no_proxy)))
+    Some(e.https.or(e.http).map(|url| (url, e.no_proxy)))
 }
 
 /// The proxy pulls go through, as set (not as relayed) and without a

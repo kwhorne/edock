@@ -43,23 +43,6 @@ pub fn run(args: &[String]) -> io::Result<()> {
     Err(cmd.exec())
 }
 
-/// On Windows: eDock's docker.exe, beside this edock.exe in
-/// %LOCALAPPDATA%\eDock\bin (else one on PATH), with the `edock` context
-/// setup made, which reaches the engine in WSL through edock-win's pipe.
-/// Exits with docker's exit code.
-#[cfg(windows)]
-pub fn run(args: &[String]) -> io::Result<()> {
-    let beside = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("docker.exe"))).filter(|d| d.is_file());
-    let status = std::process::Command::new(beside.unwrap_or_else(|| "docker.exe".into()))
-        .args(["--context", crate::flavor::CONTEXT.get()])
-        .args(args)
-        .env_remove("DOCKER_HOST")
-        .env_remove("DOCKER_CONTEXT")
-        .status()
-        .map_err(|e| io::Error::other(format!("could not run docker.exe ({e}); open eDock once to set it up")))?;
-    std::process::exit(status.code().unwrap_or(1))
-}
-
 /// buildx has a builder of this name: its instance file, in BUILDX_CONFIG,
 /// else DOCKER_CONFIG/buildx, else ~/.docker/buildx.
 #[cfg(unix)]

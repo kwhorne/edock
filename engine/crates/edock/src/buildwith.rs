@@ -33,8 +33,7 @@
 //! puts it back exactly, unless something else has changed it since.
 //! `edock build` always builds on eDock, whichever is chosen.
 //!
-//! The same file serves the Mac and Linux (`edock build-with`, the window)
-//! and Windows (edock-win includes it).
+//! `edock build-with` and the app use it.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -320,14 +319,6 @@ pub fn places() -> io::Result<Places> {
     })
 }
 
-#[cfg(windows)]
-pub fn places() -> io::Result<Places> {
-    let home = std::env::var_os("USERPROFILE").map(PathBuf::from).ok_or_else(|| io::Error::other("USERPROFILE is not set"))?;
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).ok_or_else(|| io::Error::other("LOCALAPPDATA is not set"))?;
-    let docker = docker_dir(&home);
-    Ok(Places { buildx: buildx_dir(&docker), docker, state: local.join("eDock").join("build.json"), builder: crate::builds::BUILDER.get().to_owned(), context: crate::flavor::CONTEXT.get().to_owned() })
-}
-
 /// The engine besides eDock on this machine, by name, if there is one.
 #[cfg(unix)]
 pub fn other_engine() -> Option<&'static str> {
@@ -372,23 +363,6 @@ pub fn other_engine() -> Option<&'static str> {
         &[("/usr/bin/dockerd", "Docker"), ("/opt/docker-desktop", "Docker Desktop"), ("/opt/rancher-desktop", "Rancher Desktop")]
     };
     apps.iter().find(|(p, _)| Path::new(p).exists()).map(|(_, n)| *n)
-}
-
-/// The engine besides eDock on this PC, by name, if there is one.
-#[cfg(windows)]
-pub fn other_engine() -> Option<&'static str> {
-    let under = |var: &str, rel: &str| std::env::var_os(var).is_some_and(|d| Path::new(&d).join(rel).is_file());
-    if under("ProgramFiles", r"Docker\Docker\Docker Desktop.exe") {
-        Some("Docker Desktop")
-    } else if under("ProgramFiles", r"Rancher Desktop\Rancher Desktop.exe") || under("LOCALAPPDATA", r"Programs\Rancher Desktop\Rancher Desktop.exe") {
-        Some("Rancher Desktop")
-    } else if under("ProgramFiles", r"RedHat\Podman\podman.exe") {
-        Some("Podman")
-    } else if Path::new(r"\\.\pipe\docker_engine").exists() {
-        Some("Docker")
-    } else {
-        None
-    }
 }
 
 /// After eDock's builder is (re)made: what was chosen, made so.

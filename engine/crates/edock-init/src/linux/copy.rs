@@ -203,7 +203,9 @@ fn copy_out(conn: &mut fs::File, spec: &CopySpec<'_>) -> io::Result<()> {
     let meta = fs::symlink_metadata(path)
         .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("notfound: Could not find the file {} in container {}", spec.path, spec.id)))?;
     let link = if meta.file_type().is_symlink() { fs::read_link(path)?.to_string_lossy().into_owned() } else { String::new() };
-    let name = path.file_name().map_or_else(|| "/".to_owned(), |n| n.to_string_lossy().into_owned());
+    // `dir/.` is the folder's contents: Docker names it ".".
+    let contents = spec.path == "." || spec.path.ends_with("/.");
+    let name = if contents { ".".to_owned() } else { path.file_name().map_or_else(|| "/".to_owned(), |n| n.to_string_lossy().into_owned()) };
     let entry = FsEntry {
         name: &name,
         mode: meta.mode(),
@@ -222,8 +224,9 @@ fn copy_out(conn: &mut fs::File, spec: &CopySpec<'_>) -> io::Result<()> {
     {
         let mut b = tar::Builder::new(&mut w);
         b.follow_symlinks(false);
-        // The root itself archives as its contents under ".".
-        let top = if name == "/" { "." } else { name.as_str() };
+        // The root itself, and `dir/.` (`docker cp c:/dir/. out`), archive
+        // as their contents under ".", as Docker's do.
+        let top = if contents || name == "/" { "." } else { name.as_str() };
         if meta.is_dir() {
             append_tree(&mut b, path, std::path::Path::new(top))?;
         } else {
