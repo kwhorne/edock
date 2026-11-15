@@ -244,6 +244,10 @@ struct TapState {
     res_seq: Option<u64>,
     /// Stopped following this connection.
     lost: bool,
+    /// Body bytes seen past what's kept, not yet added to the sizes in the
+    /// log (request, response): added every MiB and at the end, so a big
+    /// download doesn't take the log's lock for every piece.
+    unsaid: [u64; 2],
 }
 
 impl Tap {
@@ -262,6 +266,7 @@ impl Tap {
                     req_seq: None,
                     res_seq: None,
                     lost: false,
+                    unsaid: [0, 0],
                 }),
             })
         })
@@ -290,7 +295,13 @@ impl Tap {
     /// still waiting gets no answer.
     pub fn closed(&self, dir: Dir) {
         let mut st = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(seq) = st.req_seq {
+            st.flush(Dir::Request, seq);
+        }
         if dir == Dir::Response {
+            if let Some(seq) = st.res_seq {
+                st.flush(Dir::Response, seq);
+            }
             if st.res.until_close()
                 && let Some(seq) = st.res_seq.take()
             {
@@ -324,6 +335,30 @@ impl TapState {
         log().get(seq).and_then(|e| e.started)
     }
 
+    /// Body bytes went past: what's kept (the parser stops keeping at
+    /// BODY_CAP) and the size.
+    fn body(&mut self, dir: Dir, seq: u64, len: usize, kept: Vec<u8>) {
+        let i = dir as usize;
+        self.unsaid[i] += len as u64;
+        if kept.is_empty() && self.unsaid[i] < 1 << 20 {
+            return;
+        }
+        let n = std::mem::take(&mut self.unsaid[i]);
+        update(seq, |e| {
+            let (body, size) = if dir == Dir::Request { (&mut e.req_body, &mut e.req_size) } else { (&mut e.res_body, &mut e.res_size) };
+            *size += n;
+            body.extend_from_slice(&kept);
+        });
+    }
+
+    /// The sizes not yet in the log, in it.
+    fn flush(&mut self, dir: Dir, seq: u64) {
+        let n = std::mem::take(&mut self.unsaid[dir as usize]);
+        if n > 0 {
+            update(seq, |e| if dir == Dir::Request { e.req_size += n } else { e.res_size += n });
+        }
+    }
+
     fn handle(&mut self, dir: Dir, event: Event) {
         match (dir, event) {
             (_, Event::Lost) => {
@@ -349,12 +384,16 @@ impl TapState {
                 self.waiting.push_back((seq, head));
                 self.req_seq = Some(seq);
             }
-            (Dir::Request, Event::Body(bytes)) => {
+            (Dir::Request, Event::Body { len, kept }) => {
                 if let Some(seq) = self.req_seq {
-                    update(seq, |e| keep(&mut e.req_body, &mut e.req_size, &bytes));
+                    self.body(Dir::Request, seq, len, kept);
                 }
             }
-            (Dir::Request, Event::End) => self.req_seq = None,
+            (Dir::Request, Event::End) => {
+                if let Some(seq) = self.req_seq.take() {
+                    self.flush(Dir::Request, seq);
+                }
+            }
             (Dir::Response, Event::Head { first, headers }) => {
                 let mut parts = first.splitn(3, ' ');
                 let _version = parts.next();
@@ -400,13 +439,14 @@ impl TapState {
                     }
                 });
             }
-            (Dir::Response, Event::Body(bytes)) => {
+            (Dir::Response, Event::Body { len, kept }) => {
                 if let Some(seq) = self.res_seq {
-                    update(seq, |e| keep(&mut e.res_body, &mut e.res_size, &bytes));
+                    self.body(Dir::Response, seq, len, kept);
                 }
             }
             (Dir::Response, Event::End) => {
                 if let Some(seq) = self.res_seq.take() {
+                    self.flush(Dir::Response, seq);
                     let started = self.started(seq);
                     update(seq, |e| {
                         e.done = true;
@@ -418,15 +458,11 @@ impl TapState {
     }
 }
 
-fn keep(body: &mut Vec<u8>, size: &mut u64, bytes: &[u8]) {
-    *size += bytes.len() as u64;
-    let room = BODY_CAP.saturating_sub(body.len());
-    body.extend_from_slice(&bytes[..bytes.len().min(room)]);
-}
-
 enum Event {
     Head { first: String, headers: Vec<(String, String)> },
-    Body(Vec<u8>),
+    /// `len` bytes of body, the first of which (up to BODY_CAP a message)
+    /// are `kept`.
+    Body { len: usize, kept: Vec<u8> },
     End,
     /// Not HTTP/1.x as the parser knows it: stop following.
     Lost,
@@ -453,11 +489,20 @@ struct Parser {
     dir: Dir,
     state: State,
     buf: Vec<u8>,
+    /// Of this message's body, how much was kept.
+    kept: usize,
 }
 
 impl Parser {
     fn new(dir: Dir) -> Self {
-        Parser { dir, state: State::Head, buf: Vec::new() }
+        Parser { dir, state: State::Head, buf: Vec::new(), kept: 0 }
+    }
+
+    /// Body bytes: copied only while under BODY_CAP.
+    fn body(&mut self, b: &[u8]) -> Event {
+        let take = b.len().min(BODY_CAP.saturating_sub(self.kept));
+        self.kept += take;
+        Event::Body { len: b.len(), kept: b[..take].to_vec() }
     }
 
     fn until_close(&self) -> bool {
@@ -505,6 +550,7 @@ impl Parser {
                 let used = bytes.len() - (self.buf.len() - (end + 4));
                 let head = String::from_utf8_lossy(&self.buf[..end]).into_owned();
                 self.buf.clear();
+                self.kept = 0;
                 let mut lines = head.split("\r\n");
                 let first = lines.next().unwrap_or("").to_owned();
                 let http = if self.dir == Dir::Request { first.rsplit(' ').next().is_some_and(|v| v.starts_with("HTTP/1.")) } else { first.starts_with("HTTP/1.") };
@@ -527,7 +573,7 @@ impl Parser {
             State::Length(left) => {
                 let n = (left.min(bytes.len() as u64)) as usize;
                 let left = left - n as u64;
-                let mut events = vec![Event::Body(bytes[..n].to_vec())];
+                let mut events = vec![self.body(&bytes[..n])];
                 if left == 0 {
                     self.state = State::Head;
                     events.push(Event::End);
@@ -536,7 +582,7 @@ impl Parser {
                 }
                 (n, events)
             }
-            State::UntilClose => (bytes.len(), vec![Event::Body(bytes.to_vec())]),
+            State::UntilClose => (bytes.len(), vec![self.body(bytes)]),
             State::ChunkSize | State::Trailers => {
                 let Some(nl) = bytes.iter().position(|&b| b == b'\n') else {
                     self.buf.extend_from_slice(bytes);
@@ -567,7 +613,7 @@ impl Parser {
                 let n = (left.min(bytes.len() as u64)) as usize;
                 let left = left - n as u64;
                 self.state = if left == 0 { State::ChunkEnd(2) } else { State::Chunk(left) };
-                (n, vec![Event::Body(bytes[..n].to_vec())])
+                (n, vec![self.body(&bytes[..n])])
             }
             State::ChunkEnd(left) => {
                 let n = (left as usize).min(bytes.len());
@@ -664,6 +710,27 @@ mod tests {
         assert_eq!(body(&[0xff, 0xfe, 0x00], &[], 3)["binary"], true);
         // Cut inside a character: the text before it.
         assert_eq!(body("aø".as_bytes().get(..2).unwrap(), &[], 3)["text"], "a");
+    }
+
+    /// A big body is counted whole but kept only up to BODY_CAP, and the
+    /// next message on the connection is kept from its start.
+    #[test]
+    fn big_bodies_are_counted_not_kept() {
+        let big = 3 * 1024 * 1024 + 7;
+        let mut s = req(&format!("HTTP/1.1 200 OK\nContent-Length: {big}\n\n"));
+        s.extend(std::iter::repeat_n(b'x', big));
+        s.extend(req("HTTP/1.1 200 OK\nContent-Length: 2\n\nok"));
+        let mut post = req(&format!("POST /up HTTP/1.1\nHost: x\nContent-Length: {big}\n\n"));
+        post.extend(std::iter::repeat_n(b'y', big));
+        post.extend(req("GET /next HTTP/1.1\nHost: x\n\n"));
+        run("big", &post, &s, 64 * 1024);
+        let l = log();
+        let got: Vec<&Exchange> = l.items.iter().filter(|e| e.container == "big").collect();
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].req_size, got[0].req_body.len()), (big as u64, BODY_CAP));
+        assert_eq!((got[0].res_size, got[0].res_body.len()), (big as u64, BODY_CAP));
+        assert_eq!((got[1].res_size, got[1].res_body.as_slice()), (2, &b"ok"[..]));
+        assert!(got.iter().all(|e| e.done));
     }
 
     #[test]

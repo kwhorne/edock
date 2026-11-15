@@ -1698,9 +1698,10 @@ fn healthcheck_from(body: &Value, image_cfg: &Value) -> Result<Option<super::hea
     Ok(super::health::merge(mine, Healthcheck::from_json(&image_cfg["config"]["Healthcheck"])))
 }
 
-/// The image's HEALTHCHECK, which eDock's image model does not keep.
 /// An image's labels (`LABEL`, or `docker commit`'s), from its config. A
-/// config never changes once stored, so each is read once.
+/// config never changes once stored, so each is read once; the cache is
+/// emptied when it grows past what any engine holds, so deleted images'
+/// don't pile up.
 fn image_labels(engine: &Engine, i: &edock_image::Image) -> Value {
     static SEEN: std::sync::Mutex<Option<std::collections::HashMap<String, Value>>> = std::sync::Mutex::new(None);
     if let Some(v) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(std::collections::HashMap::new).get(&i.config_digest) {
@@ -1711,10 +1712,16 @@ fn image_labels(engine: &Engine, i: &edock_image::Image) -> Value {
         Value::Object(m) if !m.is_empty() => Value::Object(m.clone()),
         _ => Value::Null,
     };
-    SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(std::collections::HashMap::new).insert(i.config_digest.clone(), labels.clone());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = seen.get_or_insert_with(std::collections::HashMap::new);
+    if seen.len() >= 4096 {
+        seen.clear();
+    }
+    seen.insert(i.config_digest.clone(), labels.clone());
     labels
 }
 
+/// The image's HEALTHCHECK, which eDock's image model does not keep.
 fn image_healthcheck(engine: &Engine, i: &edock_image::Image) -> Value {
     let cfg: Value = engine.store.read_config(&i.config_digest).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
     cfg["config"]["Healthcheck"].clone()

@@ -31,7 +31,7 @@ const USAGE: &str = "usage: edock usb [list [--json]] | attach DEVICE | detach D
 pub fn run(args: &[String]) -> io::Result<()> {
     match (args.first().map(String::as_str), args.get(1)) {
         // The app's USB view: the devices, and which are in eDock, as JSON.
-        (None | Some("list" | "ls"), _) if args.iter().any(|a| a == "--json") => {
+        (None | Some("list" | "ls" | "--json"), _) if args.iter().any(|a| a == "--json") => {
             println!("{}", ui_list());
             Ok(())
         }

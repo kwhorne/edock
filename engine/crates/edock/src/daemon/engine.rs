@@ -828,8 +828,11 @@ impl Engine {
         if !in_k8s_ranges(ip) || port == 0 {
             return Err(Error::BadRequest("not an address in the Kubernetes cluster".into()));
         }
-        // One forward per address: a second ask gets the first's port.
-        if let Some((&mac, _)) = self.k8s_fwd.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(_, (i, p, _))| *i == ip && *p == port) {
+        // One forward per address: a second ask gets the first's port. The
+        // map stays locked until the forward is in it, so two asks at once
+        // don't both open one.
+        let mut fwds = self.k8s_fwd.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((&mac, _)) = fwds.iter().find(|(_, (i, p, _))| *i == ip && *p == port) {
             return Ok(mac);
         }
         let node = self.lock().containers.values().find(|c| c.status == Status::Running && c.spec.labels.get("app.edock.k8s").is_some()).and_then(|c| c.ip);
@@ -840,7 +843,7 @@ impl Engine {
         let fw = super::ports::start(vm, &format!("k8s-share-{}-{port}", std::net::Ipv4Addr::from(ip)), &[b], ip)?;
         let mac = fw.bound.first().map(|(_, _, p)| *p).unwrap_or(0);
         crate::diag::info!("Kubernetes address forwarded for sharing", to = format!("{}:{port}", std::net::Ipv4Addr::from(ip)), at = format!("127.0.0.1:{mac}"));
-        self.k8s_fwd.lock().unwrap_or_else(|e| e.into_inner()).insert(mac, (ip, port, fw));
+        fwds.insert(mac, (ip, port, fw));
         Ok(mac)
     }
 

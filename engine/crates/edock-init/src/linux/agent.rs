@@ -709,12 +709,18 @@ fn extra_veth(id: &str, n: u32) -> String {
 /// own mount namespace are there too, not only the image's layers (an empty
 /// folder where a volume is mounted), and with no `find` needed in the
 /// image. fsview resolves every path inside it with RESOLVE_IN_ROOT, as
-/// /archive does. While the init is still starting (or already going),
-/// /proc/<pid>/root can't be read: then the image's root, as before.
+/// /archive does. Until the init has switched to the container's root
+/// (just after it's cloned, it still has the VM's), or once it's going and
+/// /proc/<pid>/root can't be read: the image's root, as before. A stat,
+/// not a listing: the Finder view asks this for every read.
 fn running_rootfs(procs: &HashMap<libc::pid_t, Proc>, paths: &Paths, id: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::MetadataExt;
     if let Some(pid) = running_pid(procs, id) {
         let root = std::path::PathBuf::from(format!("/proc/{pid}/root"));
-        if std::fs::read_dir(&root).is_ok() {
+        let vm = std::fs::metadata("/").ok().map(|m| (m.dev(), m.ino()));
+        if let Ok(m) = std::fs::metadata(&root)
+            && Some((m.dev(), m.ino())) != vm
+        {
             return Some(root);
         }
     }
