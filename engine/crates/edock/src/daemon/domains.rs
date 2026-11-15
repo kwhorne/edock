@@ -336,6 +336,9 @@ fn serve(mut client: TcpStream, engine: &Engine) -> io::Result<()> {
     }
     client.set_nodelay(true)?;
     let Some((head, guest, tap)) = route(&mut client, engine, "http")? else { return Ok(()) };
+    // The 30 s limit was for a request that never finished its head: a slow
+    // answer or a stream (SSE) isn't cut.
+    client.set_read_timeout(None)?;
     let mut to_guest = std::fs::File::from(guest.fd.try_clone()?);
     // What the client sent so far goes first, unchanged.
     if let Some(t) = &tap {
@@ -521,7 +524,9 @@ fn serve_tls(tcp: TcpStream, engine: &Engine, config: Arc<rustls::ServerConfig>)
     tcp.set_nodelay(true)?;
     let conn = rustls::ServerConnection::new(config).map_err(|e| io::Error::other(e.to_string()))?;
     let mut tls = rustls::StreamOwned::new(conn, tcp);
-    let Some((head, guest, tap)) = route(&mut tls, engine, "https")? else {
+    let routed = route(&mut tls, engine, "https")?;
+    tls.sock.set_read_timeout(None)?;
+    let Some((head, guest, tap)) = routed else {
         tls.conn.send_close_notify();
         let _ = tls.flush();
         return Ok(());

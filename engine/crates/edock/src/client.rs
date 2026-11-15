@@ -295,3 +295,28 @@ fn lite_cli() -> Option<PathBuf> {
 fn lite_cli() -> Option<PathBuf> {
     None
 }
+
+/// Whether the engine has `repo:tag`.
+pub fn has_image(repo: &str, tag: &str) -> bool {
+    request("GET", &format!("/images/{repo}:{tag}/json"), None).is_ok_and(|r| r.ok())
+}
+
+/// `repo:tag` pulled, for the newest; when the registry says no (offline, a
+/// rate limit) and the engine has it already, that one, with a note. What
+/// else failed is the error.
+pub fn pull_or_keep(repo: &str, tag: &str) -> io::Result<()> {
+    let pulled = request("POST", &format!("/images/create?fromImage={repo}&tag={tag}"), None).and_then(|r| {
+        if !r.ok() {
+            return Err(io::Error::other(r.error()));
+        }
+        let err = String::from_utf8_lossy(&r.body).lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find_map(|v| v["error"].as_str().map(str::to_owned));
+        err.map_or(Ok(()), |e| Err(io::Error::other(e)))
+    });
+    match pulled {
+        Err(e) if has_image(repo, tag) => {
+            println!("couldn't pull {repo}:{tag} ({e}); using the one eDock has");
+            Ok(())
+        }
+        other => other,
+    }
+}

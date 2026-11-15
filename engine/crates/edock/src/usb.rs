@@ -253,7 +253,8 @@ mod kind_tests {
 /// The devices for the window's USB view.
 #[cfg(target_os = "macos")]
 pub fn ui_list() -> serde_json::Value {
-    let daemon: Vec<serde_json::Value> = crate::client::get("/edock/usb").ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    // A look, not use: it mustn't keep a sleeping VM awake (the app asks every few seconds).
+    let daemon: Vec<serde_json::Value> = crate::client::get_background("/edock/usb").ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let devices = match mac::devices() {
         Ok(d) => d,

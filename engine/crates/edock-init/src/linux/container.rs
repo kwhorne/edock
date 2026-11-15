@@ -1242,7 +1242,12 @@ fn finish_child(p: &Prepared, io: &ChildStdio, console: bool) -> ! {
     }
 
     let exe = find_executable(p).unwrap_or_else(|| {
-        fail(&p.argv[0].to_string_lossy(), io::Error::new(io::ErrorKind::NotFound, "executable file not found in $PATH"))
+        // What it looked in, and what the root had: a missing PATH and an
+        // empty root both end here, and say different things.
+        let dirs: Vec<String> = p.path_dirs.iter().map(|d| String::from_utf8_lossy(d).into_owned()).collect();
+        let bin = fs::read_dir("/bin").map_or_else(|e| format!("/bin: {e}"), |d| format!("/bin has {} entries", d.count()));
+        let why = format!("executable file not found in $PATH (searched {}; {bin})", if dirs.is_empty() { "no PATH".to_owned() } else { dirs.join(":") });
+        fail(&p.argv[0].to_string_lossy(), io::Error::new(io::ErrorKind::NotFound, why))
     });
     let mut argv: Vec<*const libc::c_char> = p.argv.iter().map(|a| a.as_ptr()).collect();
     argv.push(std::ptr::null());

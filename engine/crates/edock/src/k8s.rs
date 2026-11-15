@@ -149,7 +149,7 @@ fn set(args: &[String]) -> io::Result<()> {
         return Ok(());
     }
     println!("recreating the node with them (the cluster's state is kept)…");
-    ok(client::request("DELETE", &format!("/containers/{NAME}?force=1"), None))?;
+    ok(client::request("DELETE", &format!("/containers/{NAME}?force=1&v=1"), None))?;
     start(false)
 }
 
@@ -244,11 +244,11 @@ fn start(use_context: bool) -> io::Result<()> {
             };
             if stale {
                 println!("applying the changed settings (the cluster's state is kept)…");
-                ok(client::request("DELETE", &format!("/containers/{NAME}?force=1"), None))?;
+                ok(client::request("DELETE", &format!("/containers/{NAME}?force=1&v=1"), None))?;
             } else if let Some(held) = bound_port(&info).filter(|&p| !port_free(p, cfg.lan)) {
                 let port = pick_port(want, cfg.lan)?;
                 println!("port {held} is in use now; moving the API server to {port}…");
-                ok(client::request("DELETE", &format!("/containers/{NAME}?force=1"), None))?;
+                ok(client::request("DELETE", &format!("/containers/{NAME}?force=1&v=1"), None))?;
                 moved_to = Some(port);
             }
         }
@@ -262,10 +262,10 @@ fn start(use_context: bool) -> io::Result<()> {
             println!("port {want} is in use; the API server takes {port}");
         }
         let (repo, tag) = IMAGE;
-        println!("pulling {repo}:{tag}…");
-        let pulled = ok(client::request("POST", &format!("/images/create?fromImage={repo}&tag={tag}"), None))?;
-        if let Some(e) = String::from_utf8_lossy(&pulled.body).lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).find_map(|v| v["error"].as_str().map(str::to_owned)) {
-            return Err(io::Error::other(e));
+        // A pinned version: there's nothing newer to fetch once it's here.
+        if !client::has_image(repo, tag) {
+            println!("pulling {repo}:{tag}…");
+            client::pull_or_keep(repo, tag)?;
         }
         let mut cmd: Vec<String> = ["server", "--disable", "traefik", "--tls-san", "127.0.0.1", "--tls-san", "localhost", "--write-kubeconfig-mode", "644"].map(String::from).to_vec();
         for name in cfg.tls_san.iter().filter(|n| valid_san(n)) {
@@ -510,7 +510,8 @@ fn status() -> io::Result<()> {
 
 fn delete() -> io::Result<()> {
     ensure_daemon()?;
-    let _ = client::request("DELETE", &format!("/containers/{NAME}?force=1"), None)?;
+    // v=1: the anonymous volumes k3s's image declares go with it, as with docker rm -v.
+    let _ = client::request("DELETE", &format!("/containers/{NAME}?force=1&v=1"), None)?;
     let _ = client::request("DELETE", &format!("/volumes/{VOLUME}"), None)?;
     let _ = std::fs::remove_file(home()?.join(crate::flavor::STATE.get()).join("kubeconfig"));
     forget();

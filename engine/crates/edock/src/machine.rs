@@ -102,10 +102,7 @@ fn create(name: &str, pick: &str, systemd: bool, ssh_agent: bool) -> io::Result<
         _ => (image, "latest"),
     };
     println!("pulling {repo}:{tag}…");
-    let pulled = ok(client::request("POST", &format!("/images/create?fromImage={repo}&tag={tag}"), None))?;
-    if let Some(e) = String::from_utf8_lossy(&pulled.body).lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).find_map(|v| v["error"].as_str().map(str::to_owned)) {
-        return Err(io::Error::other(e));
-    }
+    client::pull_or_keep(repo, tag)?;
     let (user, uid, gid) = user();
     let home = home(&user);
     // The host user, made once; every distro has one of these tools. An
@@ -119,7 +116,7 @@ if ! id -u {user} >/dev/null 2>&1; then
   old=$(getent passwd {uid} | cut -d: -f1)
   {{ [ -n "$old" ] && usermod -l {user} -d {home} "$old" 2>/dev/null; }} || useradd -o -M -u {uid} -g "${{g:-{gid}}}" -d {home} -s /bin/sh {user} 2>/dev/null || adduser -D -H -u {uid} -G "${{g:-{user}}}" -h {home} {user} 2>/dev/null || true
 fi
-mkdir -p /etc/sudoers.d && echo '{user} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/edock && chmod 440 /etc/sudoers.d/edock
+mkdir -p /etc/sudoers.d && printf '%s\n' '{user} ALL=(ALL) NOPASSWD:ALL' 'Defaults env_keep += "SSH_AUTH_SOCK"' > /etc/sudoers.d/edock && chmod 440 /etc/sudoers.d/edock
 # Slim images have no sudo: fetch it once, in the background.
 {ssh}command -v sudo >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sudo || apk add -q sudo || dnf -y -q install sudo || pacman -Sy --noconfirm sudo || zypper -n -q in sudo) >/dev/null 2>&1 &
 {tail}"#,

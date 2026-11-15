@@ -837,7 +837,7 @@ impl Engine {
         self.route_k8s(node);
         let vm = self.vm()?;
         let b = super::ports::Binding { container_port: port, proto: "tcp".into(), host_ip: "127.0.0.1".into(), host_port: 0 };
-        let fw = super::ports::start(vm, &format!("k8s-share-{port}"), &[b], ip)?;
+        let fw = super::ports::start(vm, &format!("k8s-share-{}-{port}", std::net::Ipv4Addr::from(ip)), &[b], ip)?;
         let mac = fw.bound.first().map(|(_, _, p)| *p).unwrap_or(0);
         crate::diag::info!("Kubernetes address forwarded for sharing", to = format!("{}:{port}", std::net::Ipv4Addr::from(ip)), at = format!("127.0.0.1:{mac}"));
         self.k8s_fwd.lock().unwrap_or_else(|e| e.into_inner()).insert(mac, (ip, port, fw));
@@ -2571,6 +2571,9 @@ impl Engine {
             }
             let target = if c.spec.network_mode == "host" { Some([127, 0, 0, 1]) } else { c.ip };
             let old = std::mem::replace(&mut c.spec.ports, ports.clone());
+            // Inspect's PortBindings too: what makes the container again from
+            // its inspect (a snapshot's restore) keeps the ports set here.
+            set_port_bindings(&mut c.spec.host_opts, &ports);
             (old, c.forwards.take(), c.status == Status::Running, target)
         };
         // Closing listeners joins their threads: never under the lock.
@@ -2588,6 +2591,7 @@ impl Engine {
                     crate::diag::warn!("new ports not published; the old ones are kept", id = &id[..12], error = e);
                     let back = super::ports::start(vm, &id, &old_ports, target).ok();
                     if let Some(c) = self.lock().containers.get_mut(&id) {
+                        set_port_bindings(&mut c.spec.host_opts, &old_ports);
                         c.spec.ports = old_ports;
                         c.forwards = back;
                     }
@@ -3534,4 +3538,18 @@ mod start_exit_tests {
         assert_eq!(super::start_exit_code(&format!("{:?}", super::Error::Conflict("no free address left on network n".into()))), 128);
         assert_eq!(super::start_exit_code(&format!("{:?}", super::Error::NotFound("network x not found".into()))), 128);
     }
+}
+
+/// Docker's `PortBindings` for `ports`, kept for inspect.
+fn set_port_bindings(host_opts: &mut serde_json::Value, ports: &[super::ports::Binding]) {
+    let mut map = serde_json::Map::new();
+    for b in ports {
+        let key = format!("{}/{}", b.container_port, b.proto);
+        let entry = serde_json::json!({"HostIp": b.host_ip, "HostPort": if b.host_port == 0 { String::new() } else { b.host_port.to_string() }});
+        map.entry(key).or_insert_with(|| serde_json::json!([])).as_array_mut().expect("array").push(entry);
+    }
+    if !host_opts.is_object() {
+        *host_opts = serde_json::json!({});
+    }
+    host_opts["PortBindings"] = serde_json::Value::Object(map);
 }

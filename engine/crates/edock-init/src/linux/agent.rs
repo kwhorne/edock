@@ -86,12 +86,13 @@ pub fn serve(mut conn: File, paths: &Paths) -> io::Result<()> {
     let udp = super::relay::listen_udp()?;
     let pressure = memory_pressure_trigger();
     let mut last_pressure = std::time::Instant::now() - std::time::Duration::from_secs(1);
-    // `docker system df`: measured on a thread, which wakes the loop through
-    // this pipe; the loop sends the `Usage` lines (it is the only writer).
-    let (usage_wake, usage_ring) = usage_pipe()?;
-    let usage_ring = std::sync::Arc::new(usage_ring);
-    let (usage_tx, usage_rx) = std::sync::mpsc::channel::<Vec<String>>();
-    let mut measuring = false;
+    // `docker system df`: measured in a child process, which writes the lines
+    // to a pipe; the loop sends them as `Usage` once the pipe ends (it is the
+    // only writer). Not a thread: the agent must stay single-threaded, since
+    // a container cloned from a threaded musl process inherits that state,
+    // and its setuid or a lock the thread held fails or hangs it (exit 127,
+    // "switch user: No such file or directory", a container that never execs).
+    let mut usage: Option<(OwnedFd, Vec<u8>)> = None;
     let mut relays: Vec<super::relay::Relay> = Vec::new();
     let mut procs: HashMap<libc::pid_t, Proc> = HashMap::new();
     let mut fds: Vec<libc::pollfd> = Vec::with_capacity(16);
@@ -119,7 +120,7 @@ pub fn serve(mut conn: File, paths: &Paths) -> io::Result<()> {
         fds.push(libc::pollfd { fd: udp.as_raw_fd(), events: libc::POLLIN, revents: 0 });
         fds.push(libc::pollfd { fd: pressure.as_ref().map_or(-1, |f| f.as_raw_fd()), events: libc::POLLPRI, revents: 0 });
         fds.push(libc::pollfd { fd: term.as_ref().map_or(-1, |f| f.as_raw_fd()), events: libc::POLLIN, revents: 0 });
-        fds.push(libc::pollfd { fd: usage_wake.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+        fds.push(libc::pollfd { fd: usage.as_ref().map_or(-1, |(f, _)| f.as_raw_fd()), events: libc::POLLIN, revents: 0 });
         for r in &relays {
             r.interest(&mut fds);
         }
@@ -185,12 +186,25 @@ pub fn serve(mut conn: File, paths: &Paths) -> io::Result<()> {
                 stop_containers(&mut procs);
                 return Ok(());
             }
-            if pfd.fd == usage_wake.as_raw_fd() {
-                let mut sink = [0u8; 16];
-                // SAFETY: reading into a buffer we own from a descriptor we own.
-                while unsafe { libc::read(usage_wake.as_raw_fd(), sink.as_mut_ptr().cast(), sink.len()) } > 0 {}
-                while let Ok(lines) = usage_rx.try_recv() {
-                    measuring = false;
+            if usage.as_ref().is_some_and(|(f, _)| f.as_raw_fd() == pfd.fd) {
+                let ended = {
+                    let (f, got) = usage.as_mut().expect("checked");
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        // SAFETY: reading into a buffer we own from a descriptor we own.
+                        let n = unsafe { libc::read(f.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                        if n > 0 {
+                            got.extend_from_slice(&buf[..n as usize]);
+                        } else if n == 0 || io::Error::last_os_error().kind() != io::ErrorKind::WouldBlock {
+                            break true;
+                        } else {
+                            break false;
+                        }
+                    }
+                };
+                if ended {
+                    let (_, got) = usage.take().expect("checked");
+                    let lines: Vec<String> = String::from_utf8_lossy(&got).lines().filter(|l| !l.is_empty()).map(str::to_owned).collect();
                     out.clear();
                     edock_proto::encode_usage(&mut out, &lines);
                     conn.write_all(&out)?;
@@ -480,14 +494,16 @@ pub fn serve(mut conn: File, paths: &Paths) -> io::Result<()> {
                 Ok(Msg::UsageQuery) => {
                     // No reply here: replies go in order, and this can take
                     // seconds. The lines follow as a `Usage` message.
-                    if !measuring {
-                        measuring = true;
-                        let (layers, containers, tx, ring) = (paths.layers.clone(), paths.containers.clone(), usage_tx.clone(), usage_ring.clone());
-                        let _ = std::thread::Builder::new().name("usage".into()).spawn(move || {
-                            let _ = tx.send(super::usage::measure(&layers, &containers, Path::new(container::VOLUMES)));
-                            // SAFETY: writing one byte from a buffer we own to a descriptor we own.
-                            unsafe { libc::write(ring.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
-                        });
+                    if usage.is_none() {
+                        match measure_in_child(&paths.layers, &paths.containers) {
+                            Ok(read) => usage = Some((read, Vec::new())),
+                            Err(e) => {
+                                eprintln!("edock-init: disk usage not measured: {e}");
+                                out.clear();
+                                edock_proto::encode_usage::<String>(&mut out, &[]);
+                                conn.write_all(&out)?;
+                            }
+                        }
                     }
                     continue;
                 }
@@ -906,10 +922,36 @@ mod clock_tests {
 }
 
 /// A non-blocking pipe: (read end the loop polls, write end the thread rings).
-fn usage_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+/// Measures disk usage in a forked child (the agent is single-threaded,
+/// so forking it is safe), which writes the `Usage` lines to a pipe and
+/// exits; the read end comes back, non-blocking. The loop reaps the child
+/// with the rest (`reap`), where an unknown pid is skipped.
+fn measure_in_child(layers: &Path, containers: &Path) -> io::Result<OwnedFd> {
     let mut fds = [0; 2];
     // SAFETY: `fds` has room for the two descriptors pipe2 writes.
-    sys::check(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } as _, "pipe")?;
+    sys::check(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } as _, "pipe")?;
     // SAFETY: pipe2 just opened both; nothing else owns them.
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    // SAFETY: fork from a single-threaded process; the child only measures,
+    // writes and exits.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if pid == 0 {
+        drop(read);
+        let text = super::usage::measure(layers, containers, Path::new(container::VOLUMES)).join("\n");
+        let mut f = File::from(write);
+        let _ = f.write_all(text.as_bytes());
+        drop(f);
+        // SAFETY: leaving the child without running the agent's destructors.
+        unsafe { libc::_exit(0) };
+    }
+    drop(write);
+    // SAFETY: setting a flag on a descriptor we own.
+    unsafe {
+        let flags = libc::fcntl(read.as_raw_fd(), libc::F_GETFL);
+        libc::fcntl(read.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+    Ok(read)
 }
