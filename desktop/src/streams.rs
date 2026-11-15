@@ -47,6 +47,17 @@ impl Streams {
         self.tasks.lock().remove(&id);
         self.terms.lock().remove(&id);
     }
+    /// A new stream: its id, and its channel `<kind>:<id>`.
+    pub(crate) fn open(&self, kind: &str) -> (u64, String) {
+        let id = self.id();
+        (id, format!("{kind}:{id}"))
+    }
+    pub(crate) fn keep_task(&self, id: u64, handle: tokio::task::AbortHandle) {
+        self.keep(id, handle);
+    }
+    pub(crate) fn close(&self, id: u64) {
+        self.done(id);
+    }
 }
 
 /// End a stream the page opened.
@@ -66,6 +77,8 @@ pub struct LogLine {
     /// "out" or "err".
     pub stream: String,
     pub text: String,
+    /// The Compose service it's from, in a project's combined log.
+    pub service: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, specta::Type, Clone)]
@@ -121,14 +134,14 @@ where
                         while let Some(nl) = partial[i].iter().position(|&b| b == b'\n') {
                             let line: Vec<u8> = partial[i].drain(..=nl).collect();
                             let text = String::from_utf8_lossy(&line).trim_end_matches(['\n', '\r']).to_owned();
-                            pending.push(LogLine { stream: NAMES[i].into(), text });
+                            pending.push(LogLine { stream: NAMES[i].into(), text, service: None });
                         }
                         if pending.len() > 2000 {
                             let _ = bus.emit(&channel, &LogBatch { lines: std::mem::take(&mut pending), ended: false });
                         }
                     }
                     Some(Err(e)) => {
-                        pending.push(LogLine { stream: "err".into(), text: format!("[eDock] log ended: {e}") });
+                        pending.push(LogLine { stream: "err".into(), text: format!("[eDock] log ended: {e}"), service: None });
                         break;
                     }
                     None => break,
@@ -142,7 +155,7 @@ where
         }
         for (i, rest) in partial.iter().enumerate() {
             if !rest.is_empty() {
-                pending.push(LogLine { stream: NAMES[i].into(), text: String::from_utf8_lossy(rest).into_owned() });
+                pending.push(LogLine { stream: NAMES[i].into(), text: String::from_utf8_lossy(rest).into_owned(), service: None });
             }
         }
         let _ = bus.emit(&channel, &LogBatch { lines: pending, ended: true });
@@ -391,7 +404,7 @@ pub struct Changed {
 /// Watches the engine's events for as long as the app runs, and says on
 /// `docker:changed` what kind of thing changed (at most every 150 ms per
 /// kind). Reconnects when the engine goes, or the context changes.
-pub fn watch(engine: Arc<Engine>, bus: Arc<EventBus>, on_change: impl Fn(bool) + Send + Sync + 'static) {
+pub fn watch(engine: Arc<Engine>, bus: Arc<EventBus>, on_change: impl Fn(bool) + Send + Sync + 'static, on_alert: impl Fn(crate::alerts::Alert) + Send + Sync + 'static) {
     tokio::spawn(async move {
         let mut connected: Option<bool> = None;
         loop {
@@ -429,6 +442,9 @@ pub fn watch(engine: Arc<Engine>, bus: Arc<EventBus>, on_change: impl Fn(bool) +
                     ev = events.next() => match ev {
                         Some(Ok(msg)) => {
                             let v = serde_json::to_value(&msg).unwrap_or_default();
+                            if let Some(a) = crate::alerts::from_event(&v) {
+                                on_alert(a);
+                            }
                             let kind = v["Type"].as_str().unwrap_or("").to_owned();
                             let action = v["Action"].as_str().unwrap_or("").to_owned();
                             // exec_* (health checks run as execs too) change no list;

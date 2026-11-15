@@ -3,6 +3,17 @@
 
 import { invoke } from "@elyra/runtime";
 
+export type BenchRow = {
+	engine: string,
+	/**  Milliseconds, create → start → exit → removed. */
+	p50: number,
+	p90: number,
+	mean: number,
+	runs: number,
+	/**  Why there's no time. */
+	error: string | null,
+};
+
 export type BuildDetail = {
 	builder: string,
 	id: string,
@@ -20,6 +31,24 @@ export type BuildDetail = {
 	error_source: string | null,
 	steps: BuildStep[],
 	warnings: BuildWarning[],
+};
+
+export type BuildImage = {
+	/**  The image's size: its layers, as BuildKit stored them. */
+	size: number,
+	/**  Its ID (config digest). */
+	image_id: string,
+	/**
+	 *  A name it has in eDock now, to open it; None when it's gone or
+	 *  was never loaded.
+	 */
+	reference: string | null,
+	/**
+	 *  The last completed build of the same name before this one, and the
+	 *  size of what it made.
+	 */
+	previous_id: string | null,
+	previous_size: number | null,
 };
 
 export type BuildRow = {
@@ -50,6 +79,15 @@ export type BuildWarning = {
 	detail: string,
 	url: string,
 	line: number | null,
+};
+
+export type BuildWith = {
+	/**  docker (builds follow docker's context) or edock (every build on eDock). */
+	with: string,
+	/**  Another engine on this Mac (OrbStack, Docker Desktop…), if any. */
+	engine: string | null,
+	/**  eDock's builder is made, so "edock" takes effect. */
+	ready: boolean,
 };
 
 export type BuilderInfo = {
@@ -84,6 +122,11 @@ export type CliStatus = {
 	agent: boolean,
 	/**  `edock setup` is running. */
 	busy: boolean,
+	/**
+	 *  Another `edock` comes first on the login shell's PATH (an older copy
+	 *  in /usr/local/bin, ~/.local/bin…): terminals run it, not this one.
+	 */
+	stale: string | null,
 };
 
 export type ContainerDetail = {
@@ -647,14 +690,47 @@ export type Vuln = {
 };
 
 export const api = {
+  /**
+   * Whether the notes are on.
+   */
+  alerts_on(): Promise<boolean> {
+    return invoke("alerts_on");
+  },
+  /**
+   * Notes on or off.
+   */
+  alerts_set(on: boolean): Promise<null> {
+    return invoke("alerts_set", on);
+  },
   build_detail(builder: string, id: string): Promise<BuildDetail> {
     return invoke("build_detail", builder, id);
+  },
+  /**
+   * The image a build made: its size, its name in eDock (to open and scan
+   * it), and how it compares with the last build of the same name. None for
+   * a build that made no image (failed, or cache only).
+   */
+  build_image(builder: string, id: string): Promise<BuildImage | null> {
+    return invoke("build_image", builder, id);
   },
   /**
    * Take a build off the history.
    */
   build_remove(builder: string, id: string): Promise<null> {
     return invoke("build_remove", builder, id);
+  },
+  /**
+   * Which builder plain `docker build` and `docker compose build` use.
+   */
+  build_with(): Promise<BuildWith> {
+    return invoke("build_with");
+  },
+  /**
+   * Send every `docker build` to eDock ("edock"), or let builds follow
+   * docker's context ("docker", which puts back what eDock changed).
+   */
+  build_with_set(choice: string): Promise<BuildWith> {
+    return invoke("build_with_set", choice);
   },
   builder_info(): Promise<BuilderInfo> {
     return invoke("builder_info");
@@ -906,6 +982,22 @@ export const api = {
     return invoke("domains_set_ports", http, https);
   },
   /**
+   * The editor "Open in editor" uses, if the Mac has one eDock knows.
+   */
+  editor_name(): Promise<string | null> {
+    return invoke("editor_name");
+  },
+  /**
+   * eDock's engine log (`edock diag logs --engine`): its last `lines`
+   * (200 when not given, at most 2000), oldest first. `errors_only` keeps
+   * warnings and errors.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  engine_log(lines: number | null, errors_only: boolean | null): Promise<string> {
+    return invoke("engine_log", lines, errors_only);
+  },
+  /**
    * The engine eDock is connected to: its name and version, CPUs and memory, and
    * how many of the user's containers run. Start here.
    *
@@ -933,6 +1025,13 @@ export const api = {
    */
   exec_start(container: string, cols: number, rows: number, command: string | null): Promise<number> {
     return invoke("exec_start", container, cols, rows, command);
+  },
+  /**
+   * Open a project's folder: `finder`, `terminal`, or `editor` (Cursor, VS
+   * Code, Zed… whichever is installed). Returns what opened it.
+   */
+  folder_open(path: string, app: string): Promise<string> {
+    return invoke("folder_open", path, app);
   },
   /**
    * Forget what was recorded.
@@ -1142,9 +1241,11 @@ export const api = {
   },
   /**
    * Make a machine: `edock machine create`, its lines on `machine:progress`.
+   * `ssh_agent` gives it the Mac's SSH agent (`SSH_AUTH_SOCK`), so git and
+   * ssh in it use the Mac's keys without copying them in.
    */
-  machine_create(name: string, distro: string, systemd: boolean): Promise<null> {
-    return invoke("machine_create", name, distro, systemd);
+  machine_create(name: string, distro: string, systemd: boolean, ssh_agent: boolean): Promise<null> {
+    return invoke("machine_create", name, distro, systemd, ssh_agent);
   },
   machine_distros(): Promise<Distro[]> {
     return invoke("machine_distros");
@@ -1198,6 +1299,24 @@ export const api = {
     return invoke("project_action", project, action);
   },
   /**
+   * Follow every service's log in a Compose project, as one: each line
+   * with its service, from the last `tail` lines of each, in time order.
+   * Lines arrive on `logs:<id>` like a container's.
+   */
+  project_logs_follow(project: string, tail: number, timestamps: boolean): Promise<number> {
+    return invoke("project_logs_follow", project, tail, timestamps);
+  },
+  /**
+   * `docker compose up -d` for a project, from its own files and folder,
+   * with `--build` when `build` (Rebuild & up). On the engine the app shows.
+   * Output on `compose:progress`.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  project_up(project: string, build: boolean): Promise<null> {
+    return invoke("project_up", project, build);
+  },
+  /**
    * The proxy for pulls, pushes and logins (and, when chosen, containers).
    */
   proxy_info(): Promise<ProxyInfo> {
@@ -1239,6 +1358,15 @@ export const api = {
    */
   snapshots_list(): Promise<Snapshot[]> {
     return invoke("snapshots_list");
+  },
+  /**
+   * How long a container takes, create to removed, on each engine running on
+   * this Mac: eDock, OrbStack, Docker Desktop. `runs` times each (20 when not
+   * given, at most 100), after a few warm-up runs; alpine with no network.
+   * Pulls alpine where it's missing. Progress on `bench:progress`.
+   */
+  speed_test(runs: number | null): Promise<BenchRow[]> {
+    return invoke("speed_test", runs);
   },
   /**
    * Follow a container's CPU, memory, network and disk, about once a
@@ -1294,8 +1422,45 @@ export const api = {
   vm_set_resources(cpus: number, memory_mib: number): Promise<VmInfo> {
     return invoke("vm_set_resources", cpus, memory_mib);
   },
+  /**
+   * Browse a volume's files: a helper with the volume at `/v`, for the
+   * Files view (`container_files` and the rest, under `/v`). It removes
+   * itself after half an hour; `volume_browse_end` sooner.
+   */
+  volume_browse(volume: string): Promise<string> {
+    return invoke("volume_browse", volume);
+  },
+  /**
+   * Done browsing: the volume's helper goes.
+   */
+  volume_browse_end(volume: string): Promise<null> {
+    return invoke("volume_browse_end", volume);
+  },
+  /**
+   * Copy a volume into a new one, owners and all: `target` mustn't exist
+   * yet. Best with the containers that write to `source` stopped.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  volume_clone(source: string, target: string): Promise<null> {
+    return invoke("volume_clone", source, target);
+  },
   volume_create(name: string): Promise<null> {
     return invoke("volume_create", name);
+  },
+  /**
+   * Save a volume's files to one `.tar` where the user chose, owners kept,
+   * to import later or on another Mac.
+   */
+  volume_export(volume: string, file: ChosenFile): Promise<null> {
+    return invoke("volume_export", volume, file);
+  },
+  /**
+   * Make a new volume from a `.tar` (as Export writes them, or any tar of
+   * a folder's contents). `volume` mustn't exist yet.
+   */
+  volume_import(volume: string, file: ChosenFile): Promise<null> {
+    return invoke("volume_import", volume, file);
   },
   volume_remove(name: string): Promise<null> {
     return invoke("volume_remove", name);

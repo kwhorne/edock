@@ -454,8 +454,8 @@ async fn a_linux_machine_from_create_to_delete() {
     let name = "edock-test-machine";
     let _ = app.invoke::<()>("machine_action", (name.to_string(), "delete".to_string())).await;
 
-    let _: () = app.invoke("machine_create", (name.to_string(), "alpine".to_string(), false)).await.unwrap();
-    assert!(app.invoke_err("machine_create", ("other".to_string(), "alpine".to_string(), false)).await.contains("being made"));
+    let _: () = app.invoke("machine_create", (name.to_string(), "alpine".to_string(), false, true)).await.unwrap();
+    assert!(app.invoke_err("machine_create", ("other".to_string(), "alpine".to_string(), false, false)).await.contains("being made"));
     let done = wait_long::<Progress>(&app, "machine:progress", 180, |p| p.iter().any(|p| p.done)).await;
     assert!(done.iter().find(|p| p.done).unwrap().error.is_none(), "{:?}", done.iter().map(|p| &p.line).collect::<Vec<_>>());
 
@@ -469,6 +469,9 @@ async fn a_linux_machine_from_create_to_delete() {
     let _: () = app.invoke("exec_input", (term, "echo \"who=$(id -un) at=$(pwd)\"; ls -d /Users/*/ | head -1\r".to_string())).await.unwrap();
     let want = format!("who={user} at=/Users/{user}");
     wait_for(&app, &format!("exec:{term}"), |c: &[TermChunk]| c.iter().map(|c| c.data.as_str()).collect::<String>().contains(&want)).await;
+    // The Mac's SSH agent, for login shells.
+    let _: () = app.invoke("exec_input", (term, "echo \"agent=$SSH_AUTH_SOCK\"; [ -S \"$SSH_AUTH_SOCK\" ] && echo agent-is-a-socket\r".to_string())).await.unwrap();
+    wait_for(&app, &format!("exec:{term}"), |c: &[TermChunk]| c.iter().map(|c| c.data.as_str()).collect::<String>().contains("agent-is-a-socket")).await;
     let _: () = app.invoke("exec_input", (term, "exit\r".to_string())).await.unwrap();
 
     // It's one of eDock's own in the container list.
@@ -639,6 +642,29 @@ async fn a_build_and_its_history() {
     assert!(d.steps.iter().any(|s| s.name.contains("RUN echo built-by-edock-test")), "{:?}", d.steps.iter().map(|s| &s.name).collect::<Vec<_>>());
     assert!(d.error.is_none());
     assert!(app.invoke_err("build_detail", ("edock-build".to_string(), "../x".to_string())).await.contains("isn't a build"));
+
+    // The image it made: in eDock under its tag, with no build before it.
+    let first: Option<crate::builds::BuildImage> = app.invoke("build_image", (b.builder.clone(), b.id.clone())).await.unwrap();
+    let first = first.expect("the build made an image");
+    assert_eq!(first.reference.as_deref(), Some("edock-build-test:1"));
+    assert!(first.size > 1e6 && first.image_id.starts_with("sha256:"));
+    assert!(first.previous_size.is_none());
+    // Built again, ~2 MB bigger: compared with the first.
+    std::fs::write(dir.join("Dockerfile"), "FROM alpine:3.20\nRUN echo built-by-edock-test > /hello\nRUN head -c 2000000 /dev/urandom > /blob\n").unwrap();
+    docker(&["--context", "edock", "buildx", "build", "--builder", "edock-build", "--load", "-t", "edock-build-test:1", dir.to_str().unwrap()]);
+    let rows: Vec<BuildRow> = app.invoke("builds_list", ()).await.unwrap();
+    let second = rows.iter().filter(|r| r.builder == "edock-build" && r.id != b.id).max_by(|a, b| a.started.cmp(&b.started)).expect("the second build");
+    let img: Option<crate::builds::BuildImage> = app.invoke("build_image", (second.builder.clone(), second.id.clone())).await.unwrap();
+    let img = img.unwrap();
+    assert_eq!(img.previous_id.as_deref(), Some(b.id.as_str()));
+    let grew = img.size - img.previous_size.unwrap();
+    assert!(grew > 1.9e6 && grew < 2.2e6, "grew {grew}");
+    assert_eq!(img.reference.as_deref(), Some("edock-build-test:1"));
+    // The first's image is untagged now: no name to open.
+    let first: Option<crate::builds::BuildImage> = app.invoke("build_image", (b.builder.clone(), b.id.clone())).await.unwrap();
+    assert!(first.unwrap().reference.is_none());
+    let _: () = app.invoke("build_remove", (second.builder.clone(), second.id.clone())).await.unwrap();
+
     let _: () = app.invoke("build_remove", (b.builder.clone(), b.id.clone())).await.unwrap();
     let rows: Vec<BuildRow> = app.invoke("builds_list", ()).await.unwrap();
     assert!(!rows.iter().any(|r| r.id == b.id));
@@ -1011,5 +1037,252 @@ async fn recipes_start_services() {
     for c in [&redis.container, &again.container, &mail.container] {
         let _ = docker.remove_container(c, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
         let _ = docker.remove_volume(&format!("{c}-data"), None::<q::RemoveVolumeOptions>).await;
+    }
+}
+
+/// Engine › Builds' "docker build uses", read (switching it changes
+/// ~/.docker, so the engine's own tests cover that), and the command line's
+/// check for another edock on PATH.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine binary"]
+async fn build_with_and_the_path_check() {
+    let app = app();
+    let b: crate::daemon::BuildWith = app.invoke("build_with", ()).await.unwrap();
+    assert!(b.with == "docker" || b.with == "edock", "{}", b.with);
+    assert!(app.invoke::<crate::daemon::BuildWith>("build_with_set", ("podman".to_string(),)).await.is_err());
+    let cli: crate::daemon::CliStatus = app.invoke("cli_status", ()).await.unwrap();
+    // Whatever this Mac has: a path, when there is one, is absolute.
+    assert!(cli.stale.as_deref().is_none_or(|p| p.starts_with('/')));
+}
+
+/// The engine's log, and the speed test on every engine running here,
+/// leaving no container behind.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn engine_log_and_speed_test() {
+    use crate::bench::BenchRow;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    let log: String = app.invoke("engine_log", (Some(20u32), None::<bool>)).await.unwrap();
+    assert!(!log.trim().is_empty() && log.lines().count() <= 25, "{log}");
+    let rows: Vec<BenchRow> = app.invoke("speed_test", (Some(3u32),)).await.unwrap();
+    let edock = rows.iter().find(|r| r.engine == "eDock").expect("eDock runs");
+    assert!(edock.error.is_none() && edock.p50 > 0.0 && edock.p90 >= edock.p50 && edock.runs == 3, "{:?}", edock.error);
+    let home = std::env::var("HOME").unwrap();
+    for r in &rows {
+        assert!(r.error.is_none(), "{}: {:?}", r.engine, r.error);
+        let sock = match r.engine.as_str() {
+            "eDock" => ".edock/run/docker.sock",
+            "OrbStack" => ".orbstack/run/docker.sock",
+            _ => ".docker/run/docker.sock",
+        };
+        let out = std::process::Command::new("docker").args(["-H", &format!("unix://{home}/{sock}"), "ps", "-aq", "--filter", "label=app.edock.bench"]).output().unwrap();
+        assert!(out.stdout.is_empty(), "{} has bench containers left", r.engine);
+    }
+}
+
+/// A Compose project as a whole: up again from its own files, and one log
+/// for its services, each line with its service.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine and docker compose"]
+async fn a_compose_project_as_a_whole() {
+    use crate::streams::LogBatch;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    // Its events queued from now: the tails come once, before anything polls.
+    app.listen();
+    let host = app.ctx().get::<Engine>().context().1;
+    let project = format!("edock-test-proj-{}", std::process::id());
+    let dir = std::env::temp_dir().join(&project);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("compose.yaml"),
+        "services:\n  api:\n    image: alpine:latest\n    command: sh -c 'echo api-says-hi; sleep 300'\n    labels: [app.edock.test=1]\n  worker:\n    image: alpine:latest\n    command: sh -c 'echo worker-says-hi; sleep 300'\n    labels: [app.edock.test=1]\n",
+    )
+    .unwrap();
+    let compose = |args: &[&str]| std::process::Command::new("docker").args(["compose", "-p", &project]).args(args).current_dir(&dir).env("DOCKER_HOST", &host).env_remove("DOCKER_CONTEXT").output().unwrap();
+    let up = compose(&["up", "-d"]);
+    assert!(up.status.success(), "{}", String::from_utf8_lossy(&up.stderr));
+
+    // Up again, as the app does it: from the labels alone.
+    let _: () = app.invoke("project_up", (project.clone(), false)).await.unwrap();
+
+    let id: u32 = app.invoke("project_logs_follow", (project.clone(), 50u32, false)).await.unwrap();
+    let batches: Vec<LogBatch> = wait_for(&app, &format!("logs:{id}"), |b: &[LogBatch]| {
+        let all: Vec<_> = b.iter().flat_map(|b| &b.lines).collect();
+        all.iter().any(|l| l.text == "api-says-hi") && all.iter().any(|l| l.text == "worker-says-hi")
+    })
+    .await;
+    let lines: Vec<_> = batches.iter().flat_map(|b| &b.lines).collect();
+    assert!(lines.iter().any(|l| l.text == "api-says-hi" && l.service.as_deref() == Some("api")));
+    assert!(lines.iter().any(|l| l.text == "worker-says-hi" && l.service.as_deref() == Some("worker")));
+    let _: () = app.invoke("stream_stop", (id,)).await.unwrap();
+
+    assert!(app.invoke::<String>("folder_open", ("relative/path".to_string(), "finder".to_string())).await.is_err());
+    let down = compose(&["down", "-t", "1"]);
+    assert!(down.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A volume's files without a container of the user's: browsed through a
+/// helper, cloned, exported and imported, owners kept.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine"]
+async fn a_volume_browsed_cloned_exported_imported() {
+    use crate::files::{FileEntry, FilePreview};
+    use futures_util::StreamExt;
+    use bollard::query_parameters as q;
+    use elyra::files::ChosenFile;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let tag = std::process::id();
+    let (vol, copy, back) = (format!("edock-test-vol-{tag}"), format!("edock-test-vol-{tag}-copy"), format!("edock-test-vol-{tag}-back"));
+    docker.create_volume(bollard::models::VolumeCreateRequest { name: Some(vol.clone()), ..Default::default() }).await.unwrap();
+    let r: crate::agent::RunResult = app
+        .invoke("container_run", ("alpine:latest".to_string(), "true".to_string(), None::<bool>, None::<u32>))
+        .await
+        .unwrap();
+    assert_eq!(r.exit_code, 0);
+    // Fill it, with an owner that isn't root.
+    let fill = bollard::models::ContainerCreateBody {
+        image: Some("alpine:latest".into()),
+        cmd: Some(vec!["sh".into(), "-c".into(), "mkdir -p /d/sub && echo hello > /d/sub/a.txt && chown -R 70:70 /d/sub".into()]),
+        labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
+        host_config: Some(bollard::models::HostConfig { binds: Some(vec![format!("{vol}:/d")]), auto_remove: Some(true), ..Default::default() }),
+        ..Default::default()
+    };
+    let id = docker.create_container(None::<q::CreateContainerOptions>, fill).await.unwrap().id;
+    docker.start_container(&id, None::<q::StartContainerOptions>).await.unwrap();
+    let _ = docker.wait_container(&id, None::<q::WaitContainerOptions>).collect::<Vec<_>>().await;
+
+    // Browse: a helper, hidden among eDock's own.
+    let helper: String = app.invoke("volume_browse", (vol.clone(),)).await.unwrap();
+    let again: String = app.invoke("volume_browse", (vol.clone(),)).await.unwrap();
+    assert_eq!(helper, again, "one helper per volume");
+    let rows: Vec<crate::resources::ContainerRow> = app.invoke("containers_list", (false,)).await.unwrap();
+    assert_eq!(rows.iter().find(|c| c.id == helper).and_then(|c| c.system.clone()).as_deref(), Some("helper"));
+    let list: Vec<FileEntry> = app.invoke("container_files", (helper.clone(), "/v/sub".to_string())).await.unwrap();
+    assert_eq!(list.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+    let p: FilePreview = app.invoke("container_file_preview", (helper.clone(), "/v/sub/a.txt".to_string())).await.unwrap();
+    assert_eq!(p.text.as_deref(), Some("hello\n"));
+    let _: () = app.invoke("volume_browse_end", (vol.clone(),)).await.unwrap();
+
+    // What's in a volume, and its owner.
+    let check = |v: String| {
+        let docker = docker.clone();
+        async move {
+            let body = bollard::models::ContainerCreateBody {
+                image: Some("alpine:latest".into()),
+                cmd: Some(vec!["sh".into(), "-c".into(), "cat /m/sub/a.txt; stat -c %u /m/sub/a.txt".into()]),
+                labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
+                host_config: Some(bollard::models::HostConfig { binds: Some(vec![format!("{v}:/m:ro")]), ..Default::default() }),
+                ..Default::default()
+            };
+            let id = docker.create_container(None::<q::CreateContainerOptions>, body).await.unwrap().id;
+            docker.start_container(&id, None::<q::StartContainerOptions>).await.unwrap();
+            let _ = docker.wait_container(&id, None::<q::WaitContainerOptions>).collect::<Vec<_>>().await;
+            let logs: Vec<_> = docker.logs(&id, Some(q::LogsOptionsBuilder::default().stdout(true).stderr(true).build())).collect().await;
+            let _ = docker.remove_container(&id, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+            logs.into_iter().filter_map(Result::ok).map(|l| l.to_string()).collect::<String>()
+        }
+    };
+
+    let _: () = app.invoke("volume_clone", (vol.clone(), copy.clone())).await.unwrap();
+    assert_eq!(check(copy.clone()).await, "hello\n70\n");
+    assert!(app.invoke::<()>("volume_clone", (vol.clone(), copy.clone())).await.is_err(), "not over an existing one");
+
+    let file = std::env::temp_dir().join(format!("{vol}.tar"));
+    let _: () = app.invoke("volume_export", (vol.clone(), ChosenFile::for_saving(&file))).await.unwrap();
+    let listing = std::process::Command::new("tar").arg("tvf").arg(&file).output().unwrap();
+    assert!(String::from_utf8_lossy(&listing.stdout).contains("sub/a.txt"));
+    let _: () = app.invoke("volume_import", (back.clone(), ChosenFile::from_path(&file))).await.unwrap();
+    assert_eq!(check(back.clone()).await, "hello\n70\n");
+
+    // No helper left.
+    let mut filters = std::collections::HashMap::new();
+    filters.insert("label".to_string(), vec!["app.edock.helper".to_string()]);
+    // (A helper removing itself may still show for a moment.)
+    let start = Instant::now();
+    loop {
+        let helpers = docker.list_containers(Some(q::ListContainersOptionsBuilder::default().all(true).filters(&filters).build())).await.unwrap();
+        if helpers.iter().all(|c| !c.labels.as_ref().is_some_and(|l| l.values().any(|v| v.contains(&format!("edock-test-vol-{tag}"))))) {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10), "a helper is left");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    for v in [&vol, &copy, &back] {
+        let _ = docker.remove_volume(v, None::<q::RemoveVolumeOptions>).await;
+    }
+    let _ = std::fs::remove_file(&file);
+}
+
+/// A container killed for memory and one turning unhealthy: the engine's
+/// events become alerts (each once), and eDock's own say nothing.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine"]
+async fn alerts_for_out_of_memory_and_unhealthy() {
+    use crate::alerts::{Alert, What};
+    use bollard::query_parameters as q;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    let engine = app.ctx().get::<Engine>();
+    let docker = engine.docker().unwrap();
+    let got: std::sync::Arc<parking_lot::Mutex<Vec<Alert>>> = std::sync::Arc::default();
+    let g2 = got.clone();
+    crate::streams::watch(engine.clone(), app.ctx().get::<elyra::EventBus>(), |_| {}, move |a| g2.lock().push(a));
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let tag = std::process::id();
+    let run = |name: String, cmd: &str, host: bollard::models::HostConfig, health: Option<bollard::models::HealthConfig>| {
+        let docker = docker.clone();
+        let cmd = cmd.to_owned();
+        async move {
+            let body = bollard::models::ContainerCreateBody {
+                image: Some("alpine:latest".into()),
+                cmd: Some(vec!["sh".into(), "-c".into(), cmd]),
+                labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
+                healthcheck: health,
+                host_config: Some(host),
+                ..Default::default()
+            };
+            docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await.unwrap();
+            docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
+            name
+        }
+    };
+    let hungry = run(
+        format!("edock-test-oom-{tag}"),
+        "head -c 400m /dev/zero | tail > /dev/null",
+        bollard::models::HostConfig { memory: Some(32 * 1024 * 1024), memory_swap: Some(32 * 1024 * 1024), ..Default::default() },
+        None,
+    )
+    .await;
+    let sick = run(
+        format!("edock-test-sick-{tag}"),
+        "sleep 120",
+        bollard::models::HostConfig::default(),
+        Some(bollard::models::HealthConfig { test: Some(vec!["CMD-SHELL".into(), "false".into()]), interval: Some(500_000_000), timeout: Some(1_000_000_000), retries: Some(1), start_period: None, start_interval: None }),
+    )
+    .await;
+
+    let start = Instant::now();
+    loop {
+        let g = got.lock();
+        let oom = g.iter().filter(|a| a.name == hungry && a.what == What::OutOfMemory).count();
+        let unhealthy = g.iter().filter(|a| a.name == sick && a.what == What::Unhealthy).count();
+        if oom >= 1 && unhealthy >= 1 {
+            assert_eq!((oom, unhealthy), (1, 1), "each once");
+            break;
+        }
+        drop(g);
+        assert!(start.elapsed() < Duration::from_secs(30), "alerts so far: {:?}", got.lock());
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let info = docker.inspect_container(&hungry, None::<q::InspectContainerOptions>).await.unwrap();
+    assert_eq!(info.state.and_then(|s| s.oom_killed), Some(true));
+    for c in [&hungry, &sick] {
+        let _ = docker.remove_container(c, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
     }
 }

@@ -11,7 +11,7 @@
   let machines = $state(null);
   let error = $state(null);
   let distros = $state([]);
-  let form = $state({ name: "", distro: "ubuntu", systemd: false });
+  let form = $state({ name: "", distro: "ubuntu", systemd: false, ssh: true });
   let creating = $state(false);
   let lines = $state([]);
   let busy = $state({});
@@ -58,7 +58,7 @@
     lines = [];
     made = name;
     creating = true;
-    const ok = await attempt(() => api.machine_create(name, form.distro, form.systemd).then(() => true));
+    const ok = await attempt(() => api.machine_create(name, form.distro, form.systemd, form.ssh).then(() => true));
     if (!ok) creating = false;
     else form.name = "";
   }
@@ -92,11 +92,13 @@
           <Select value={form.distro} options={distros.map((d) => ({ value: d.id, label: d.label }))} onchange={(v) => (form.distro = v)} />
         </label>
         <label class="toggle"><Checkbox bind:checked={form.systemd} /> systemd</label>
+        <label class="toggle" title="git and ssh in the machine use your Mac's keys, which stay on the Mac"><Checkbox bind:checked={form.ssh} /> Mac's SSH agent</label>
         <Button type="submit" size="sm" variant="primary" loading={creating}>Create</Button>
       </form>
       <p class="muted text">
         Your Mac user with passwordless <code>sudo</code>, and <code>/Users</code> at the same path, so your projects are
-        where you expect them. systemd runs services as on a real server (it makes the machine privileged).
+        where you expect them. systemd runs services as on a real server (it makes the machine privileged). With the Mac's SSH
+        agent, <code>git</code> and <code>ssh</code> use your Mac's keys; the keys themselves never enter the machine.
       </p>
       {#if creating || lines.length}<pre class="progress">{lines.join("\n") || "…"}</pre>{/if}
       </div>

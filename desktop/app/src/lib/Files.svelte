@@ -8,9 +8,11 @@
   import { ago, bytes } from "./format.js";
   import { attempt, engine } from "./state.svelte.js";
 
-  let { container, running } = $props();
+  // `root`: where it starts, and the top it can't go above (a volume's
+  // helper has it at /v, shown as the volume's top).
+  let { container, running, root = "/", rootName = null } = $props();
 
-  let path = $state("/");
+  let path = $state(untrack(() => root));
   let entries = $state(null);
   let error = $state(null);
   let open = $state(null); // { path, entry, preview }
@@ -18,8 +20,14 @@
   const onEdock = $derived(engine.status?.context === "edock");
 
   const join = (dir, name) => (dir.endsWith("/") ? dir + name : `${dir}/${name}`);
-  const parent = (p) => p.replace(/\/[^/]+\/?$/, "") || "/";
-  const crumbs = $derived(path.split("/").filter(Boolean).map((part, i, all) => ({ part, path: "/" + all.slice(0, i + 1).join("/") })));
+  const parent = (p) => (p === root ? root : p.replace(/\/[^/]+\/?$/, "") || "/");
+  const shown = (p) => (root === "/" ? p : p.slice(root.length) || "/");
+  const crumbs = $derived(
+    shown(path)
+      .split("/")
+      .filter(Boolean)
+      .map((part, i, all) => ({ part, path: (root === "/" ? "" : root) + "/" + all.slice(0, i + 1).join("/") })),
+  );
 
   async function load(to = path) {
     try {
@@ -71,7 +79,7 @@
   }
 
   async function remove(p) {
-    if (!(await confirm(`Remove ${p} from the container? This can't be undone.`, { danger: true, confirmLabel: "Remove" }))) return;
+    if (!(await confirm(`Remove ${shown(p)}? This can't be undone.`, { danger: true, confirmLabel: "Remove" }))) return;
     await attempt(() => api.container_file_remove(container, p), `Removed ${p}`);
     if (open?.path === p) open = null;
     load();
@@ -82,10 +90,10 @@
     busy = true;
     const n = await attempt(() => api.container_files_upload(container, path, files));
     busy = false;
-    if (n != null) toast(`${n} file${n === 1 ? "" : "s"} put in ${path}`, { variant: "success" });
+    if (n != null) toast(`${n} file${n === 1 ? "" : "s"} put in ${shown(path)}`, { variant: "success" });
     load();
   }
-  const pick = async () => upload(await dialog.open({ title: `Put files in ${path}`, multiple: true }));
+  const pick = async () => upload(await dialog.open({ title: `Put files in ${shown(path)}`, multiple: true }));
   // Files dropped on the window while this tab shows go into this folder.
   const stopDrop = onFileDrop((files) => running && upload(files));
   onDestroy(stopDrop);
@@ -103,15 +111,15 @@
 
 <div class="files">
   <div class="files-bar">
-    <button class="icon-btn" title="Up" disabled={path === "/"} onclick={() => load(parent(path))}><Icon name="back" size={14} /></button>
+    <button class="icon-btn" title="Up" disabled={path === root} onclick={() => load(parent(path))}><Icon name="back" size={14} /></button>
     <nav class="crumbs mono" aria-label="Path">
-      <button class="crumb" onclick={() => load("/")}>/</button>
+      <button class="crumb" onclick={() => load(root)}>{rootName ? `${rootName}:/` : "/"}</button>
       {#each crumbs as c, i (c.path)}
         <button class="crumb" onclick={() => load(c.path)}>{c.part}</button>{#if i < crumbs.length - 1}<span class="muted">/</span>{/if}
       {/each}
     </nav>
     <span class="spacer"></span>
-    <button class="icon-btn" title="Copy the path" onclick={() => clipboard.writeText(path).then(() => toast("Copied"))}><Icon name="copy" size={14} /></button>
+    <button class="icon-btn" title="Copy the path" onclick={() => clipboard.writeText(shown(path)).then(() => toast("Copied"))}><Icon name="copy" size={14} /></button>
     <button class="icon-btn" title="Refresh" onclick={() => load()}><Icon name="restart" size={14} /></button>
     {#if running}<Button size="sm" loading={busy} onclick={pick}><Icon name="upload" size={14} /> Put files here</Button>{/if}
   </div>
@@ -119,7 +127,7 @@
   {#if error}
     <Callout variant={running ? "warning" : "info"} title={running ? "Couldn't list this folder" : "The container isn't running"}>
       {error}
-      {#if path !== "/" && running}<div class="callout-action"><Button size="sm" onclick={() => load("/")}>Go to /</Button></div>{/if}
+      {#if path !== root && running}<div class="callout-action"><Button size="sm" onclick={() => load(root)}>Go to the top</Button></div>{/if}
     </Callout>
   {:else if !entries}
     <Skeleton lines={6} />
@@ -148,14 +156,14 @@
       {#if open}
         <section class="file-preview">
           <div class="detail-head">
-            <span class="mono detail-url">{open.path}</span>
+            <span class="mono detail-url">{shown(open.path)}</span>
             <span class="spacer"></span>
             <button class="icon-btn" title="Close" onclick={() => (open = null)}>✕</button>
           </div>
           <div class="chips">
             <Button size="sm" onclick={() => save(open.path, open.entry.kind)}>Save to the Mac</Button>
-            <Button size="sm" variant="ghost" onclick={() => clipboard.writeText(open.path).then(() => toast("Copied"))}>Copy path</Button>
-            {#if onEdock && running}<Button size="sm" variant="ghost" onclick={() => attempt(() => api.container_file_reveal(container, open.path))}>Show in Finder</Button>{/if}
+            <Button size="sm" variant="ghost" onclick={() => clipboard.writeText(shown(open.path)).then(() => toast("Copied"))}>Copy path</Button>
+            {#if onEdock && running && root === "/"}<Button size="sm" variant="ghost" onclick={() => attempt(() => api.container_file_reveal(container, open.path))}>Show in Finder</Button>{/if}
           </div>
           {#if open.error}
             <Callout variant="warning">{open.error}</Callout>

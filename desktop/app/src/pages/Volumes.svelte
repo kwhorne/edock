@@ -1,5 +1,5 @@
 <script>
-  import { confirm, prompt, toast } from "@elyra/runtime";
+  import { confirm, dialog, navigate, prompt, toast } from "@elyra/runtime";
   import { Badge, Button, Callout, Skeleton, Table } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
@@ -35,6 +35,23 @@
     await attempt(() => api.volume_snapshot(v.name, note.trim() || null), `Snapshot of ${v.name} taken`);
   }
 
+  async function clone(v) {
+    const target = await prompt(`Copy ${v.name} into a new volume:`, { defaultValue: `${v.name}-copy`, confirmLabel: "Clone" });
+    if (target?.trim()) await attempt(() => api.volume_clone(v.name, target.trim()), `${target.trim()} is a copy of ${v.name}`);
+  }
+
+  async function exportIt(v) {
+    const file = await dialog.save({ title: `Export ${v.name}`, defaultName: `${v.name}.tar` });
+    if (file) await attempt(() => api.volume_export(v.name, file), `${v.name} saved to ${file.name}`);
+  }
+
+  async function importIt() {
+    const [file] = await dialog.open({ title: "Import a volume from a .tar", filters: [{ name: "Tar archive", extensions: ["tar"] }] });
+    if (!file) return;
+    const name = await prompt("The new volume's name:", { defaultValue: file.name.replace(/\.tar$/, ""), confirmLabel: "Import" });
+    if (name?.trim()) await attempt(() => api.volume_import(name.trim(), file), `Imported ${name.trim()}`);
+  }
+
   async function remove(v) {
     if (!(await confirm(`Remove ${v.name} and everything in it?`, { danger: true, confirmLabel: "Remove" }))) return;
     await attempt(() => api.volume_remove(v.name));
@@ -53,6 +70,7 @@
     <span class="muted">{volumes ? volumes.length : ""}</span>
     <span class="spacer"></span>
     <Button size="sm" variant="ghost" onclick={prune}><Icon name="broom" size={14} /> Prune unused</Button>
+    <Button size="sm" variant="ghost" onclick={importIt}><Icon name="upload" size={14} /> Import…</Button>
     <Button size="sm" variant="primary" onclick={create}><Icon name="plus" size={14} /> New volume</Button>
   </header>
 
@@ -67,6 +85,7 @@
       search
       sortable={["name", "project", "size"]}
       label="Volumes"
+      onrowclick={(row) => navigate(`/volumes/${encodeURIComponent(row.name)}`)}
       resizable
       persist="volumes"
       columns={[
@@ -91,7 +110,10 @@
         {/if}
       {/snippet}
       {#snippet actions(row)}
+        <button class="icon-btn" title="Its files" onclick={() => navigate(`/volumes/${encodeURIComponent(row.name)}`)}><Icon name="folder" size={14} /></button>
         <button class="icon-btn" title="Snapshot its files" onclick={() => snapshot(row)}><Icon name="camera" size={14} /></button>
+        <button class="icon-btn" title="Clone into a new volume" onclick={() => clone(row)}><Icon name="copy" size={14} /></button>
+        <button class="icon-btn" title="Export to a .tar" onclick={() => exportIt(row)}><Icon name="download" size={14} /></button>
         <button class="icon-btn danger" title="Remove" onclick={() => remove(row)}><Icon name="trash" size={14} /></button>
       {/snippet}
       {#snippet empty()}<span class="muted">No volumes.</span>{/snippet}

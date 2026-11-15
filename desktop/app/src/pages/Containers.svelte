@@ -1,6 +1,8 @@
 <script>
-  import { contextMenu, navigate, shell, clipboard, confirm, toast } from "@elyra/runtime";
-  import { Badge, Button, Callout, Empty, Input, Skeleton, Switch } from "@elyra/ui";
+  import { channel, contextMenu, navigate, shell, clipboard, confirm, toast } from "@elyra/runtime";
+  import { Badge, Button, Callout, Empty, Input, Modal, Skeleton, Switch } from "@elyra/ui";
+  import { onDestroy } from "svelte";
+  import Logs from "../lib/Logs.svelte";
   import Icon from "../lib/Icon.svelte";
   import NewService from "../lib/NewService.svelte";
   import { api } from "../bindings";
@@ -76,6 +78,45 @@
     busy[g.project] = null;
   }
 
+  // ── A Compose project as a whole ──
+  let projectLogs = $state(null);
+  let projectLogsOpen = $state(false);
+  function showLogs(g) {
+    projectLogs = g.project;
+    projectLogsOpen = true;
+  }
+  let editor = $state(null);
+  api.editor_name().then((e) => (editor = e));
+  function folderMenu(e, g) {
+    contextMenu(e, [
+      { label: "Open in Finder", action: () => attempt(() => api.folder_open(g.dir, "finder")) },
+      { label: "Open in Terminal", action: () => attempt(() => api.folder_open(g.dir, "terminal")) },
+      editor ? { label: `Open in ${editor}`, action: () => attempt(() => api.folder_open(g.dir, "editor")) } : null,
+      { separator: true },
+      { label: "Copy path", action: () => clipboard.writeText(g.dir).then(() => toast("Copied")) },
+    ].filter(Boolean));
+  }
+  let up = $state(null); // { project, lines, done, error }
+  let upOpen = $state(false);
+  const offUp = channel("compose:progress").subscribe((p) => {
+    if (!up || p.project !== up.project) return;
+    if (p.done) up = { ...up, done: true, error: p.error };
+    else up = { ...up, lines: [...up.lines, p.line].slice(-400) };
+  });
+  onDestroy(offUp);
+  async function rebuild(g) {
+    up = { project: g.project, lines: [], done: false, error: null };
+    upOpen = true;
+    busy[g.project] = "up";
+    try {
+      await api.project_up(g.project, true);
+      toast(`${g.project} rebuilt and up`, { variant: "success" });
+    } catch (e) {
+      up = { ...up, done: true, error: e?.message ?? String(e) };
+    }
+    busy[g.project] = null;
+  }
+
   async function remove(c) {
     if (!(await confirm(`Remove ${c.name}?`, { danger: true, confirmLabel: "Remove" }))) return;
     await act(c, "remove");
@@ -129,6 +170,19 @@
     <Button size="sm" variant="primary" onclick={() => (newService = true)}><Icon name="plus" size={14} /> New service</Button>
   </header>
   <NewService bind:open={newService} />
+  <Modal bind:open={projectLogsOpen} title={projectLogs ? `${projectLogs}: all logs` : "Logs"} description="Every service's log, as one, in time order. Click a service to hide it." size="lg">
+    {#if projectLogsOpen && projectLogs}
+      {#key projectLogs}
+        <div class="project-logs"><Logs start={(tail, ts) => api.project_logs_follow(projectLogs, tail, ts)} /></div>
+      {/key}
+    {/if}
+  </Modal>
+  <Modal bind:open={upOpen} title={up ? `Rebuild & up: ${up.project}` : ""} description="docker compose up -d --build, from the project's own files and folder." size="lg">
+    {#if up}
+      {#if up.error}<Callout variant="danger" title="It didn't go up">{up.error}</Callout>{:else if up.done}<Callout variant="success">Up.</Callout>{/if}
+      <pre class="progress compose-out">{up.lines.join("\n") || "Starting…"}</pre>
+    {/if}
+  </Modal>
 
   {#if error}
     <Callout variant="warning" title="The engine didn't answer">
@@ -155,9 +209,13 @@
             <span class="dot" class:on={g.running > 0} class:partial={g.running > 0 && g.running < g.items.length}></span>
             <strong>{g.project}</strong>
             <span class="muted">{g.running}/{g.items.length} running</span>
-            {#if g.dir}<span class="muted path" title={g.dir}>{g.dir.replace(/^\/(?:Users|home)\/[^/]+/, "~")}</span>{/if}
+            {#if g.dir}<button class="muted path link-path" title="Open {g.dir}" onclick={(e) => folderMenu(e, g)}>{g.dir.replace(/^\/(?:Users|home)\/[^/]+/, "~")}</button>{/if}
             <span class="spacer"></span>
             <div class="row-actions">
+              <button class="icon-btn" title="All its logs" onclick={() => showLogs(g)}><Icon name="logs" size={14} /></button>
+              {#if g.dir}
+                <button class="icon-btn" title="Rebuild & up (docker compose up -d --build)" disabled={!!busy[g.project]} onclick={() => rebuild(g)}><Icon name="hammer" size={14} /></button>
+              {/if}
               {#if g.running < g.items.length}
                 <button class="icon-btn" title="Start all" disabled={!!busy[g.project]} onclick={() => projectAct(g, "start")}><Icon name="play" size={14} /></button>
               {/if}
@@ -187,7 +245,7 @@
                 >
                   <span class="dot" class:on={running} class:warn={c.state === "paused" || c.state === "restarting" || c.health === "unhealthy"}></span>
                   <div class="main">
-                    <div class="name">{g.project && c.service ? c.service : c.name} {#if c.system}<Badge>{c.system === "machine" ? "Linux machine" : c.system === "kubernetes" ? "Kubernetes" : "BuildKit"}</Badge>{/if}</div>
+                    <div class="name">{g.project && c.service ? c.service : c.name} {#if c.system}<Badge>{c.system === "machine" ? "Linux machine" : c.system === "kubernetes" ? "Kubernetes" : c.system === "helper" ? "eDock helper" : "BuildKit"}</Badge>{/if}</div>
                     <div class="sub muted">{c.image} · {shortId(c.id)}</div>
                     {#if domainUrl(c)}
                       <button class="domain" title="Open {domainUrl(c)}" onclick={(e) => { e.stopPropagation(); shell.openExternal(domainUrl(c)); }}>

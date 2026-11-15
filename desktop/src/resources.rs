@@ -62,6 +62,7 @@ pub(crate) fn is_system(c: &Value) -> bool {
     let labels = &c["Labels"];
     labels.get("app.edock.machine").is_some()
         || labels.get("app.edock.k8s").is_some()
+        || labels.get("app.edock.helper").is_some()
         || c["Names"][0].as_str().is_some_and(|n| n.trim_start_matches('/').starts_with("buildx_buildkit_"))
 }
 
@@ -249,6 +250,8 @@ pub async fn containers_list(ctx: Ctx, size: bool) -> Result<Vec<ContainerRow>, 
                 Some("machine".to_owned())
             } else if label("app.edock.k8s").is_some() {
                 Some("kubernetes".to_owned())
+            } else if label("app.edock.helper").is_some() {
+                Some("helper".to_owned())
             } else if name.starts_with("buildx_buildkit_") {
                 Some("builder".to_owned())
             } else {
@@ -652,6 +655,8 @@ pub async fn volume_create(ctx: Ctx, name: String) -> Result<(), String> {
 
 #[command]
 pub async fn volume_remove(ctx: Ctx, name: String) -> Result<(), String> {
+    // A helper browsing it (Volumes › Files) would hold it.
+    let _ = crate::volumes::volume_browse_end_inner(&ctx, &name).await;
     docker(&ctx)?.remove_volume(&name, None::<q::RemoveVolumeOptions>).await.map_err(err)
 }
 

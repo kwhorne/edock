@@ -193,6 +193,10 @@ pub struct Settings {
     /// The welcome was shown (or skipped).
     #[serde(default)]
     pub onboarded: bool,
+    /// No macOS notification when a container runs out of memory or turns
+    /// unhealthy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alerts_off: bool,
 }
 
 impl Settings {

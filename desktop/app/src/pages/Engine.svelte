@@ -3,12 +3,18 @@
   import { onDestroy } from "svelte";
   import { Checkbox } from "@elyra/ui";
   import { checkForUpdates } from "../lib/updates.js";
-  import { Badge, Button, Callout, Card, Tabs } from "@elyra/ui";
+  import { Badge, Button, Callout, Card, Switch, Tabs } from "@elyra/ui";
   import EngineResources from "../lib/EngineResources.svelte";
   import EngineDomains from "../lib/EngineDomains.svelte";
   import EngineBuilds from "../lib/EngineBuilds.svelte";
   import EngineProxy from "../lib/EngineProxy.svelte";
   import EngineUsb from "../lib/EngineUsb.svelte";
+  import { attempt as tryIt } from "../lib/state.svelte.js";
+
+  // macOS notes when a container runs out of memory or turns unhealthy.
+  let alerts = $state(null);
+  api.alerts_on().then((on) => (alerts = on));
+  const setAlerts = (on) => tryIt(() => api.alerts_set(on)).then(() => (alerts = on));
   import EngineAgents from "../lib/EngineAgents.svelte";
   import { api } from "../bindings";
   import { engine, changes, refreshEngine, useContext, attempt } from "../lib/state.svelte.js";
@@ -173,6 +179,12 @@
 
   <Card title="Command line">
     <div class="engine-card">
+      {#if cli?.stale}
+        <Callout variant="warning" title="Terminals run another edock">
+          <span class="mono">{cli.stale}</span> comes first on your PATH, so terminals run it instead of this eDock's: an older copy, most
+          likely. Remove it, or put <span class="mono">~/.edock/bin</span> before its folder in your PATH.
+        </Callout>
+      {/if}
       {#if cli?.busy || setupLines.length}
         <pre class="progress">{setupLines.join("\n") || "…"}</pre>
       {/if}
@@ -195,6 +207,13 @@
         <Button size="sm" loading={cli.busy} onclick={setupCli}>Set up again</Button>
       {/if}
     {/snippet}
+  </Card>
+
+  <Card title="Notifications">
+    <div class="engine-card">
+      <label class="toggle"><Switch checked={!!alerts} onchange={setAlerts} disabled={alerts === null} /> Tell me when a container runs out of memory or turns unhealthy</label>
+      <p class="muted text">A macOS notification, once per container every ten minutes; click it for the container's log. Not for eDock's own containers.</p>
+    </div>
   </Card>
 
   <p class="version-row muted">

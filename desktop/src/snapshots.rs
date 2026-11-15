@@ -278,7 +278,7 @@ async fn helper(ctx: &Ctx, mounts: Vec<String>, script: String) -> Result<(), St
     let body = bollard::models::ContainerCreateBody {
         image: Some(HELPER.into()),
         cmd: Some(vec!["sh".into(), "-c".into(), script]),
-        labels: Some([("app.edock.snapshot-helper".to_string(), "1".to_string())].into()),
+        labels: Some([("app.edock.helper".to_string(), "snapshot".to_string())].into()),
         host_config: Some(bollard::models::HostConfig { binds: Some(mounts), network_mode: Some("none".into()), ..Default::default() }),
         ..Default::default()
     };

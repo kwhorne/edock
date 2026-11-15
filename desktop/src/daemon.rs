@@ -346,6 +346,31 @@ pub struct CliStatus {
     pub agent: bool,
     /// `edock setup` is running.
     pub busy: bool,
+    /// Another `edock` comes first on the login shell's PATH (an older copy
+    /// in /usr/local/bin, ~/.local/bin…): terminals run it, not this one.
+    pub stale: Option<String>,
+}
+
+/// The first `edock` on the login shell's PATH, when it isn't the app's:
+/// what makes an update seem not to have happened in a terminal. The login
+/// shell's PATH, since the app's own has only the system's. Reported, never
+/// removed. None when no `edock` is on PATH at all.
+async fn stale_edock() -> Option<String> {
+    let ours = std::fs::canonicalize(engine_binary()?).ok()?;
+    let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
+    let run = tokio::process::Command::new(&shell).args(["-ilc", "command -v edock"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
+    let out = tokio::time::timeout(Duration::from_secs(5), run).await.ok()?.ok()?;
+    let found = String::from_utf8_lossy(&out.stdout).lines().rev().map(str::trim).find(|l| l.starts_with('/'))?.to_owned();
+    stale_unless_ours(&found, &ours)
+}
+
+fn stale_unless_ours(found: &str, ours: &std::path::Path) -> Option<String> {
+    match std::fs::canonicalize(found) {
+        Ok(real) if real == ours => None,
+        // ~/.edock/bin/edock is the setup's link to an app: one that moved
+        // is set up again by Set up again, and named here too.
+        _ => Some(found.to_owned()),
+    }
 }
 
 /// `edock setup` is running.
@@ -373,7 +398,47 @@ pub async fn cli_status(ctx: Ctx) -> CliStatus {
         context,
         agent: home.join("Library/LaunchAgents/app.edock.daemon.plist").is_file(),
         busy: ctx.get::<Setup>().busy.load(std::sync::atomic::Ordering::SeqCst),
+        stale: stale_edock().await,
     }
+}
+
+// ── Which builder `docker build` uses (`edock build-with`) ─────────────
+
+#[derive(Serialize, Deserialize, specta::Type)]
+pub struct BuildWith {
+    /// docker (builds follow docker's context) or edock (every build on eDock).
+    pub with: String,
+    /// Another engine on this Mac (OrbStack, Docker Desktop…), if any.
+    pub engine: Option<String>,
+    /// eDock's builder is made, so "edock" takes effect.
+    pub ready: bool,
+}
+
+async fn build_with_run(args: &[&str]) -> Result<BuildWith, String> {
+    let bin = engine_binary().ok_or("The eDock engine (edock) isn't installed")?;
+    let out = tokio::process::Command::new(bin).arg("build-with").args(args).arg("--json").output().await.map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let e = String::from_utf8_lossy(&out.stderr);
+        return Err(e.trim().lines().last().unwrap_or("edock build-with failed").trim_start_matches("edock: ").to_owned());
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| "This eDock engine can't say which builder docker uses: update eDock".to_string())?;
+    Ok(BuildWith { with: v["with"].as_str().unwrap_or("docker").into(), engine: v["engine"].as_str().map(str::to_owned), ready: v["ready"] == true })
+}
+
+/// Which builder plain `docker build` and `docker compose build` use.
+#[command]
+pub async fn build_with(_ctx: Ctx) -> Result<BuildWith, String> {
+    build_with_run(&[]).await
+}
+
+/// Send every `docker build` to eDock ("edock"), or let builds follow
+/// docker's context ("docker", which puts back what eDock changed).
+#[command]
+pub async fn build_with_set(_ctx: Ctx, choice: String) -> Result<BuildWith, String> {
+    if choice != "docker" && choice != "edock" {
+        return Err("docker or edock".into());
+    }
+    build_with_run(&[&choice]).await
 }
 
 /// `edock setup`: the `edock` docker context, `docker` and `edock` on PATH
@@ -455,4 +520,22 @@ pub(crate) async fn engine_stream(method: &str, path: &str, mut each: impl FnMut
         flush(&mut pending, &mut each);
     }
     Ok(status)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_apps_own_edock_isnt_stale() {
+        let dir = std::env::temp_dir().join(format!("edock-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ours = dir.join("edock");
+        std::fs::write(&ours, "").unwrap();
+        let link = dir.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&ours, &link).unwrap();
+        let ours = std::fs::canonicalize(&ours).unwrap();
+        assert_eq!(super::stale_unless_ours(link.to_str().unwrap(), &ours), None);
+        assert_eq!(super::stale_unless_ours("/usr/local/bin/nope-edock", &ours).as_deref(), Some("/usr/local/bin/nope-edock"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

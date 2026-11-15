@@ -108,8 +108,10 @@ pub async fn machines_list(ctx: Ctx) -> Result<Vec<MachineRow>, String> {
 }
 
 /// Make a machine: `edock machine create`, its lines on `machine:progress`.
+/// `ssh_agent` gives it the Mac's SSH agent (`SSH_AUTH_SOCK`), so git and
+/// ssh in it use the Mac's keys without copying them in.
 #[command]
-pub async fn machine_create(ctx: Ctx, name: String, distro: String, systemd: bool) -> Result<(), String> {
+pub async fn machine_create(ctx: Ctx, name: String, distro: String, systemd: bool, ssh_agent: bool) -> Result<(), String> {
     on_edock(&ctx)?;
     valid(&name)?;
     if !DISTROS.iter().any(|(id, _, _)| *id == distro) {
@@ -123,6 +125,9 @@ pub async fn machine_create(ctx: Ctx, name: String, distro: String, systemd: boo
     let mut args = vec!["machine".to_string(), "create".into(), name, "--distro".into(), distro];
     if systemd {
         args.push("--systemd".into());
+    }
+    if ssh_agent {
+        args.push("--ssh-agent".into());
     }
     let c2 = creating.clone();
     let bus = ctx.get::<EventBus>();

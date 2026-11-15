@@ -119,7 +119,7 @@ async fn exec(ctx: &Ctx, container: &str, cmd: Vec<String>) -> Result<String, St
 pub async fn container_files(ctx: Ctx, container: String, path: String) -> Result<Vec<FileEntry>, String> {
     let path = valid_path(&path)?;
     if ctx.get::<Engine>().context().0 == EDOCK {
-        return match crate::daemon::engine_request("GET", &format!("/edock/containers/{}/files?path={}", enc(&container), enc(path))).await {
+        let from_engine = match crate::daemon::engine_request("GET", &format!("/edock/containers/{}/files?path={}", enc(&container), enc(path))).await {
             Some((200, v)) => serde_json::from_value::<Vec<serde_json::Value>>(v).map_err(err).map(|list| {
                 list.iter()
                     .map(|e| FileEntry {
@@ -136,13 +136,25 @@ pub async fn container_files(ctx: Ctx, container: String, path: String) -> Resul
             Some((_, v)) => Err(v["message"].as_str().map(|m| m.split(": open: ").last().unwrap_or(m).to_owned()).unwrap_or_else(|| "The engine refused".into())),
             None => Err("eDock's engine isn't running".into()),
         };
+        // The engine reads the container's own files: a volume or bind
+        // mounted in it (a database's data) isn't there, so `find` looks.
+        return match from_engine {
+            Ok(list) => Ok(list),
+            Err(e) if e.starts_with("Start the container") || e.contains("Restart engine") || e.contains("isn't running") => Err(e),
+            Err(e) => by_find(&ctx, &container, path).await.map_err(|_| e),
+        };
     }
     let running = ctx.get::<Engine>().docker()?.inspect_container(&container, None::<q::InspectContainerOptions>).await.map_err(err)?;
     if running.state.and_then(|s| s.running) != Some(true) {
         return Err("Start the container to browse its files".into());
     }
+    by_find(&ctx, &container, path).await
+}
+
+/// A folder's entries from `find` and `stat` in the running container.
+async fn by_find(ctx: &Ctx, container: &str, path: &str) -> Result<Vec<FileEntry>, String> {
     let cmd = ["find", path, "-mindepth", "1", "-maxdepth", "1", "-exec", "stat", "-c", "%f|%s|%Y|%n", "{}", "+"];
-    Ok(parse_stat(&exec(&ctx, &container, cmd.iter().map(|s| (*s).to_owned()).collect()).await?))
+    Ok(parse_stat(&exec(ctx, container, cmd.iter().map(|s| (*s).to_owned()).collect()).await?))
 }
 
 /// One tar entry's header, as much as the tab needs.

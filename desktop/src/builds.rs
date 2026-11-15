@@ -60,6 +60,10 @@ pub struct BuildRow {
 #[command]
 pub async fn builds_list(ctx: Ctx) -> Result<Vec<BuildRow>, String> {
     on_edock(&ctx)?;
+    rows().await
+}
+
+async fn rows() -> Result<Vec<BuildRow>, String> {
     let all: Vec<Value> = serde_json::from_str(&edock(&["list"]).await?).map_err(|e| e.to_string())?;
     Ok(all
         .iter()
@@ -74,6 +78,62 @@ pub async fn builds_list(ctx: Ctx) -> Result<Vec<BuildRow>, String> {
             cached: n(&b["cached"]),
         })
         .collect())
+}
+
+#[derive(Serialize, Deserialize, specta::Type)]
+pub struct BuildImage {
+    /// The image's size: its layers, as BuildKit stored them.
+    pub size: f64,
+    /// Its ID (config digest).
+    pub image_id: String,
+    /// A name it has in eDock now, to open it; None when it's gone or
+    /// was never loaded.
+    pub reference: Option<String>,
+    /// The last completed build of the same name before this one, and the
+    /// size of what it made.
+    pub previous_id: Option<String>,
+    pub previous_size: Option<f64>,
+}
+
+/// The first image a build's layers name: its size and ID.
+async fn made(builder: &str, id: &str) -> Option<(f64, String)> {
+    let v: Value = serde_json::from_str(&edock(&["layers", builder, id]).await.ok()?).ok()?;
+    let i = v["images"].as_array()?.first()?;
+    Some((i["size"].as_f64()?, i["config_digest"].as_str()?.to_owned()))
+}
+
+/// The image a build made: its size, its name in eDock (to open and scan
+/// it), and how it compares with the last build of the same name. None for
+/// a build that made no image (failed, or cache only).
+#[command]
+pub async fn build_image(ctx: Ctx, builder: String, id: String) -> Result<Option<BuildImage>, String> {
+    use bollard::query_parameters as q;
+    on_edock(&ctx)?;
+    check(&builder, &id)?;
+    let Some((size, image_id)) = made(&builder, &id).await else { return Ok(None) };
+    let docker = ctx.get::<Engine>().docker()?;
+    let reference = docker
+        .list_images(None::<q::ListImagesOptions>)
+        .await
+        .ok()
+        .and_then(|list| list.into_iter().find(|i| i.id == image_id))
+        .and_then(|i| i.repo_tags.into_iter().find(|t| !t.starts_with("<none>")));
+    // The build before it with the same name.
+    let rows = rows().await.unwrap_or_default();
+    let this = rows.iter().find(|r| r.builder == builder && r.id == id);
+    let mut before: Vec<&BuildRow> = rows
+        .iter()
+        .filter(|r| this.is_some_and(|t| r.name == t.name && r.started < t.started) && r.status == "Completed")
+        .collect();
+    before.sort_by(|a, b| b.started.cmp(&a.started));
+    let mut previous = None;
+    for r in before.into_iter().take(3) {
+        if let Some((s, _)) = made(&r.builder, &r.id).await {
+            previous = Some((r.id.clone(), s));
+            break;
+        }
+    }
+    Ok(Some(BuildImage { size, image_id, reference, previous_id: previous.as_ref().map(|p| p.0.clone()), previous_size: previous.map(|p| p.1) }))
 }
 
 #[derive(Serialize, Deserialize, specta::Type)]

@@ -61,9 +61,16 @@
     follow = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
   }
 
+  // A project's combined log: lines carry their service, each in its colour,
+  // and services can be hidden.
+  let hidden = $state({});
+  const services = $derived([...new Set(lines.map((l) => l.service).filter(Boolean))].sort());
+  const PALETTE = ["#4f9cf9", "#e8a33d", "#3fb68b", "#d36ac2", "#e5654e", "#8c7ae6", "#2bb5c4", "#b8a03a"];
+  const colour = (svc) => PALETTE[[...svc].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % PALETTE.length];
+
   const shown = $derived.by(() => {
     const q = filter.trim().toLowerCase();
-    return q ? lines.filter((l) => l.text.toLowerCase().includes(q)) : lines;
+    return lines.filter((l) => !(l.service && hidden[l.service]) && (!q || l.text.toLowerCase().includes(q) || l.service?.toLowerCase().includes(q)));
   });
 
   // ANSI colour codes off: the log is shown as text.
@@ -77,12 +84,19 @@
     <label class="toggle"><Switch bind:checked={wrap} /> Wrap</label>
     <span class="spacer"></span>
     <span class="muted">{shown.length} lines{ended ? " · ended" : ""}</span>
-    <button class="ghost-btn" onclick={() => clipboard.writeText(shown.map((l) => plain(l.text)).join("\n")).then(() => toast("Copied"))}>Copy</button>
+    <button class="ghost-btn" onclick={() => clipboard.writeText(shown.map((l) => (l.service ? `${l.service} | ` : "") + plain(l.text)).join("\n")).then(() => toast("Copied"))}>Copy</button>
     <button class="ghost-btn" onclick={() => (lines = [])}>Clear</button>
   </div>
+  {#if services.length > 1}
+    <div class="chips">
+      {#each services as svc (svc)}
+        <button class="svc-chip" class:off={hidden[svc]} style="--svc: {colour(svc)}" onclick={() => (hidden[svc] = !hidden[svc])} title={hidden[svc] ? `Show ${svc}` : `Hide ${svc}`}>{svc}</button>
+      {/each}
+    </div>
+  {/if}
   <div class="log-box" class:wrap bind:this={box} onscroll={onScroll}>
     {#each shown as l, i (i)}
-      <div class="line" class:err={l.stream === "err"}>{plain(l.text)}</div>
+      <div class="line" class:err={l.stream === "err"}>{#if l.service}<span class="svc" style="color: {colour(l.service)}">{l.service}</span>{/if}{plain(l.text)}</div>
     {/each}
     {#if lines.length === 0}
       <div class="muted">{ended ? "No output." : "Waiting for output…"}</div>

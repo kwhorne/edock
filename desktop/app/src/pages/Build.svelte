@@ -5,6 +5,7 @@
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
   import { attempt } from "../lib/state.svelte.js";
+  import { bytes } from "../lib/format.js";
 
   let { params } = $props();
   let b = $state(null);
@@ -21,6 +22,15 @@
       })
       .catch((e) => (error = e?.message ?? String(e)));
   });
+
+  // The image it made, and how it compares with the build before.
+  let image = $state(null);
+  $effect(() => {
+    if (b?.status !== "Completed") return;
+    api.build_image(b.builder, b.id).then((i) => (image = i)).catch(() => {});
+  });
+  const change = $derived(image?.previous_size != null ? image.size - image.previous_size : null);
+  const openImage = (tab = "") => navigate(`/images/${encodeURIComponent(image.reference)}${tab}`);
 
   const secs = (s) => {
     if (!s.started || !s.completed || s.completed.startsWith("0001-")) return null;
@@ -53,7 +63,31 @@
       <div><span class="muted">Steps</span>{b.total} ({b.cached} cached)</div>
       {#if b.dockerfile}<div><span class="muted">Dockerfile</span><span class="mono">{b.dockerfile}</span></div>{/if}
       {#if b.context}<div><span class="muted">Context</span><span class="mono">{b.context}</span></div>{/if}
+      {#if image}
+        <div>
+          <span class="muted">Image</span>
+          <span>
+            {bytes(image.size)}
+            {#if change != null && Math.abs(change) >= 1024}
+              <Badge variant={change < 0 ? "success" : "warning"} title="Against the last build of {b.name}">{change < 0 ? "−" : "+"}{bytes(Math.abs(change))}</Badge>
+            {:else if change != null}
+              <span class="muted">(as before)</span>
+            {/if}
+          </span>
+        </div>
+      {/if}
     </div>
+
+    {#if image}
+      <div class="chips">
+        {#if image.reference}
+          <Button size="sm" onclick={() => openImage()}><Icon name="layers" size={14} /> Inspect image</Button>
+          <Button size="sm" onclick={() => openImage("?tab=security")}><Icon name="shield" size={14} /> Scan</Button>
+        {:else}
+          <span class="muted">Its image isn't in eDock under a name any more: built again since, or removed.</span>
+        {/if}
+      </div>
+    {/if}
 
     {#if b.error}
       <Callout variant="danger" title={b.error_step ? `Failed at ${b.error_step}` : "The build failed"}>

@@ -6,6 +6,7 @@ export const routes = {
   "/images": () => import("./pages/Images.svelte"),
   "/images/:ref": () => import("./pages/Image.svelte"),
   "/volumes": () => import("./pages/Volumes.svelte"),
+  "/volumes/:name": () => import("./pages/Volume.svelte"),
   "/networks": () => import("./pages/Networks.svelte"),
   "/engine": () => import("./pages/Engine.svelte"),
   "/machines": () => import("./pages/Machines.svelte"),

@@ -5,10 +5,14 @@
 mod daemon;
 mod edock;
 mod agent;
+mod alerts;
 mod inspector;
 mod snapshots;
 mod files;
 mod recipes;
+mod bench;
+mod compose;
+mod volumes;
 mod builds;
 mod engine;
 mod images;
@@ -39,6 +43,8 @@ impl Provider for Watcher {
         let bus = ctx.get::<EventBus>();
         let tray = ctx.try_get::<Tray>();
         let e2 = engine.clone();
+        let (alerts, notifier, b2) = (ctx.get::<alerts::Alerts>(), ctx.get::<elyra::notifier::Notifier>(), bus.clone());
+        let on_alert = move |a| alerts::show(&alerts, &notifier, &b2, a);
         streams::watch(engine, bus, move |connected| {
             let Some(tray) = tray.clone() else { return };
             let engine = e2.clone();
@@ -62,7 +68,7 @@ impl Provider for Watcher {
                     format!("eDock — {context} engine not running")
                 }));
             });
-        });
+        }, on_alert);
     }
 }
 
@@ -91,6 +97,7 @@ fn core(engine: Arc<engine::Engine>) -> App {
         .bind_as::<machines::Creating>(Arc::new(machines::Creating::default()))
         .bind_as::<images::Scanning>(Arc::new(images::Scanning::default()))
         .bind_as::<vm::Importing>(Arc::new(vm::Importing::default()))
+        .bind_as::<alerts::Alerts>(Arc::new(alerts::Alerts::default()))
         .commands(commands![
             resources::engine_status,
             resources::contexts_list,
@@ -124,6 +131,8 @@ fn core(engine: Arc<engine::Engine>) -> App {
             daemon::daemon_restart,
             daemon::cli_status,
             daemon::cli_setup,
+            daemon::build_with,
+            daemon::build_with_set,
             k8s::k8s_status,
             k8s::k8s_cluster,
             k8s::k8s_items,
@@ -164,6 +173,7 @@ fn core(engine: Arc<engine::Engine>) -> App {
             k8s::k8s_forwards,
             builds::builds_list,
             builds::build_detail,
+            builds::build_image,
             builds::build_remove,
             mcp_command,
             welcome_needed,
@@ -193,6 +203,19 @@ fn core(engine: Arc<engine::Engine>) -> App {
             files::container_file_reveal,
             recipes::recipes_list,
             recipes::recipe_start,
+            bench::engine_log,
+            bench::speed_test,
+            compose::project_logs_follow,
+            compose::editor_name,
+            compose::folder_open,
+            compose::project_up,
+            volumes::volume_browse,
+            volumes::volume_browse_end,
+            volumes::volume_clone,
+            volumes::volume_export,
+            volumes::volume_import,
+            alerts::alerts_on,
+            alerts::alerts_set,
             window_open,
         ])
 }
