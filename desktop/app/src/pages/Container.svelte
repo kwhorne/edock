@@ -9,7 +9,7 @@
   import Files from "../lib/Files.svelte";
   import { Modal } from "@elyra/ui";
   import { api } from "../bindings";
-  import { changes, engine, attempt } from "../lib/state.svelte.js";
+  import { changes, engine, attempt, errorText } from "../lib/state.svelte.js";
   import { stateTone, shortId } from "../lib/format.js";
 
   let { params, query } = $props();
@@ -28,7 +28,7 @@
       detail = await api.container_inspect(params.id);
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
 
@@ -118,7 +118,7 @@
     <button class="icon-btn" title="Back" onclick={() => navigate("/")}><Icon name="back" /></button>
     {#if detail}
       <h1>{detail.name}</h1>
-      <Badge variant={stateTone(detail.state)}>{detail.state}</Badge>
+      <Badge variant={detail.exit_code ? "danger" : stateTone(detail.state)} title={detail.exit_code != null ? `Its program exited with code ${detail.exit_code}` : undefined}>{detail.state}{detail.exit_code != null ? ` (${detail.exit_code})` : ""}</Badge>
       <span class="muted mono" title={detail.id}>{shortId(detail.id)}</span>
       <span class="spacer"></span>
       {#if running}
@@ -128,7 +128,7 @@
       {/if}
       <Button size="sm" loading={busy === "restart"} onclick={() => act("restart")}><Icon name="restart" size={14} /> Restart</Button>
       <Button size="sm" loading={busy === "snapshot"} onclick={snapshot} title="Snapshot its files"><Icon name="camera" size={14} /> Snapshot</Button>
-      <Button size="sm" variant="danger" onclick={remove}><Icon name="trash" size={14} /></Button>
+      <Button size="sm" variant="danger" onclick={remove} title="Remove" aria-label="Remove"><Icon name="trash" size={14} /></Button>
     {:else}
       <h1>Container</h1>
     {/if}

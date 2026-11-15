@@ -4,7 +4,7 @@
   import { onDestroy } from "svelte";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { changes, engine, useContext, attempt } from "../lib/state.svelte.js";
+  import { changes, engine, useContext, attempt, errorText } from "../lib/state.svelte.js";
   import { ago } from "../lib/format.js";
 
   let status = $state(null);
@@ -28,7 +28,7 @@
       items = await api.k8s_items();
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
 
@@ -161,7 +161,7 @@
     <Empty title="No cluster yet" description="A single-node Kubernetes (k3s) in one container on eDock's engine. The first start pulls k3s and takes about a minute.">
       {#snippet action()}
         <div class="start-row">
-          <label class="toggle"><Checkbox bind:checked={useAsCurrent} /> Make <code>edock</code> kubectl's current context</label>
+          <Checkbox class="toggle" bind:checked={useAsCurrent}>Make <code>edock</code> kubectl's current context</Checkbox>
           <Button variant="primary" onclick={() => cluster("start")}><Icon name="play" size={14} /> Start Kubernetes</Button>
         </div>
       {/snippet}
@@ -199,6 +199,7 @@
         {:else if id === "pods"}
           <Table
             rows={pods}
+            key="key"
             bind:query={podQuery}
             search
             sortable={["name", "namespace", "status", "restarts", "created"]}
@@ -240,6 +241,7 @@
         {:else}
           <Table
             rows={services}
+            key="key"
             bind:query={svcQuery}
             search
             sortable={["name", "namespace", "kind"]}

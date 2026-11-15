@@ -27,7 +27,9 @@ const pods = cached(async () => {
   return s.on_edock && s.ready ? (await api.k8s_items()).pods : [];
 }, 5000);
 
-export function startSearch() {
+const recipes = cached(() => api.recipes_list(), 60000);
+
+export function startSearch(startRecipe) {
   registerSearch({
     id: "containers",
     title: "Containers",
@@ -76,6 +78,17 @@ export function startSearch() {
         .filter((p) => has(q, p.name, p.namespace, p.owner))
         .slice(0, LIMIT)
         .map((p) => ({ title: p.name, subtitle: `${p.namespace} · ${p.status}`, action: () => navigate(`/kubernetes/${p.namespace}/${p.name}`) }));
+    },
+  });
+  registerSearch({
+    id: "recipes",
+    title: "New service",
+    minChars: 1,
+    async search(query) {
+      const q = query.trim().toLowerCase();
+      return (await recipes())
+        .filter((r) => has(q, r.title, r.id, r.image, "new service database recipe"))
+        .map((r) => ({ title: `New service: ${r.title}`, subtitle: r.image, action: () => startRecipe(r) }));
     },
   });
 }

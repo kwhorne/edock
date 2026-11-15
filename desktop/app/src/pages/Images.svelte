@@ -4,7 +4,7 @@
   import { Badge, Button, Callout, Skeleton, Table } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { changes, engine, attempt } from "../lib/state.svelte.js";
+  import { changes, engine, attempt, errorText } from "../lib/state.svelte.js";
   import { ago, bytes, shortId } from "../lib/format.js";
 
   let images = $state(null);
@@ -17,7 +17,7 @@
       images = (await api.images_list()).map((i) => ({ ...i, key: `${i.id}:${i.repository}:${i.tag}` }));
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
 
@@ -81,6 +81,7 @@
   {:else}
     <Table
       rows={images}
+      key="key"
       bind:query
       search
       sortable={["repository", "tag", "size", "created"]}

@@ -197,7 +197,7 @@
           against their published checksums), <code>edock</code>, an <code>edock</code> docker context, and the engine
           started at login. No package manager needed.
         </p>
-        <label class="toggle"><Checkbox bind:checked={useAsCurrent} /> Make <code>edock</code> docker's current context</label>
+        <Checkbox class="toggle" bind:checked={useAsCurrent}>Make <code>edock</code> docker's current context</Checkbox>
       {/if}
     </div>
     {#snippet actions()}

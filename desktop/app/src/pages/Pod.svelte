@@ -7,7 +7,7 @@
   import Logs from "../lib/Logs.svelte";
   import Terminal from "../lib/Terminal.svelte";
   import { api } from "../bindings";
-  import { attempt } from "../lib/state.svelte.js";
+  import { attempt, errorText } from "../lib/state.svelte.js";
   import { ago } from "../lib/format.js";
 
   let { params, query } = $props();
@@ -31,7 +31,7 @@
       if (p && (!container || !p.containers.some((c) => c.name === container))) container = p.containers[0]?.name ?? null;
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
 

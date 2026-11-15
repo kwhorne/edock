@@ -60,24 +60,15 @@
     { id: "go.kubernetes", title: "Kubernetes", action: () => navigate("/kubernetes") },
     { id: "go.engine", title: "Engine & contexts", action: () => navigate("/engine") },
     { id: "app.update", title: "Check for updates", action: checkForUpdates },
-    { id: "engine.start", title: "Start eDock engine", action: () => attempt(() => api.daemon_start(), "eDock engine started") },
   ];
-  registerCommands(COMMANDS);
-  // ⌘K: find things by name, and start a service from a recipe.
+  const START = { id: "engine.start", title: "Start eDock engine", action: () => attempt(() => api.daemon_start(), "eDock engine started") };
+  // Start is offered while eDock's engine isn't running.
+  const startable = $derived(engine.status?.context === "edock" && ["off", "stopped"].includes(engine.status?.state));
+  $effect(() => registerCommands(startable ? [...COMMANDS, START] : COMMANDS));
+  // ⌘K: find things by name, and start a service from a recipe (found by
+  // its name or image, after the containers).
   if (!location.hash.startsWith("#/quick")) {
-    startSearch();
-    api.recipes_list().then((recipes) =>
-      registerCommands([
-        ...COMMANDS,
-        ...recipes.map((r) => ({
-          id: `recipe.${r.id}`,
-          title: `New service: ${r.title}`,
-          subtitle: r.about,
-          keywords: `${r.id} ${r.image} database recipe start run`,
-          action: () => startRecipe(r),
-        })),
-      ]),
-    );
+    startSearch(startRecipe);
   }
 
   function cycleTheme() {
@@ -167,7 +158,7 @@
           </NavItem>
           {#if status?.connected}
             <div class="engine-facts">
-              {status.cpus} CPU · {(status.memory / 1e9).toFixed(1)} GB<br />
+              {status.cpus} CPU{status.memory ? ` · ${(status.memory / 1e9).toFixed(1)} GB` : ""}<br />
               {status.os}
             </div>
           {/if}

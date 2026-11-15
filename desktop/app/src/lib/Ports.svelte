@@ -5,7 +5,7 @@
   import { Badge, Button, Callout, Skeleton } from "@elyra/ui";
   import Icon from "./Icon.svelte";
   import { api } from "../bindings";
-  import { changes, engine, attempt, domainUrl } from "./state.svelte.js";
+  import { changes, engine, attempt, domainUrl, errorText } from "./state.svelte.js";
 
   let { id, row = null } = $props();
 
@@ -19,7 +19,7 @@
       info = await api.container_ports(id);
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
 

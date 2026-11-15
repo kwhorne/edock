@@ -93,7 +93,7 @@
     <label class="toggle"><Switch bind:checked={timestamps} /> Timestamps</label>
     <label class="toggle"><Switch bind:checked={wrap} /> Wrap</label>
     <span class="spacer"></span>
-    <span class="muted">{shown.length} lines{ended ? " · ended" : ""}</span>
+    <span class="muted">{shown.length} {shown.length === 1 ? "line" : "lines"}{ended ? " · ended" : ""}</span>
     <button class="ghost-btn" onclick={() => clipboard.writeText(shown.map((l) => (l.service ? `${l.service} | ` : "") + plain(l.text)).join("\n")).then(() => toast("Copied"))}>Copy</button>
     <button class="ghost-btn" onclick={() => (lines = [])}>Clear</button>
   </div>

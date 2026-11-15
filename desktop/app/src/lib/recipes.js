@@ -1,3 +1,4 @@
+import { errorText } from "./state.svelte.js";
 // Starting a recipe's service, from ⌘K or the Containers page.
 import { clipboard, dialog, navigate, toast } from "@elyra/runtime";
 import { api } from "../bindings";
@@ -19,6 +20,6 @@ export async function startRecipe(r, name = null, folder = null) {
     return s;
   } catch (e) {
     pending.dismiss();
-    toast(e?.message ?? String(e), { variant: "error", duration: 6000 });
+    toast(errorText(e), { variant: "error", duration: 6000 });
   }
 }

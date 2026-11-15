@@ -5,7 +5,7 @@
   import { onDestroy } from "svelte";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { changes, engine, useContext, attempt } from "../lib/state.svelte.js";
+  import { changes, engine, useContext, attempt, errorText } from "../lib/state.svelte.js";
   import { ago, stateTone } from "../lib/format.js";
 
   let machines = $state(null);
@@ -24,7 +24,7 @@
       machines = await api.machines_list();
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
 
@@ -91,8 +91,8 @@
         <label>Distribution
           <Select value={form.distro} options={distros.map((d) => ({ value: d.id, label: d.label }))} onchange={(v) => (form.distro = v)} />
         </label>
-        <label class="toggle"><Checkbox bind:checked={form.systemd} /> systemd</label>
-        <label class="toggle" title="git and ssh in the machine use your Mac's keys, which stay on the Mac"><Checkbox bind:checked={form.ssh} /> Mac's SSH agent</label>
+        <Checkbox class="toggle" bind:checked={form.systemd}>systemd</Checkbox>
+        <Checkbox class="toggle" title="git and ssh in the machine use your Mac's keys, which stay on the Mac" bind:checked={form.ssh}>Mac's SSH agent</Checkbox>
         <Button type="submit" size="sm" variant="primary" loading={creating}>Create</Button>
       </form>
       <p class="muted text">

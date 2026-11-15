@@ -5,7 +5,7 @@
   import { api } from "../bindings";
   import Icon from "../lib/Icon.svelte";
   import { ago, bytes } from "../lib/format.js";
-  import { attempt, changes } from "../lib/state.svelte.js";
+  import { attempt, changes, errorText } from "../lib/state.svelte.js";
 
   let list = $state(null);
   let error = $state(null);
@@ -16,7 +16,7 @@
       list = await api.snapshots_list();
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
   $effect(() => {

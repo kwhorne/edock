@@ -6,7 +6,7 @@
   import Files from "../lib/Files.svelte";
   import Icon from "../lib/Icon.svelte";
   import { bytes } from "../lib/format.js";
-  import { attempt } from "../lib/state.svelte.js";
+  import { attempt, errorText } from "../lib/state.svelte.js";
 
   let { params } = $props();
   const name = $derived(decodeURIComponent(params.name));
@@ -25,7 +25,7 @@
     api
       .volume_browse(n)
       .then((id) => (left ? api.volume_browse_end(n).catch(() => {}) : (helper = id)))
-      .catch((e) => !left && (error = e?.message ?? String(e)));
+      .catch((e) => !left && (error = errorText(e)));
     return () => {
       left = true;
       api.volume_browse_end(n).catch(() => {});
@@ -65,7 +65,7 @@
     <Button size="sm" onclick={snapshot} title="Snapshot its files"><Icon name="camera" size={14} /> Snapshot</Button>
     <Button size="sm" onclick={clone}><Icon name="copy" size={14} /> Clone</Button>
     <Button size="sm" onclick={exportIt}><Icon name="download" size={14} /> Export</Button>
-    <Button size="sm" variant="danger" onclick={remove}><Icon name="trash" size={14} /></Button>
+    <Button size="sm" variant="danger" onclick={remove} title="Remove" aria-label="Remove"><Icon name="trash" size={14} /></Button>
   </header>
 
   {#if info}

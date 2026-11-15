@@ -1,3 +1,4 @@
+import { errorText } from "./state.svelte.js";
 // "Check for Updates…": the runtime's toast shows a newer release and
 // installs it; here, also say when there's none, or why the check failed.
 import { checkForUpdate, toast } from "@elyra/runtime";
@@ -10,6 +11,6 @@ export async function checkForUpdates() {
     else if (r.error) toast(`Couldn't check for updates: ${r.error}`, { variant: "error", duration: 6000 });
     else if (!r.available && !r.ready) toast("eDock is up to date", { variant: "success" });
   } catch (e) {
-    toast(`Couldn't check for updates: ${e?.message ?? e}`, { variant: "error", duration: 6000 });
+    toast(`Couldn't check for updates: ${errorText(e)}`, { variant: "error", duration: 6000 });
   }
 }

@@ -48,7 +48,7 @@
         <span class="dot on"></span>
         <button class="name link" title={c.image} onclick={() => open(`/containers/${c.id}`)}>{c.project && c.service ? `${c.project}/${c.service}` : c.name}</button>
         {#if domainUrl(c)}
-          <button class="port" title={domainUrl(c)} onclick={() => shell.openExternal(domainUrl(c))}>↗</button>
+          <button class="port" title={domainUrl(c)} aria-label={`Open ${domainUrl(c)}`} onclick={() => shell.openExternal(domainUrl(c))}>↗</button>
         {/if}
         {#each c.ports.filter((p) => p.public).slice(0, 2) as p (`${p.public}/${p.proto}`)}
           <button class="port" onclick={() => shell.openExternal(`http://localhost:${p.public}`)}>{p.public}</button>

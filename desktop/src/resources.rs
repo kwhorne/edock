@@ -355,6 +355,8 @@ pub struct ContainerDetail {
     pub domain: Option<String>,
     pub image: String,
     pub state: String,
+    /// Its program's exit code, once it has exited.
+    pub exit_code: Option<i64>,
     pub started_at: String,
     pub created: String,
     pub cmd: String,
@@ -452,6 +454,7 @@ pub async fn container_inspect(ctx: Ctx, id: String) -> Result<ContainerDetail, 
         name,
         image: s(&cfg["Image"]),
         state: s(&v["State"]["Status"]),
+        exit_code: (v["State"]["Status"] == "exited" || v["State"]["Status"] == "dead").then(|| v["State"]["ExitCode"].as_i64()).flatten(),
         started_at: s(&v["State"]["StartedAt"]),
         created: s(&v["Created"]),
         cmd: join(&cfg["Cmd"]),
@@ -607,6 +610,16 @@ pub struct VolumeRow {
 }
 
 /// Every volume, and the containers that mount it.
+/// Each volume's size from a `system df` answer: `Volumes` (API 1.51
+/// and before, what eDock and OrbStack send) or `VolumeUsage.Items` (1.52+).
+fn volume_sizes(df: &Value) -> HashMap<String, f64> {
+    let list = df["Volumes"].as_array().or_else(|| df["VolumeUsage"]["Items"].as_array());
+    list.into_iter()
+        .flatten()
+        .filter_map(|v| Some((s(&v["Name"]), v["UsageData"]["Size"].as_f64().filter(|n| *n >= 0.0)?)))
+        .collect()
+}
+
 #[command(can = "edock.view")]
 pub async fn volumes_list(ctx: Ctx) -> Result<Vec<VolumeRow>, String> {
     let docker = docker(&ctx)?;
@@ -616,11 +629,8 @@ pub async fn volumes_list(ctx: Ctx) -> Result<Vec<VolumeRow>, String> {
         .await
         .unwrap_or_default();
     // Sizes come from `system df`, which can be slow; best effort.
-    let sizes: HashMap<String, f64> = match tokio::time::timeout(std::time::Duration::from_secs(3), docker.df(None::<q::DataUsageOptions>)).await {
-        Ok(Ok(df)) => json(&df)["Volumes"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| Some((s(&v["Name"]), v["UsageData"]["Size"].as_f64().filter(|n| *n >= 0.0)?))).collect())
-            .unwrap_or_default(),
+    let sizes = match tokio::time::timeout(std::time::Duration::from_secs(3), crate::daemon::docker_get(&ctx.get::<Engine>(), "/system/df?type=volume")).await {
+        Ok(Some((200, df))) => volume_sizes(&df),
         _ => HashMap::new(),
     };
     let mut rows: Vec<VolumeRow> = vols
@@ -630,8 +640,10 @@ pub async fn volumes_list(ctx: Ctx) -> Result<Vec<VolumeRow>, String> {
         .map(|vol| {
             let v = json(vol);
             let name = s(&v["Name"]);
+            // eDock's helpers (a volume's file view, a snapshot) aren't users.
             let used_by = containers
                 .iter()
+                .filter(|c| c.labels.as_ref().is_none_or(|l| !l.contains_key("app.edock.helper")))
                 .filter(|c| c.mounts.as_ref().is_some_and(|ms| ms.iter().any(|m| m.name.as_deref() == Some(&name))))
                 .map(|c| c.names.as_ref().and_then(|n| n.first()).map(|n| n.trim_start_matches('/').to_owned()).unwrap_or_default())
                 .collect();
@@ -741,4 +753,18 @@ pub async fn network_remove(ctx: Ctx, id: String) -> Result<(), String> {
 pub async fn networks_prune(ctx: Ctx) -> Result<u32, String> {
     let r = docker(&ctx)?.prune_networks(None::<q::PruneNetworksOptions>).await.map_err(err)?;
     Ok(r.networks_deleted.map(|d| d.len() as u32).unwrap_or(0))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn volume_sizes_from_either_df_shape() {
+        let old = serde_json::json!({"Volumes": [{"Name": "a", "UsageData": {"Size": 8192, "RefCount": 1}}, {"Name": "b", "UsageData": {"Size": -1}}]});
+        let new = serde_json::json!({"VolumeUsage": {"Items": [{"Name": "a", "UsageData": {"Size": 8192}}]}});
+        for df in [old, new] {
+            let s = super::volume_sizes(&df);
+            assert_eq!(s.get("a"), Some(&8192.0));
+            assert!(!s.contains_key("b"), "unknown sizes stay unknown");
+        }
+    }
 }

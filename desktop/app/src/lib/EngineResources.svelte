@@ -4,7 +4,7 @@
   import { Badge, Button, Callout, Card, Skeleton } from "@elyra/ui";
   import { onDestroy } from "svelte";
   import { api } from "../bindings";
-  import { attempt, changes } from "./state.svelte.js";
+  import { attempt, changes, errorText } from "./state.svelte.js";
   import { bytes, percent } from "./format.js";
 
   let vm = $state(null);
@@ -18,7 +18,7 @@
       error = null;
       if (resetForm || !form.cpus) form = { cpus: vm.cpus, memory_gib: Math.round(vm.memory_mib / 1024) };
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
   $effect(() => {

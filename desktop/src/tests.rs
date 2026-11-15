@@ -142,6 +142,37 @@ async fn images_volumes_and_networks_list() {
     assert!(status.connected, "{:?}", status.error);
 }
 
+/// Restart engine: the containers that ran run again after it.
+/// `EDOCK_TEST_RESTART=1`, against eDock's engine; it restarts the engine.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "restarts eDock's engine"]
+async fn restarting_the_engine_starts_its_containers_again() {
+    use bollard::query_parameters as q;
+    if std::env::var("EDOCK_TEST_RESTART").is_err() {
+        eprintln!("skipped: set EDOCK_TEST_RESTART=1");
+        return;
+    }
+    let _alone = ENGINE.write().await;
+    let app = app();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    ensure_image(&app, "alpine:latest").await;
+    let name = format!("edock-test-restart-{}", std::process::id());
+    let body = bollard::models::ContainerCreateBody {
+        image: Some("alpine:latest".into()),
+        cmd: Some(vec!["sleep".into(), "300".into()]),
+        labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
+        ..Default::default()
+    };
+    docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await.unwrap();
+    docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
+    let r: Result<(), _> = app.invoke("daemon_restart", ()).await;
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let running = docker.inspect_container(&name, None::<q::InspectContainerOptions>).await.ok().and_then(|i| i.state).and_then(|s| s.running);
+    let _ = docker.remove_container(&name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    r.unwrap();
+    assert_eq!(running, Some(true), "it runs again");
+}
+
 /// Kubernetes on eDock's engine, from nothing to a deployment's pod and
 /// back: `EDOCK_TEST_HOST=unix://$HOME/.edock/run/docker.sock
 /// EDOCK_TEST_K8S=1 cargo test kubernetes -- --ignored`. It deletes the

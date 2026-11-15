@@ -115,6 +115,7 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: v
 .logs { position: relative; display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 280px; }
 .logs-bar { display: flex; align-items: center; gap: 12px; }
 .logs-bar > :first-child { width: 240px; }
+.logs-bar > .muted, .logs-bar .ghost-btn { white-space: nowrap; }
 .toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--elyra-muted); font-size: 12px; }
 .log-box {
   flex: 1; overflow: auto; background: var(--elyra-inset); border: 1px solid var(--elyra-border);

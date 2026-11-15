@@ -6,7 +6,7 @@
   import { api } from "../bindings";
   import Icon from "./Icon.svelte";
   import { ago, bytes } from "./format.js";
-  import { attempt, engine } from "./state.svelte.js";
+  import { attempt, engine, errorText } from "./state.svelte.js";
 
   // `root`: where it starts, and the top it can't go above (a volume's
   // helper has it at /v, shown as the volume's top).
@@ -41,7 +41,7 @@
       error = null;
     } catch (e) {
       if (mine !== asked) return;
-      error = e?.message ?? String(e);
+      error = errorText(e);
       entries = null;
     }
   }
@@ -72,7 +72,7 @@
       const preview = await api.container_file_preview(container, p);
       if (open?.path === p) open = { ...open, preview };
     } catch (err) {
-      if (open?.path === p) open = { ...open, error: err?.message ?? String(err) };
+      if (open?.path === p) open = { ...open, error: errorText(err) };
     }
   }
 

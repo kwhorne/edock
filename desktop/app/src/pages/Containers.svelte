@@ -6,7 +6,7 @@
   import Icon from "../lib/Icon.svelte";
   import NewService from "../lib/NewService.svelte";
   import { api } from "../bindings";
-  import { changes, engine, attempt, domainUrl } from "../lib/state.svelte.js";
+  import { changes, engine, attempt, domainUrl, errorText } from "../lib/state.svelte.js";
   import { ago, shortId, stateTone } from "../lib/format.js";
 
   let containers = $state(null);
@@ -27,7 +27,7 @@
       containers = await api.containers_list(false);
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
 
@@ -112,7 +112,7 @@
       await api.project_up(g.project, true);
       toast(`${g.project} rebuilt and up`, { variant: "success" });
     } catch (e) {
-      up = { ...up, done: true, error: e?.message ?? String(e) };
+      up = { ...up, done: true, error: errorText(e) };
     }
     busy[g.project] = null;
   }
@@ -246,7 +246,7 @@
                   <span class="dot" class:on={running} class:warn={c.state === "paused" || c.state === "restarting" || c.health === "unhealthy"}></span>
                   <div class="main">
                     <div class="name">{g.project && c.service ? c.service : c.name} {#if c.system}<Badge>{c.system === "machine" ? "Linux machine" : c.system === "kubernetes" ? "Kubernetes" : c.system === "helper" ? "eDock helper" : "BuildKit"}</Badge>{/if}</div>
-                    <div class="sub muted">{c.image} · {shortId(c.id)}</div>
+                    <div class="sub muted" title={c.image}>{c.image.startsWith("sha256:") ? c.image.slice(7, 19) : c.image} · {shortId(c.id)}</div>
                     {#if domainUrl(c)}
                       <button class="domain" title="Open {domainUrl(c)}" onclick={(e) => { e.stopPropagation(); shell.openExternal(domainUrl(c)); }}>
                         {domainUrl(c).replace(/^https?:\/\//, "")}
@@ -263,7 +263,7 @@
                   <div class="state">
                     <Badge variant={stateTone(c.state)}>{c.state}</Badge>
                     {#if c.health}<Badge variant={c.health === "healthy" ? "success" : c.health === "unhealthy" ? "danger" : "warning"}>{c.health}</Badge>{/if}
-                    <div class="sub muted">{running ? c.status : ago(c.created)}</div>
+                    <div class="sub muted">{running || c.status ? c.status : ago(c.created)}</div>
                   </div>
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                   <div class="row-actions" onclick={(e) => e.stopPropagation()}>

@@ -63,9 +63,22 @@ pub(crate) async fn engine_request(method: &str, path: &str) -> Option<(u16, Val
 
 /// `engine_request` with a JSON body.
 pub(crate) async fn engine_call(method: &str, path: &str, body: Option<&Value>) -> Option<(u16, Value)> {
+    call_on(socket(), method, path, body).await
+}
+
+/// A GET to the engine the app shows, any engine on a Unix socket, as
+/// plain JSON: for answers a Docker client library reads wrong (`system
+/// df`, whose shape changed in API 1.52). None on a TCP engine.
+pub(crate) async fn docker_get(engine: &crate::engine::Engine, path: &str) -> Option<(u16, Value)> {
+    let (_, host) = engine.context();
+    let sock = host.strip_prefix("unix://")?;
+    call_on(PathBuf::from(sock), "GET", path, None).await
+}
+
+async fn call_on(sock: PathBuf, method: &str, path: &str, body: Option<&Value>) -> Option<(u16, Value)> {
     let body = body.map(|b| b.to_string()).unwrap_or_default();
     let fut = async {
-        let mut s = tokio::net::UnixStream::connect(socket()).await.ok()?;
+        let mut s = tokio::net::UnixStream::connect(sock).await.ok()?;
         // A look (GET) isn't use: it mustn't keep the VM from sleeping.
         let background = if method == "GET" { "X-Edock-Background: 1\r\n" } else { "" };
         let kind = if body.is_empty() { "" } else { "Content-Type: application/json\r\n" };
@@ -223,10 +236,15 @@ pub(crate) fn engine_pid() -> Option<i32> {
 
 /// Run the engine again from this app's `edock`: after an update, the
 /// engine that ran keeps the old version until it starts again. A stopped
-/// engine stays stopped; a running one comes back running.
+/// engine stays stopped; a running one comes back running, with the
+/// containers that ran started again.
 #[command]
 pub async fn daemon_restart(ctx: Ctx) -> Result<(), String> {
     let was = engine_state().await;
+    let running: Vec<String> = match engine_request("GET", "/containers/json").await {
+        Some((200, Value::Array(list))) => list.iter().filter_map(|c| c["Id"].as_str().map(str::to_owned)).collect(),
+        _ => Vec::new(),
+    };
     if was != EngineState::Off {
         let pid = engine_pid().ok_or("Couldn't tell which process the engine is")?;
         // SIGTERM: the engine stops its VM cleanly and exits.
@@ -255,10 +273,23 @@ pub async fn daemon_restart(ctx: Ctx) -> Result<(), String> {
     if was != EngineState::Stopped {
         let _ = engine_request("POST", "/edock/wake").await;
     }
+    // A restart policy may have started some already: those say 304.
+    let mut failed = Vec::new();
+    for id in &running {
+        match engine_call("POST", &format!("/containers/{id}/start"), None).await {
+            Some((s, _)) if s < 300 || s == 304 => {}
+            _ => failed.push(id.chars().take(12).collect::<String>()),
+        }
+    }
     let engine = ctx.get::<Engine>();
     engine.reset();
     let _ = ctx.get::<EventBus>().emit("docker:changed", &crate::streams::Changed { kind: "engine".into(), action: "restarted".into() });
-    engine.switch(EDOCK)
+    engine.switch(EDOCK)?;
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("The engine runs again, but these didn't start: {}", failed.join(", ")))
+    }
 }
 
 /// Stop eDock's engine: its containers stop and its VM powers off, until

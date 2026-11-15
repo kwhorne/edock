@@ -102,8 +102,11 @@ async fn exec(ctx: &Ctx, container: &str, cmd: Vec<String>, missing: &str) -> Re
         }
     }
     let code = crate::engine::exec_exit_code(&docker, &ex.id).await;
-    if code != 0 && out.trim().is_empty() {
-        let e = errs.trim();
+    // Docker writes "OCI runtime exec failed" to the output, not stderr.
+    let failed_to_start = out.contains("OCI runtime exec failed") || out.contains("executable file not found");
+    if code != 0 && (out.trim().is_empty() || failed_to_start) {
+        let both = format!("{errs}\n{out}");
+        let e = both.trim();
         return Err(if e.contains("executable file not found") || e.contains("no such file or directory") && e.contains("exec") {
             missing.into()
         } else if e.is_empty() {

@@ -1,4 +1,5 @@
 <script>
+  import { errorText } from "./state.svelte.js";
   import { channel } from "@elyra/runtime";
   import { onDestroy, onMount } from "svelte";
   import { Terminal } from "@xterm/xterm";
@@ -86,7 +87,7 @@
     themeWatch = new MutationObserver(() => (term.options.theme = theme()));
     themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     dark.addEventListener("change", onScheme);
-    open().catch((e) => term.write(`\x1b[31m${e?.message ?? e}\x1b[0m\r\n`));
+    open().catch((e) => term.write(`\x1b[31m${errorText(e)}\x1b[0m\r\n`));
   });
 
   let themeWatch;

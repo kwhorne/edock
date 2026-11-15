@@ -5,7 +5,7 @@
   import Icon from "../lib/Icon.svelte";
   import Terminal from "../lib/Terminal.svelte";
   import { api } from "../bindings";
-  import { changes, attempt } from "../lib/state.svelte.js";
+  import { changes, attempt, errorText } from "../lib/state.svelte.js";
   import { stateTone } from "../lib/format.js";
 
   let { params } = $props();
@@ -18,7 +18,7 @@
       machine = (await api.machines_list()).find((m) => m.name === params.name) ?? null;
       error = machine ? null : "No such machine";
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
   $effect(() => {

@@ -4,7 +4,7 @@
   import { Badge, Button, Callout, Skeleton } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { attempt } from "../lib/state.svelte.js";
+  import { attempt, errorText } from "../lib/state.svelte.js";
   import { bytes } from "../lib/format.js";
 
   let { params } = $props();
@@ -20,7 +20,7 @@
         // A failed step opens by itself.
         d.steps.forEach((s, i) => s.error && (open[i] = true));
       })
-      .catch((e) => (error = e?.message ?? String(e)));
+      .catch((e) => (error = errorText(e)));
   });
 
   // The image it made, and how it compares with the build before.

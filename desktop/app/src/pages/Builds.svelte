@@ -3,7 +3,7 @@
   import { navigate } from "@elyra/runtime";
   import { Badge, Button, Callout, Empty, Skeleton, Table } from "@elyra/ui";
   import { api } from "../bindings";
-  import { engine, useContext } from "../lib/state.svelte.js";
+  import { engine, useContext, errorText } from "../lib/state.svelte.js";
   import { ago } from "../lib/format.js";
 
   let builds = $state(null);
@@ -17,7 +17,7 @@
       builds = (await api.builds_list()).map((b) => ({ ...b, key: `${b.builder}/${b.id}` }));
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
   $effect(() => {
@@ -60,6 +60,7 @@
   {:else}
     <Table
       rows={builds}
+      key="key"
       bind:query
       search
       sortable={["name", "status", "started"]}

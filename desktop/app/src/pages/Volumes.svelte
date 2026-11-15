@@ -3,7 +3,7 @@
   import { Badge, Button, Callout, Skeleton, Table } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { changes, attempt } from "../lib/state.svelte.js";
+  import { changes, attempt, errorText } from "../lib/state.svelte.js";
   import { bytes } from "../lib/format.js";
 
   let volumes = $state(null);
@@ -15,7 +15,7 @@
       volumes = await api.volumes_list();
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
 

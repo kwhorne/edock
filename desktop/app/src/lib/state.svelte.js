@@ -54,6 +54,13 @@ function refreshEngineSoon() {
   pending = setTimeout(refreshEngine, 400);
 }
 
+/** What went wrong, as the user should read it: a command's own message
+ *  (without the runtime's `elyra command "…" failed:`), or the error's. */
+export function errorText(e) {
+  if (typeof e?.detail === "string" && e.detail) return e.detail;
+  return e?.message ?? String(e);
+}
+
 /** Run `fn`, and toast its failure. Returns what it returned, or undefined. */
 export async function attempt(fn, done) {
   try {
@@ -61,7 +68,7 @@ export async function attempt(fn, done) {
     if (done) toast(done, { variant: "success" });
     return r;
   } catch (e) {
-    toast(e?.message ?? String(e), { variant: "error", duration: 6000 });
+    toast(errorText(e), { variant: "error", duration: 6000 });
   }
 }
 

@@ -90,7 +90,7 @@
         The <code>docker</code> CLI with Compose and buildx (no package manager needed), <code>edock</code>, an
         <code>edock</code> docker context, and the engine started at login.
       </p>
-      {#if !cliReady}<label class="toggle"><Checkbox bind:checked={useAsCurrent} /> Make <code>edock</code> docker's current context</label>{/if}
+      {#if !cliReady}<Checkbox class="toggle" bind:checked={useAsCurrent}>Make <code>edock</code> docker's current context</Checkbox>{/if}
       {#if lines.length}<pre class="progress">{lines.join("\n")}</pre>{/if}
     </div>
     {#snippet actions()}

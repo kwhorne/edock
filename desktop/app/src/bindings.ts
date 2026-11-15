@@ -136,6 +136,8 @@ export type ContainerDetail = {
 	domain: string | null,
 	image: string,
 	state: string,
+	/**  Its program's exit code, once it has exited. */
+	exit_code: number | null,
 	started_at: string,
 	created: string,
 	cmd: string,
@@ -947,7 +949,8 @@ export const api = {
   /**
    * Run the engine again from this app's `edock`: after an update, the
    * engine that ran keeps the old version until it starts again. A stopped
-   * engine stays stopped; a running one comes back running.
+   * engine stays stopped; a running one comes back running, with the
+   * containers that ran started again.
    */
   daemon_restart(): Promise<null> {
     return invoke("daemon_restart");
@@ -1498,8 +1501,6 @@ export const api = {
     return invoke("volume_snapshot_restore", volume, file);
   },
   /**
-   * Every volume, and the containers that mount it.
-   *
    * @remarks Needs `edock.view`.
    */
   volumes_list(): Promise<VolumeRow[]> {

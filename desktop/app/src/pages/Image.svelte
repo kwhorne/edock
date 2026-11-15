@@ -6,7 +6,7 @@
   import { onDestroy } from "svelte";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { engine, useContext, attempt } from "../lib/state.svelte.js";
+  import { engine, useContext, attempt, errorText } from "../lib/state.svelte.js";
   import { bytes, ago } from "../lib/format.js";
 
   let { params, query } = $props();
@@ -26,7 +26,7 @@
       layers = await api.image_layers(name);
       layersError = null;
     } catch (e) {
-      layersError = e?.message ?? String(e);
+      layersError = errorText(e);
     }
   }
 
@@ -46,7 +46,7 @@
       picked = when;
       current = when != null ? await api.image_scan_result(name, when) : null;
     } catch (e) {
-      toast(e?.message ?? String(e), { variant: "error" });
+      toast(errorText(e), { variant: "error" });
     }
   }
 

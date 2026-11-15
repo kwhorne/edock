@@ -4,7 +4,7 @@
   import { Badge, Button, Callout, Card, Empty, Skeleton } from "@elyra/ui";
   import { onDestroy } from "svelte";
   import { api } from "../bindings";
-  import { attempt } from "./state.svelte.js";
+  import { attempt, errorText } from "./state.svelte.js";
 
   let list = $state(null);
   let error = $state(null);
@@ -15,7 +15,7 @@
       list = await api.usb_list();
       error = null;
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
   }
   load();

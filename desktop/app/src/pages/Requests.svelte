@@ -6,7 +6,7 @@
   import { api } from "../bindings";
   import Icon from "../lib/Icon.svelte";
   import { bytes } from "../lib/format.js";
-  import { attempt, engine, useContext } from "../lib/state.svelte.js";
+  import { attempt, engine, useContext, errorText } from "../lib/state.svelte.js";
 
   const onEdock = $derived(engine.status?.context === "edock" && engine.status?.connected);
 
@@ -39,7 +39,7 @@
       // The open one changed (its response arrived): read it again.
       if (selected != null && log.items.some((r) => r.seq === selected)) openRow(selected, true);
     } catch (e) {
-      error = e?.message ?? String(e);
+      error = errorText(e);
     }
     loaded = true;
   }
@@ -70,7 +70,7 @@
       const d = await api.http_request(seq);
       if (selected === seq) detail = d;
     } catch (e) {
-      if (!quiet) toast(e?.message ?? String(e), { variant: "error" });
+      if (!quiet) toast(errorText(e), { variant: "error" });
     }
   }
 
@@ -204,7 +204,7 @@
             <p class="mono detail-url">{url(detail.row)}</p>
             {#if detail.row.error}<Callout variant="warning">{detail.row.error}</Callout>{/if}
             <p class="muted">
-              {detail.row.container} · waited {took(detail.row.wait_ms)} · took {took(detail.row.ms)} · sent {bytes(detail.row.req_size)}, got {bytes(detail.row.res_size)}
+              {detail.row.container}{#if detail.row.wait_ms != null} · waited {took(detail.row.wait_ms)}{/if}{#if detail.row.ms != null || !detail.row.done} · took {took(detail.row.ms)}{/if} · sent {bytes(detail.row.req_size)}, got {bytes(detail.row.res_size)}
             </p>
             <div class="chips">
               <Button size="sm" onclick={() => clipboard.writeText(curl(detail)).then(() => toast("Copied as curl"))}>Copy as curl</Button>
@@ -227,7 +227,7 @@
                   <h4>Response</h4>
                   {#if detail.res_headers.length}
                     <table class="kv"><tbody>{#each detail.res_headers as [k, v], i (i)}<tr><td>{k}</td><td class="mono">{v}</td></tr>{/each}</tbody></table>
-                  {:else}<p class="muted">No response yet.</p>{/if}
+                  {:else}<p class="muted">{detail.row.done ? "No response." : "No response yet."}</p>{/if}
                 {:else}
                   {@const body = id === "request" ? detail.req_body : detail.res_body}
                   {#if body?.binary}
