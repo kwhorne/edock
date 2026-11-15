@@ -49,7 +49,7 @@ The agent starts eDock with `--mcp` and talks to it over stdio. When the app is 
 | `image_pull` | Pull an image | Yes |
 | `project_up` | `docker compose up -d` (with `--build`) for a Compose project | Yes |
 | `volume_clone` | Copy a volume into a new one | Yes |
-| `recipe_start` | Start PostgreSQL, MySQL, Redis, RabbitMQ… for development | Yes |
+| `recipe_start` | Start PostgreSQL, MySQL, ElyraSQL, SQL Anywhere, Redis, RabbitMQ… for development, or Askr for a project folder | Yes |
 | `snapshots_list` | Snapshots of containers and volumes | |
 | `container_snapshot`, `volume_snapshot` | Take a snapshot | Yes |
 | `container_snapshot_restore`, `volume_snapshot_restore` | Go back to one | Yes |

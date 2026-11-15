@@ -29,13 +29,16 @@ eDock's own containers are hidden from the list: Linux machines (`machine-<name>
 
 ## New service
 
-**New service**, at the top of the list (and in ⌘K), starts a common service for development, ready to use:
+**New service**, at the top of the list (and in ⌘K), starts a common service for development, ready to use, or an app server for a project of yours:
 
 | Recipe | Image | Connect with |
 |---|---|---|
 | PostgreSQL | `postgres:17-alpine` | `postgres://postgres:postgres@localhost:5432/postgres` |
 | MySQL | `mysql:8.4` | `mysql://root:mysql@localhost:3306/app` |
 | MariaDB | `mariadb:11` | `mysql://root:mariadb@localhost:3306/app` |
+| ElyraSQL | `ghcr.io/kwhorne/elyrasql:1.12` | `mysql://root:elyrasql@localhost:3307/elyra` |
+| SQL Anywhere | `ghcr.io/kwhorne/sqlanywhere-server:0.11` | `http://localhost:8080` (no password) |
+| Askr | `ghcr.io/kwhorne/askr:1.9` | `http://localhost:8080`, and `http://<folder>.edock.localhost` |
 | Redis | `redis:8-alpine` | `redis://localhost:6379` |
 | MongoDB | `mongo:8` | `mongodb://localhost:27017` |
 | RabbitMQ | `rabbitmq:4-management-alpine` | `amqp://guest:guest@localhost:5672`, UI on 15672 |
@@ -43,6 +46,12 @@ eDock's own containers are hidden from the list: Linux machines (`machine-<name>
 | MinIO | `minio/minio` | `http://localhost:9000` (user `minio`, password `minio123`), console on 9001 |
 
 Pick one, give it a name if you like (the recipe's name otherwise, or `-2`, `-3`… when that's taken), and press **Start**. eDock pulls the image if needed, keeps the data in a volume `<name>-data`, publishes the port on your Mac, on `127.0.0.1` only (the usual port, or the next free one when it's taken), and restarts the service with the engine. When it's up, the connection string is copied, and the note shows it. A service with a web UI also opens it at `http://<name>.edock.localhost`.
+
+[ElyraSQL](https://github.com/kwhorne/ElyraSQL) speaks MySQL's protocol, so any MySQL client, driver or framework connects to it as to MySQL (Laravel with `DB_CONNECTION=mysql`, `DB_PORT=3307`, `DB_DATABASE=elyra`). It keeps the whole database in one file in its volume, and has one database, `elyra`: `CREATE DATABASE` isn't needed.
+
+[SQL Anywhere](https://github.com/kwhorne/sql-anywhere) runs `sqld`: SQLite over HTTP and WebSockets (the Hrana protocol), with vector search. Its clients and the `elyra` CLI connect to the URL (`elyra db shell http://127.0.0.1:8080`); `GET /health` says it's up. Its database lives in the volume, as an ordinary SQLite file.
+
+[Askr](https://github.com/kwhorne/askr) is a PHP 8.5 application server, so it serves **a folder from your Mac** rather than keeping data of its own: **Choose folder…** picks the project (under `/Users` or `/Volumes`), and the container is named after it. A Laravel project (it has `artisan`) runs in worker mode, booted once and served many times; any other PHP project is served from its `public/` folder, or from the folder itself. It runs as your Mac user, so Laravel can write `storage/` and `bootstrap/cache`, and the files it writes are yours. Askr doesn't build the project: run `composer install` first. From ⌘K, **New service: Askr** asks for the folder.
 
 The passwords are well known, so the ports are open to this Mac only, not to your network. Other containers reach the service by its name on a shared network, or at `host.docker.internal:<port>`.
 

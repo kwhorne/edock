@@ -44,7 +44,7 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 | **Menu bar** | What's running, start and stop, and ports, a click away |
 | **Command line** | `docker`, Compose and buildx set up for you, without a package manager |
 | **Container domains** | `http://<name>.edock.localhost` on every running container, and trusted HTTPS in one click |
-| **New service** | PostgreSQL, MySQL, MariaDB, Redis, MongoDB, RabbitMQ, Mailpit or MinIO in one click, with its data in a volume and the connection string copied |
+| **New service** | PostgreSQL, MySQL, MariaDB, ElyraSQL, SQL Anywhere, Redis, MongoDB, RabbitMQ, Mailpit or MinIO in one click, with its data in a volume and the connection string copied; or Askr, serving a PHP or Laravel project from a folder on your Mac |
 | **⌘K everywhere** | Find any container, image, machine or pod by name |
 | **Compose projects** | All of a project's logs as one, colour by service; its folder in Finder, Terminal or your editor; Rebuild & up |
 | **Volumes** | Browse a volume's files without a container; clone it; export and import it as one file |

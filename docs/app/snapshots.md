@@ -14,7 +14,7 @@ Snapshots work on any engine the app shows: eDock, OrbStack, Docker Desktop and 
 
 ## A volume
 
-The camera on the **Volumes** page takes one. It's a `.tar.gz` of the volume's files, owners and permissions kept, in `~/.edock/snapshots/volumes/<volume>/` on your Mac. A short-lived `alpine` container writes it, with no network.
+The camera on the **Volumes** page takes one. It's a `.tar.gz` of the volume's files, owners and permissions kept, in `~/.edock/snapshots/volumes/<context>/<volume>/` (one folder per engine, so OrbStack's `postgres` volume and eDock's keep their own) on your Mac. A short-lived `alpine` container writes it, with no network.
 
 For a database, stop the containers that write to the volume first, as with any copy of its files.
 
