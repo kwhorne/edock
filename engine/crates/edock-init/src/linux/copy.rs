@@ -55,8 +55,12 @@ fn job(sock: OwnedFd, running: &[(&str, libc::pid_t)], paths: &Paths) -> io::Res
     // Only the connection (and the console) stays open: the child must not
     // hold the agent's pipes, which would keep containers' stdin from closing.
     // SAFETY: closing descriptor ranges in this process.
+    // (Below it only when there's a range there: with fd 3, 3..=2 is none,
+    // and 3..=3 would close the one we keep.)
     unsafe {
-        libc::syscall(libc::SYS_close_range, 3, (fd - 1).max(3) as libc::c_uint, 0);
+        if fd > 3 {
+            libc::syscall(libc::SYS_close_range, 3, (fd - 1) as libc::c_uint, 0);
+        }
         libc::syscall(libc::SYS_close_range, (fd + 1) as libc::c_uint, libc::c_uint::MAX, 0);
     }
     let mut conn = fs::File::from(sock);

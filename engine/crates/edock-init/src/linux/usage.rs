@@ -3,7 +3,8 @@
 //! `du -x` counts it (allocated blocks, hard links once, never across into
 //! another filesystem such as a host folder or NFS export mounted on a
 //! volume). Walking tens of gigabytes takes a while, so the agent runs this
-//! on a thread of its own.
+//! in a child process of its own (never a thread: the agent stays
+//! single-threaded, see agent.rs `measure_in_child`).
 
 use std::collections::HashSet;
 use std::fs;

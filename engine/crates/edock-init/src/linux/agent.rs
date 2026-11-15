@@ -704,8 +704,20 @@ fn extra_veth(id: &str, n: u32) -> String {
     format!("kx{}{n}", &id[..id.len().min(9)])
 }
 
-/// The mounted root of a running container (not an exec).
+/// A running container's root as the container sees it: through its init's
+/// /proc/<pid>/root, so the volumes, bind mounts and tmpfs mounted in its
+/// own mount namespace are there too, not only the image's layers (an empty
+/// folder where a volume is mounted), and with no `find` needed in the
+/// image. fsview resolves every path inside it with RESOLVE_IN_ROOT, as
+/// /archive does. While the init is still starting (or already going),
+/// /proc/<pid>/root can't be read: then the image's root, as before.
 fn running_rootfs(procs: &HashMap<libc::pid_t, Proc>, paths: &Paths, id: &str) -> Option<std::path::PathBuf> {
+    if let Some(pid) = running_pid(procs, id) {
+        let root = std::path::PathBuf::from(format!("/proc/{pid}/root"));
+        if std::fs::read_dir(&root).is_ok() {
+            return Some(root);
+        }
+    }
     procs.values().any(|p| p.run.container.is_none() && p.run.id == id).then(|| paths.containers.join(id).join("rootfs"))
 }
 
@@ -921,7 +933,6 @@ mod clock_tests {
     }
 }
 
-/// A non-blocking pipe: (read end the loop polls, write end the thread rings).
 /// Measures disk usage in a forked child (the agent is single-threaded,
 /// so forking it is safe), which writes the `Usage` lines to a pipe and
 /// exits; the read end comes back, non-blocking. The loop reaps the child
@@ -940,6 +951,17 @@ fn measure_in_child(layers: &Path, containers: &Path) -> io::Result<OwnedFd> {
     }
     if pid == 0 {
         drop(read);
+        // Only the pipe stays open: fork keeps every descriptor (O_CLOEXEC
+        // acts on exec), and a copy of a container's stdin pipe or a relay's
+        // socket held here would delay its EOF until the measuring ends.
+        let fd = write.as_raw_fd();
+        // SAFETY: closing descriptor ranges in this child, which owns them.
+        unsafe {
+            if fd > 3 {
+                libc::syscall(libc::SYS_close_range, 3, (fd - 1) as libc::c_uint, 0);
+            }
+            libc::syscall(libc::SYS_close_range, (fd + 1) as libc::c_uint, libc::c_uint::MAX, 0);
+        }
         let text = super::usage::measure(layers, containers, Path::new(container::VOLUMES)).join("\n");
         let mut f = File::from(write);
         let _ = f.write_all(text.as_bytes());
