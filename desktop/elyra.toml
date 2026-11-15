@@ -10,7 +10,7 @@ out = "app/src/bindings.ts"
 [bundle]
 identifier = "app.edock.app"
 name = "eDock"
-version = "0.6.1"
+version = "0.6.2"
 icon = "icons/app.svg"
 publisher = "eDock"
 description = "A tiny, fast container runtime"
