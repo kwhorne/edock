@@ -59,11 +59,25 @@ pub struct EngineStatus {
 /// One of eDock's own containers (a Linux machine, the Kubernetes node,
 /// BuildKit), from `docker ps`'s JSON: kept out of the user's counts.
 pub(crate) fn is_system(c: &Value) -> bool {
-    let labels = &c["Labels"];
-    labels.get("app.edock.machine").is_some()
-        || labels.get("app.edock.k8s").is_some()
-        || labels.get("app.edock.helper").is_some()
-        || c["Names"][0].as_str().is_some_and(|n| n.trim_start_matches('/').starts_with("buildx_buildkit_"))
+    let name = c["Names"][0].as_str().unwrap_or("").trim_start_matches('/');
+    system_kind(|k| c["Labels"].get(k).is_some(), name).is_some()
+}
+
+/// Which of eDock's own a container is, from whether it has a label and
+/// its name: machine, kubernetes, helper or builder; None for the user's.
+/// The one rule for the list, the menu bar's count and the alerts.
+pub(crate) fn system_kind(has_label: impl Fn(&str) -> bool, name: &str) -> Option<&'static str> {
+    if has_label("app.edock.machine") {
+        Some("machine")
+    } else if has_label("app.edock.k8s") {
+        Some("kubernetes")
+    } else if has_label("app.edock.helper") {
+        Some("helper")
+    } else if name.starts_with("buildx_buildkit_") {
+        Some("builder")
+    } else {
+        None
+    }
 }
 
 /// The user's containers, running and in all, leaving out eDock's own. On
@@ -246,17 +260,7 @@ pub async fn containers_list(ctx: Ctx, size: bool) -> Result<Vec<ContainerRow>, 
                 let service = label("com.docker.compose.service").zip(label("com.docker.compose.project")).map(|(s, p)| format!("{s}.{p}"));
                 chosen.or(service).unwrap_or_else(|| name.clone())
             });
-            let system = if label("app.edock.machine").is_some() {
-                Some("machine".to_owned())
-            } else if label("app.edock.k8s").is_some() {
-                Some("kubernetes".to_owned())
-            } else if label("app.edock.helper").is_some() {
-                Some("helper".to_owned())
-            } else if name.starts_with("buildx_buildkit_") {
-                Some("builder".to_owned())
-            } else {
-                None
-            };
+            let system = system_kind(|k| label(k).is_some(), &name).map(str::to_owned);
             let status = s(&v["Status"]);
             let health = ["healthy", "unhealthy", "starting"]
                 .into_iter()

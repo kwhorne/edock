@@ -29,13 +29,18 @@
       .map((part, i, all) => ({ part, path: (root === "/" ? "" : root) + "/" + all.slice(0, i + 1).join("/") })),
   );
 
+  // Only the last folder asked for is shown, whichever answers first.
+  let asked = 0;
   async function load(to = path) {
+    const mine = ++asked;
     try {
       const list = await api.container_files(container, to);
+      if (mine !== asked) return;
       entries = list;
       path = to;
       error = null;
     } catch (e) {
+      if (mine !== asked) return;
       error = e?.message ?? String(e);
       entries = null;
     }

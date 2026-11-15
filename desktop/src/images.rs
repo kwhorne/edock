@@ -12,14 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::daemon::{engine_request, engine_stream};
-use crate::engine::{Engine, EDOCK};
 
 fn on_edock(ctx: &Ctx) -> Result<(), String> {
-    if ctx.get::<Engine>().context().0 == EDOCK {
-        Ok(())
-    } else {
-        Err("Layers and scans are eDock's own: switch to its engine in the toolbar".into())
-    }
+    crate::engine::only_on_edock(ctx, "Layers and scans are eDock's own: switch to its engine in the toolbar")
 }
 
 /// A query value, percent-encoded (an image reference has `/` and `:`).

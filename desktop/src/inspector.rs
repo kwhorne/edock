@@ -8,14 +8,9 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::daemon::{engine_call, engine_request};
-use crate::engine::{Engine, EDOCK};
 
 fn on_edock(ctx: &Ctx) -> Result<(), String> {
-    if ctx.get::<Engine>().context().0 == EDOCK {
-        Ok(())
-    } else {
-        Err("The HTTP inspector is eDock's engine's: switch to it in the toolbar".into())
-    }
+    crate::engine::only_on_edock(ctx, "The HTTP inspector is eDock's engine's: switch to it in the toolbar")
 }
 
 async fn ask(method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {

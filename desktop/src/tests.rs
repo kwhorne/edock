@@ -935,6 +935,76 @@ async fn snapshots_of_a_container_and_a_volume() {
     assert!(!list.iter().any(|s| s.id == image || s.id == file), "deleted");
 }
 
+/// Restoring a Compose service's container: its anonymous volume (an
+/// image's VOLUME) stays with it, and the one replaced is kept as a
+/// snapshot, never as a second container of the service. Two snapshots in
+/// the same second are two.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine"]
+async fn restoring_keeps_anonymous_volumes_and_compose_whole() {
+    use crate::snapshots::{Restored, Snapshot};
+    use bollard::query_parameters as q;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let tag = std::process::id();
+    let (name, vol, project) = (format!("edock-test-snapc-{tag}"), format!("edock-test-snapcvol-{tag}"), format!("edocktest{tag}"));
+    ensure_image(&app, "alpine:latest").await;
+    let test: std::collections::HashMap<String, String> = [("app.edock.test".to_string(), "1".to_string())].into();
+    docker.create_volume(bollard::models::VolumeCreateRequest { name: Some(vol.clone()), labels: Some(test.clone()), ..Default::default() }).await.unwrap();
+    let mut labels = test.clone();
+    labels.insert("com.docker.compose.project".into(), project.clone());
+    labels.insert("com.docker.compose.service".into(), "db".into());
+    labels.insert("com.docker.compose.container-number".into(), "1".into());
+    let body = bollard::models::ContainerCreateBody {
+        image: Some("alpine:latest".into()),
+        cmd: Some(vec!["sleep".into(), "300".into()]),
+        labels: Some(labels),
+        volumes: Some(vec!["/anon".to_string()]),
+        host_config: Some(bollard::models::HostConfig { binds: Some(vec![format!("{vol}:/named")]), ..Default::default() }),
+        ..Default::default()
+    };
+    docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await.unwrap();
+    docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
+    let sh = |cmd: &str| {
+        let (app, name, cmd) = (&app, name.clone(), cmd.to_owned());
+        async move {
+            let r: crate::agent::RunResult = app.invoke("container_exec", (name, cmd, None::<u32>)).await.unwrap();
+            r.output.trim().to_owned()
+        }
+    };
+    sh("echo data > /anon/a").await;
+    let anon = docker.inspect_container(&name, None::<q::InspectContainerOptions>).await.unwrap().mounts.unwrap_or_default().into_iter().find(|m| m.destination.as_deref() == Some("/anon")).and_then(|m| m.name).expect("an anonymous volume");
+
+    let one: String = app.invoke("container_snapshot", (name.clone(), None::<String>)).await.unwrap();
+    let two: String = app.invoke("container_snapshot", (name.clone(), None::<String>)).await.unwrap();
+    assert_ne!(one, two, "two snapshots, two names");
+    let f1: String = app.invoke("volume_snapshot", (vol.clone(), None::<String>)).await.unwrap();
+    let f2: String = app.invoke("volume_snapshot", (vol.clone(), None::<String>)).await.unwrap();
+    assert_ne!(f1, f2);
+
+    let r: Restored = app.invoke("container_snapshot_restore", (one.clone(),)).await.unwrap();
+    let kept = r.previous.expect("the one before is kept");
+    assert!(kept.starts_with("edock-snapshots/"), "kept as a snapshot: {kept}");
+    assert_eq!(sh("cat /anon/a").await, "data", "the anonymous volume came along");
+    let mut filters = std::collections::HashMap::new();
+    filters.insert("label".to_string(), vec![format!("com.docker.compose.project={project}")]);
+    let service = docker.list_containers(Some(q::ListContainersOptionsBuilder::default().all(true).filters(&filters).build())).await.unwrap();
+    assert_eq!(service.len(), 1, "one container in the service");
+    let list: Vec<Snapshot> = app.invoke("snapshots_list", ()).await.unwrap();
+    assert!(list.iter().any(|s| s.id == kept && s.note.starts_with("Before restoring")));
+
+    let _ = docker.remove_container(&name, Some(q::RemoveContainerOptionsBuilder::default().force(true).v(true).build())).await;
+    for image in [&one, &two, &kept] {
+        let _: () = app.invoke("snapshot_delete", ("container".to_string(), name.clone(), image.clone())).await.unwrap();
+    }
+    for file in [&f1, &f2] {
+        let _: () = app.invoke("snapshot_delete", ("volume".to_string(), vol.clone(), file.clone())).await.unwrap();
+    }
+    let _ = docker.remove_volume(&vol, None::<q::RemoveVolumeOptions>).await;
+    let _ = docker.remove_volume(&anon, None::<q::RemoveVolumeOptions>).await;
+}
+
 /// The Files tab: list, preview, save, upload and remove in a container.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker engine"]

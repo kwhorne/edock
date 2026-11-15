@@ -7,14 +7,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::daemon::{engine_call, engine_request};
-use crate::engine::{Engine, EDOCK};
+use crate::engine::Engine;
 
 fn on_edock(ctx: &Ctx) -> Result<(), String> {
-    if ctx.get::<Engine>().context().0 == EDOCK {
-        Ok(())
-    } else {
-        Err("This needs eDock's engine: switch to it in the toolbar".into())
-    }
+    crate::engine::only_on_edock(ctx, "This needs eDock's engine: switch to it in the toolbar")
 }
 
 /// An engine answer: its JSON on success, its message otherwise.

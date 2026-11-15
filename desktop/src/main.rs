@@ -45,10 +45,23 @@ impl Provider for Watcher {
         let e2 = engine.clone();
         let (alerts, notifier, b2) = (ctx.get::<alerts::Alerts>(), ctx.get::<elyra::notifier::Notifier>(), bus.clone());
         let on_alert = move |a| alerts::show(&alerts, &notifier, &b2, a);
+        // A burst of events (`compose up` of 20 services) is one look,
+        // a moment after the first of them.
+        // The last word on whether the engine answers is what's shown.
+        let scheduled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let latest = Arc::new(std::sync::atomic::AtomicBool::new(false));
         streams::watch(engine, bus, move |connected| {
             let Some(tray) = tray.clone() else { return };
+            latest.store(connected, std::sync::atomic::Ordering::SeqCst);
+            if scheduled.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             let engine = e2.clone();
+            let (scheduled, latest) = (scheduled.clone(), latest.clone());
             tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                scheduled.store(false, std::sync::atomic::Ordering::SeqCst);
+                let connected = latest.load(std::sync::atomic::Ordering::SeqCst);
                 let (context, _) = engine.context();
                 // eDock's engine: one background look at /info, which
                 // doesn't keep its VM awake, says both. Others: Docker's.

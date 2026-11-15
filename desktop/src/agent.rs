@@ -80,11 +80,7 @@ pub async fn container_run(ctx: Ctx, image: String, command: String, network: Op
     let docker = ctx.get::<Engine>().docker()?;
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(60).clamp(1, 600) as u64);
     if docker.inspect_image(&image).await.is_err() {
-        let (repo, tag) = match image.rsplit_once(':') {
-            Some((r, t)) if !t.contains('/') => (r.to_owned(), t.to_owned()),
-            _ => (image.clone(), "latest".to_owned()),
-        };
-        let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image(&repo).tag(&tag).build()), None, None);
+        let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image(&pull_ref(&image)).build()), None, None);
         while let Some(p) = pull.next().await {
             p.map_err(|e| format!("couldn't pull {image}: {e}"))?;
         }
@@ -147,12 +143,27 @@ pub async fn container_exec(ctx: Ctx, container: String, command: String, timeou
         };
         timed_out = tokio::time::timeout(timeout, read).await.is_err();
     }
-    let exit_code = docker.inspect_exec(&exec.id).await.ok().and_then(|i| i.exit_code).unwrap_or(-1);
+    // Still running after the timeout: no code to wait for.
+    let exit_code = if timed_out { docker.inspect_exec(&exec.id).await.ok().and_then(|i| i.exit_code).unwrap_or(-1) } else { crate::engine::exec_exit_code(&docker, &exec.id).await };
     Ok(RunResult { exit_code, output: cap(output), timed_out })
+}
+
+/// A reference to pull: as given with a tag or digest, else `:latest`.
+fn pull_ref(image: &str) -> String {
+    let last = image.rsplit('/').next().unwrap_or(image);
+    if image.contains('@') || last.contains(':') { image.to_owned() } else { format!("{image}:latest") }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn references_pull_as_given() {
+        assert_eq!(super::pull_ref("alpine"), "alpine:latest");
+        assert_eq!(super::pull_ref("alpine:3.22"), "alpine:3.22");
+        assert_eq!(super::pull_ref("localhost:5000/app"), "localhost:5000/app:latest");
+        assert_eq!(super::pull_ref("alpine@sha256:abcd"), "alpine@sha256:abcd");
+    }
+
     #[test]
     fn long_output_is_cut_on_a_character() {
         let s = "ø".repeat(super::MAX_OUTPUT);

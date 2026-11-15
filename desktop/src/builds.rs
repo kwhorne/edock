@@ -6,14 +6,10 @@ use elyra::{command, Ctx};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::engine::{Engine, EDOCK};
+use crate::engine::Engine;
 
 fn on_edock(ctx: &Ctx) -> Result<(), String> {
-    if ctx.get::<Engine>().context().0 == EDOCK {
-        Ok(())
-    } else {
-        Err("The build history is eDock's engine's: switch to it in the toolbar".into())
-    }
+    crate::engine::only_on_edock(ctx, "The build history is eDock's engine's: switch to it in the toolbar")
 }
 
 /// A builder's name and a build's id, as `edock builds` takes them.
@@ -95,11 +91,20 @@ pub struct BuildImage {
     pub previous_size: Option<f64>,
 }
 
-/// The first image a build's layers name: its size and ID.
+/// The first image a build's layers name: its size and ID. A finished
+/// build's image doesn't change: each is asked for once.
 async fn made(builder: &str, id: &str) -> Option<(f64, String)> {
+    type Seen = std::collections::HashMap<(String, String), (f64, String)>;
+    static SEEN: parking_lot::Mutex<Option<Seen>> = parking_lot::Mutex::new(None);
+    let key = (builder.to_owned(), id.to_owned());
+    if let Some(hit) = SEEN.lock().as_ref().and_then(|m| m.get(&key).cloned()) {
+        return Some(hit);
+    }
     let v: Value = serde_json::from_str(&edock(&["layers", builder, id]).await.ok()?).ok()?;
     let i = v["images"].as_array()?.first()?;
-    Some((i["size"].as_f64()?, i["config_digest"].as_str()?.to_owned()))
+    let got = (i["size"].as_f64()?, i["config_digest"].as_str()?.to_owned());
+    SEEN.lock().get_or_insert_with(Default::default).insert(key, got.clone());
+    Some(got)
 }
 
 /// The image a build made: its size, its name in eDock (to open and scan
@@ -110,7 +115,9 @@ pub async fn build_image(ctx: Ctx, builder: String, id: String) -> Result<Option
     use bollard::query_parameters as q;
     on_edock(&ctx)?;
     check(&builder, &id)?;
-    let Some((size, image_id)) = made(&builder, &id).await else { return Ok(None) };
+    // This build's image and the history, at once.
+    let (this_made, rows) = tokio::join!(made(&builder, &id), rows());
+    let Some((size, image_id)) = this_made else { return Ok(None) };
     let docker = ctx.get::<Engine>().docker()?;
     let reference = docker
         .list_images(None::<q::ListImagesOptions>)
@@ -119,20 +126,17 @@ pub async fn build_image(ctx: Ctx, builder: String, id: String) -> Result<Option
         .and_then(|list| list.into_iter().find(|i| i.id == image_id))
         .and_then(|i| i.repo_tags.into_iter().find(|t| !t.starts_with("<none>")));
     // The build before it with the same name.
-    let rows = rows().await.unwrap_or_default();
+    let rows = rows.unwrap_or_default();
     let this = rows.iter().find(|r| r.builder == builder && r.id == id);
     let mut before: Vec<&BuildRow> = rows
         .iter()
         .filter(|r| this.is_some_and(|t| r.name == t.name && r.started < t.started) && r.status == "Completed")
         .collect();
     before.sort_by(|a, b| b.started.cmp(&a.started));
-    let mut previous = None;
-    for r in before.into_iter().take(3) {
-        if let Some((s, _)) = made(&r.builder, &r.id).await {
-            previous = Some((r.id.clone(), s));
-            break;
-        }
-    }
+    // The last three asked at once; the newest that made an image.
+    let earlier: Vec<&BuildRow> = before.into_iter().take(3).collect();
+    let sizes = futures_util::future::join_all(earlier.iter().map(|r| made(&r.builder, &r.id))).await;
+    let previous = earlier.iter().zip(sizes).find_map(|(r, m)| m.map(|(s, _)| (r.id.clone(), s)));
     Ok(Some(BuildImage { size, image_id, reference, previous_id: previous.as_ref().map(|p| p.0.clone()), previous_size: previous.map(|p| p.1) }))
 }
 

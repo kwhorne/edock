@@ -10,14 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::daemon::{engine_call, engine_request};
-use crate::engine::{Engine, EDOCK};
 
 fn on_edock(ctx: &Ctx) -> Result<(), String> {
-    if ctx.get::<Engine>().context().0 == EDOCK {
-        Ok(())
-    } else {
-        Err("This is eDock's own engine's: switch to it in the toolbar".into())
-    }
+    crate::engine::only_on_edock(ctx, "This is eDock's own engine's: switch to it in the toolbar")
 }
 
 fn answer(r: Option<(u16, Value)>) -> Result<Value, String> {

@@ -216,3 +216,22 @@ impl Settings {
         }
     }
 }
+
+/// An exec's exit code once it has one. The output stream can end just
+/// before the engine records it (Docker's does): asked again for up to two
+/// seconds. -1 when it never has one (the process or the engine went).
+pub async fn exec_exit_code(docker: &Docker, id: &str) -> i64 {
+    for _ in 0..20 {
+        match docker.inspect_exec(id).await {
+            Ok(i) if i.running != Some(true) => return i.exit_code.unwrap_or(-1),
+            Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            Err(_) => return -1,
+        }
+    }
+    -1
+}
+
+/// Err(`why`) unless the app shows eDock's own engine.
+pub fn only_on_edock(ctx: &elyra::Ctx, why: &str) -> Result<(), String> {
+    if ctx.get::<Engine>().context().0 == EDOCK { Ok(()) } else { Err(why.into()) }
+}

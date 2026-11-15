@@ -355,10 +355,30 @@ pub struct CliStatus {
 /// what makes an update seem not to have happened in a terminal. The login
 /// shell's PATH, since the app's own has only the system's. Reported, never
 /// removed. None when no `edock` is on PATH at all.
+/// The shell runs at most once a minute (the Engine page asks on every
+/// change), and is killed when it takes too long.
+static STALE_LAST: parking_lot::Mutex<Option<(std::time::Instant, Option<String>)>> = parking_lot::Mutex::new(None);
+
 async fn stale_edock() -> Option<String> {
+    if let Some((at, found)) = STALE_LAST.lock().as_ref() {
+        if at.elapsed() < Duration::from_secs(60) {
+            return found.clone();
+        }
+    }
+    let found = login_shell_edock().await;
+    *STALE_LAST.lock() = Some((std::time::Instant::now(), found.clone()));
+    found
+}
+
+async fn login_shell_edock() -> Option<String> {
     let ours = std::fs::canonicalize(engine_binary()?).ok()?;
     let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
-    let run = tokio::process::Command::new(&shell).args(["-ilc", "command -v edock"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
+    let run = tokio::process::Command::new(&shell)
+        .args(["-ilc", "command -v edock"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
     let out = tokio::time::timeout(Duration::from_secs(5), run).await.ok()?.ok()?;
     let found = String::from_utf8_lossy(&out.stdout).lines().rev().map(str::trim).find(|l| l.starts_with('/'))?.to_owned();
     stale_unless_ours(&found, &ours)
@@ -461,6 +481,8 @@ pub async fn cli_setup(ctx: Ctx, use_context: bool) -> Result<(), String> {
     let s2 = setup.clone();
     let started = run_edock(&bin, args, ctx.get::<EventBus>(), "setup:progress", move || {
         s2.busy.store(false, std::sync::atomic::Ordering::SeqCst);
+        // Setup may have changed which `edock` the shell finds.
+        *STALE_LAST.lock() = None;
     });
     if started.is_err() {
         setup.busy.store(false, std::sync::atomic::Ordering::SeqCst);

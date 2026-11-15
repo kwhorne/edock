@@ -40,14 +40,11 @@ pub fn from_event(v: &Value) -> Option<Alert> {
         _ => return None,
     };
     let attrs = &v["Actor"]["Attributes"];
-    if ["app.edock.machine", "app.edock.k8s", "app.edock.helper"].iter().any(|k| !attrs[*k].is_null()) {
-        return None;
-    }
     let id = v["Actor"]["ID"].as_str()?.to_owned();
     let name = attrs["name"].as_str().map_or_else(|| id.chars().take(12).collect(), str::to_owned);
-    // BuildKit's container is the builder's, not the user's (a big build
-    // running out of memory says so in the build).
-    if name.starts_with("buildx_buildkit_") {
+    // eDock's own aren't the user's: BuildKit's (a big build running out
+    // of memory says so in the build), helpers, machines, Kubernetes.
+    if crate::resources::system_kind(|k| !attrs[k].is_null(), &name).is_some() {
         return None;
     }
     Some(Alert { id, name, what })

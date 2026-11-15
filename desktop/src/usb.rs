@@ -7,14 +7,9 @@ use elyra::{command, Ctx};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::engine::{Engine, EDOCK};
 
 fn on_edock(ctx: &Ctx) -> Result<(), String> {
-    if ctx.get::<Engine>().context().0 == EDOCK {
-        Ok(())
-    } else {
-        Err("USB devices are passed to eDock's engine: switch to it in the toolbar".into())
-    }
+    crate::engine::only_on_edock(ctx, "USB devices are passed to eDock's engine: switch to it in the toolbar")
 }
 
 /// A device's key: its location on the Mac's bus (`0x02114000`), or a

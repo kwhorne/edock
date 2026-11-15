@@ -27,12 +27,13 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 /// A volume name as Docker allows them.
-fn valid(name: &str) -> Result<&str, String> {
+pub(crate) fn valid(name: &str) -> Result<&str, String> {
     let ok = !name.is_empty() && name.len() <= 255 && name.as_bytes()[0].is_ascii_alphanumeric() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b));
     if ok { Ok(name) } else { Err(format!("{name:?} isn't a volume's name")) }
 }
 
-async fn ensure_image(docker: &bollard::Docker) -> Result<(), String> {
+/// alpine, which the helpers run in, pulled when it isn't here.
+pub(crate) async fn ensure_image(docker: &bollard::Docker) -> Result<(), String> {
     if docker.inspect_image(IMAGE).await.is_ok() {
         return Ok(());
     }
@@ -161,7 +162,7 @@ async fn exec(
     }
     // No exit code (the helper died, the engine went): a failure, never a
     // half-written archive taken for a whole one.
-    let code = docker.inspect_exec(&ex.id).await.ok().and_then(|i| i.exit_code).unwrap_or(-1);
+    let code = crate::engine::exec_exit_code(&docker, &ex.id).await;
     if code == 0 {
         Ok(())
     } else {
@@ -238,9 +239,14 @@ pub async fn volume_import(ctx: Ctx, volume: String, file: ChosenFile) -> Result
     }
     let input = tokio::fs::File::open(file.path()).await.map_err(|e| format!("{}: {e}", file.name()))?;
     docker.create_volume(bollard::models::VolumeCreateRequest { name: Some(volume.clone()), ..Default::default() }).await.map_err(err)?;
-    let id = helper(&ctx, &volume).await?;
-    let r = exec(&ctx, &id, &["tar", "-C", MOUNT, "-xpf", "-"], Some(input), None).await;
-    let _ = volume_browse_end_inner(&ctx, &volume).await;
+    let r = match helper(&ctx, &volume).await {
+        Ok(id) => {
+            let r = exec(&ctx, &id, &["tar", "-C", MOUNT, "-xpf", "-"], Some(input), None).await;
+            let _ = volume_browse_end_inner(&ctx, &volume).await;
+            r
+        }
+        Err(e) => Err(e),
+    };
     if let Err(e) = r {
         let _ = docker.remove_volume(&volume, None::<q::RemoveVolumeOptions>).await;
         return Err(format!("couldn't import {}: {e}", file.name()));

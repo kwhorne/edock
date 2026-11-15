@@ -52,15 +52,6 @@ fn repo_part(name: &str) -> String {
     if s.is_empty() { "container".into() } else { s }
 }
 
-/// A volume name as Docker allows them, which is also safe as a folder.
-fn valid_volume(name: &str) -> Result<&str, String> {
-    let ok = !name.is_empty()
-        && name.len() <= 255
-        && name.as_bytes()[0].is_ascii_alphanumeric()
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b));
-    if ok { Ok(name) } else { Err("That isn't a volume's name".into()) }
-}
-
 /// A snapshot file's name, as `volume_snapshot` writes them.
 fn valid_file(file: &str) -> Result<&str, String> {
     let ok = file.ends_with(".tar.gz") && !file.starts_with('.') && file.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b));
@@ -163,22 +154,40 @@ pub async fn snapshots_list(ctx: Ctx) -> Result<Vec<Snapshot>, String> {
 /// Returns the snapshot's image.
 #[command(can = "edock.manage")]
 pub async fn container_snapshot(ctx: Ctx, container: String, note: Option<String>) -> Result<String, String> {
+    let made = commit(&ctx, &container, note.as_deref()).await?;
+    changed(&ctx, "image");
+    Ok(made)
+}
+
+/// `docker commit` of `container` as a snapshot; its image.
+async fn commit(ctx: &Ctx, container: &str, note: Option<&str>) -> Result<String, String> {
     let docker = ctx.get::<Engine>().docker()?;
-    let info = docker.inspect_container(&container, None::<q::InspectContainerOptions>).await.map_err(err)?;
-    let name = info.name.as_deref().unwrap_or(&container).trim_start_matches('/').to_owned();
-    let tag = stamp();
+    let info = docker.inspect_container(container, None::<q::InspectContainerOptions>).await.map_err(err)?;
+    let name = info.name.as_deref().unwrap_or(container).trim_start_matches('/').to_owned();
     let repo = format!("{REPO}/{}", repo_part(&name));
+    // Two in the same second: the second gets `-2`, never the first's tag.
+    let mut tag = stamp();
+    for n in 2.. {
+        if docker.inspect_image(&format!("{repo}:{tag}")).await.is_err() {
+            break;
+        }
+        tag = format!("{}-{n}", stamp_base(&tag));
+    }
     let mut labels = info.config.as_ref().and_then(|c| c.labels.clone()).unwrap_or_default();
     labels.insert(LABEL.into(), "container".into());
     labels.insert(LABEL_OF.into(), name.clone());
-    if let Some(n) = note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+    if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
         labels.insert(LABEL_NOTE.into(), n.chars().take(200).collect());
     }
     let config = bollard::models::ContainerConfig { labels: Some(labels), ..Default::default() };
-    let opts = q::CommitContainerOptionsBuilder::default().container(&container).repo(&repo).tag(&tag).pause(true).build();
+    let opts = q::CommitContainerOptionsBuilder::default().container(container).repo(&repo).tag(&tag).pause(true).build();
     docker.commit_container(opts, config).await.map_err(err)?;
-    changed(&ctx, "image");
     Ok(format!("{repo}:{tag}"))
+}
+
+/// A stamp without the `-2` a second snapshot in the same second gets.
+fn stamp_base(s: &str) -> &str {
+    &s[..s.len().min(15)]
 }
 
 /// The settings to make a container again, from its `inspect`: its config,
@@ -194,7 +203,31 @@ fn recreate_body(info: &Value, image: &str) -> Result<bollard::models::Container
     // An engine that doesn't keep them as asked (eDock before 0.5.0) still
     // says what's mounted and published: from that.
     let host = &mut body["HostConfig"];
-    if host["Binds"].is_null() && host["Mounts"].is_null() {
+    // Volumes the image declares (postgres' data) are in neither: an
+    // anonymous volume each. The new container mounts the same ones, as
+    // Compose does, or its data would seem gone.
+    if !(host["Binds"].is_null() && host["Mounts"].is_null()) {
+        let mut taken: Vec<String> = host["Binds"].as_array().into_iter().flatten().filter_map(|b| b.as_str()?.split(':').nth(1).map(str::to_owned)).collect();
+        taken.extend(host["Mounts"].as_array().into_iter().flatten().filter_map(|m| m["Target"].as_str().map(str::to_owned)));
+        taken.extend(host["Tmpfs"].as_object().into_iter().flatten().map(|(k, _)| k.clone()));
+        let more: Vec<Value> = info["Mounts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["Type"] == "volume")
+            .filter_map(|m| {
+                let (name, dest) = (m["Name"].as_str()?, m["Destination"].as_str()?);
+                let ro = if m["RW"] == false { ":ro" } else { "" };
+                (!taken.iter().any(|t| t.trim_end_matches('/') == dest.trim_end_matches('/'))).then(|| json!(format!("{name}:{dest}{ro}")))
+            })
+            .collect();
+        if !more.is_empty() {
+            if !host["Binds"].is_array() {
+                host["Binds"] = json!([]);
+            }
+            host["Binds"].as_array_mut().expect("an array").extend(more);
+        }
+    } else {
         let binds: Vec<String> = info["Mounts"]
             .as_array()
             .into_iter()
@@ -242,7 +275,8 @@ fn recreate_body(info: &Value, image: &str) -> Result<bollard::models::Container
 pub struct Restored {
     /// The container made from the snapshot.
     pub container: String,
-    /// The one it replaced, stopped and renamed; None when there was none.
+    /// The one it replaced: stopped and renamed, or for a Compose service
+    /// a snapshot (`edock-snapshots/…`); None when there was none.
     pub previous: Option<String>,
 }
 
@@ -274,6 +308,10 @@ pub async fn container_snapshot_restore(ctx: Ctx, image: String) -> Result<Resto
     if was_running {
         docker.stop_container(&name, None::<q::StopContainerOptions>).await.map_err(err)?;
     }
+    // A Compose service's container: Compose would count the one kept as
+    // the same service and replica, so it's kept as a snapshot instead.
+    let compose = current.config.as_ref().and_then(|c| c.labels.as_ref()).is_some_and(|l| l.contains_key("com.docker.compose.project"));
+    let kept = if compose { Some(commit(&ctx, &name, Some(&format!("Before restoring {image}"))).await.map_err(|e| format!("couldn't keep the container as it is: {e}"))?) } else { None };
     let previous = format!("{name}-before-{}", stamp());
     docker.rename_container(&name, q::RenameContainerOptionsBuilder::default().name(&previous).build()).await.map_err(err)?;
     let made = docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await;
@@ -285,6 +323,15 @@ pub async fn container_snapshot_restore(ctx: Ctx, image: String) -> Result<Resto
         }
         return Err(format!("couldn't make the container again: {e}"));
     }
+    // Its volumes stay: the new container uses them.
+    let previous = match kept {
+        Some(image) => {
+            docker.remove_container(&previous, None::<q::RemoveContainerOptions>).await.map_err(|e| format!("restored, but {previous} is still there: {e}"))?;
+            changed(&ctx, "image");
+            image
+        }
+        None => previous,
+    };
     if was_running {
         docker.start_container(&name, None::<q::StartContainerOptions>).await.map_err(|e| format!("made again, but it didn't start: {e}"))?;
     }
@@ -297,12 +344,7 @@ pub async fn container_snapshot_restore(ctx: Ctx, image: String) -> Result<Resto
 /// fails. Volume snapshots and clones use it.
 pub(crate) async fn helper(ctx: &Ctx, mounts: Vec<String>, script: String) -> Result<(), String> {
     let docker = ctx.get::<Engine>().docker()?;
-    if docker.inspect_image(HELPER).await.is_err() {
-        let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image("alpine").tag("latest").build()), None, None);
-        while let Some(p) = pull.next().await {
-            p.map_err(|e| format!("couldn't pull {HELPER} for the snapshot: {e}"))?;
-        }
-    }
+    crate::volumes::ensure_image(&docker).await?;
     let body = bollard::models::ContainerCreateBody {
         image: Some(HELPER.into()),
         cmd: Some(vec!["sh".into(), "-c".into(), script]),
@@ -336,12 +378,18 @@ pub(crate) async fn helper(ctx: &Ctx, mounts: Vec<String>, script: String) -> Re
 /// file's name.
 #[command(can = "edock.manage")]
 pub async fn volume_snapshot(ctx: Ctx, volume: String, note: Option<String>) -> Result<String, String> {
-    let volume = valid_volume(&volume)?.to_owned();
+    let volume = crate::volumes::valid(&volume)?.to_owned();
     let docker = ctx.get::<Engine>().docker()?;
     docker.inspect_volume(&volume).await.map_err(|_| format!("There's no volume {volume}"))?;
     let dir = volumes_dir(&ctx)?.join(&volume);
     tokio::fs::create_dir_all(&dir).await.map_err(err)?;
-    let file = format!("{}.tar.gz", stamp());
+    let mut file = format!("{}.tar.gz", stamp());
+    for n in 2.. {
+        if !dir.join(&file).exists() {
+            break;
+        }
+        file = format!("{}-{n}.tar.gz", stamp_base(&file));
+    }
     helper(
         &ctx,
         vec![format!("{volume}:/from:ro"), format!("{}:/out", dir.display())],
@@ -363,7 +411,7 @@ pub async fn volume_snapshot(ctx: Ctx, volume: String, note: Option<String>) -> 
 /// Refused while a running container uses the volume: stop it first.
 #[command(can = "edock.manage")]
 pub async fn volume_snapshot_restore(ctx: Ctx, volume: String, file: String) -> Result<(), String> {
-    let volume = valid_volume(&volume)?.to_owned();
+    let volume = crate::volumes::valid(&volume)?.to_owned();
     let file = valid_file(&file)?.to_owned();
     let dir = volumes_dir(&ctx)?.join(&volume);
     if !dir.join(&file).is_file() {
@@ -404,7 +452,7 @@ pub async fn snapshot_delete(ctx: Ctx, kind: String, of: String, id: String) -> 
             changed(&ctx, "image");
         }
         "volume" => {
-            let dir = volumes_dir(&ctx)?.join(valid_volume(&of)?);
+            let dir = volumes_dir(&ctx)?.join(crate::volumes::valid(&of)?);
             let file = valid_file(&id)?;
             tokio::fs::remove_file(dir.join(file)).await.map_err(err)?;
             let _ = tokio::fs::remove_file(dir.join(format!("{}.note", file.trim_end_matches(".tar.gz")))).await;
@@ -439,9 +487,9 @@ mod tests {
         assert_eq!(super::repo_part("My_App.web-1"), "my_app.web-1");
         assert_eq!(super::repo_part("--x--"), "x");
         assert_eq!(super::repo_part("é"), "container");
-        assert!(super::valid_volume("pg_data-1").is_ok());
+        assert!(crate::volumes::valid("pg_data-1").is_ok());
         for bad in ["", "../x", "a/b", "-a", ".a"] {
-            assert!(super::valid_volume(bad).is_err(), "{bad}");
+            assert!(crate::volumes::valid(bad).is_err(), "{bad}");
         }
         assert!(super::valid_file("20261114-221503.tar.gz").is_ok());
         for bad in ["x.tar", "../a.tar.gz", ".20261114.tar.gz", "a b.tar.gz"] {
@@ -477,5 +525,28 @@ mod tests {
         assert_eq!(v["HostConfig"]["Binds"], serde_json::json!(["pg:/var/lib/pg", "ro:/ro:ro"]));
         assert_eq!(v["HostConfig"]["PortBindings"]["80/tcp"][0]["HostPort"], "8080");
         assert!(v["HostConfig"]["PortBindings"].get("443/tcp").is_none());
+
+        // A bind mount given, and the image's VOLUME as an anonymous volume:
+        // the new container mounts that same volume.
+        let info = serde_json::json!({
+            "Config": {"Image": "postgres"},
+            "HostConfig": {"Binds": ["/Users/me/init:/docker-entrypoint-initdb.d"], "Mounts": null},
+            "Mounts": [
+                {"Type": "bind", "Source": "/Users/me/init", "Destination": "/docker-entrypoint-initdb.d", "RW": true},
+                {"Type": "volume", "Name": "0f3a9c", "Destination": "/var/lib/postgresql/data", "RW": true}
+            ],
+            "NetworkSettings": {}
+        });
+        let v = serde_json::to_value(super::recreate_body(&info, "x").unwrap()).unwrap();
+        assert_eq!(v["HostConfig"]["Binds"], serde_json::json!(["/Users/me/init:/docker-entrypoint-initdb.d", "0f3a9c:/var/lib/postgresql/data"]));
+        // Given as a Mount: not twice.
+        let info = serde_json::json!({
+            "Config": {"Image": "x"},
+            "HostConfig": {"Binds": null, "Mounts": [{"Type": "volume", "Source": "pg", "Target": "/data"}]},
+            "Mounts": [{"Type": "volume", "Name": "pg", "Destination": "/data", "RW": true}],
+            "NetworkSettings": {}
+        });
+        let v = serde_json::to_value(super::recreate_body(&info, "x").unwrap()).unwrap();
+        assert!(v["HostConfig"]["Binds"].is_null(), "{v}");
     }
 }

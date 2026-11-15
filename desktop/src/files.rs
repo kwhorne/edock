@@ -83,8 +83,8 @@ fn parse_stat(out: &str) -> Vec<FileEntry> {
 }
 
 /// A command in the container, without a shell: its stdout, or its stderr
-/// as the error.
-async fn exec(ctx: &Ctx, container: &str, cmd: Vec<String>) -> Result<String, String> {
+/// as the error. `missing` is the error when the image hasn't the command.
+async fn exec(ctx: &Ctx, container: &str, cmd: Vec<String>, missing: &str) -> Result<String, String> {
     use bollard::container::LogOutput;
     use bollard::exec::{CreateExecOptions, StartExecResults};
     let docker = ctx.get::<Engine>().docker()?;
@@ -101,11 +101,11 @@ async fn exec(ctx: &Ctx, container: &str, cmd: Vec<String>) -> Result<String, St
             }
         }
     }
-    let code = docker.inspect_exec(&ex.id).await.ok().and_then(|i| i.exit_code).unwrap_or(-1);
+    let code = crate::engine::exec_exit_code(&docker, &ex.id).await;
     if code != 0 && out.trim().is_empty() {
         let e = errs.trim();
         return Err(if e.contains("executable file not found") || e.contains("no such file or directory") && e.contains("exec") {
-            "This image has no find and stat to list folders with".into()
+            missing.into()
         } else if e.is_empty() {
             format!("exit {code}")
         } else {
@@ -121,14 +121,8 @@ async fn exec(ctx: &Ctx, container: &str, cmd: Vec<String>) -> Result<String, St
 pub async fn container_files(ctx: Ctx, container: String, path: String) -> Result<Vec<FileEntry>, String> {
     let path = valid_path(&path)?;
     if ctx.get::<Engine>().context().0 == EDOCK {
-        // The engine reads the image's layers: at or under a mount (a
-        // volume, a bind mount, a tmpfs) it would show the folder under it.
-        // There, the container's own `find` looks, when it has one.
-        if under_a_mount(&ctx, &container, path).await {
-            if let Ok(list) = by_find(&ctx, &container, path).await {
-                return Ok(list);
-            }
-        }
+        // The engine reads the container's own view of its files (its
+        // volumes, bind mounts and tmpfs too), with nothing in the image.
         let from_engine = match crate::daemon::engine_request("GET", &format!("/edock/containers/{}/files?path={}", enc(&container), enc(path))).await {
             Some((200, v)) => serde_json::from_value::<Vec<serde_json::Value>>(v).map_err(err).map(|list| {
                 list.iter()
@@ -142,15 +136,20 @@ pub async fn container_files(ctx: Ctx, container: String, path: String) -> Resul
                     .collect()
             }),
             Some((409, _)) => Err("Start the container to browse its files".into()),
-            Some((404, _)) => Err("This eDock engine can't list a container's files: press Restart engine on the Engine page".into()),
+            // No such container or folder; or an engine from before 0.5.0,
+            // which hasn't this at all.
+            Some((404, v)) => Err(match v["message"].as_str() {
+                Some(m) if m.to_ascii_lowercase().contains("no such") => m.to_owned(),
+                _ => "This eDock engine can't list a container's files: press Restart engine on the Engine page".into(),
+            }),
             Some((_, v)) => Err(v["message"].as_str().map(|m| m.split(": open: ").last().unwrap_or(m).to_owned()).unwrap_or_else(|| "The engine refused".into())),
             None => Err("eDock's engine isn't running".into()),
         };
-        // The engine reads the container's own files: a volume or bind
-        // mounted in it (a database's data) isn't there, so `find` looks.
+        // Anything else the engine can't read, the container's own `find`
+        // may.
         return match from_engine {
             Ok(list) => Ok(list),
-            Err(e) if e.starts_with("Start the container") || e.contains("Restart engine") || e.contains("isn't running") => Err(e),
+            Err(e) if e.starts_with("Start the container") || e.contains("Restart engine") || e.contains("isn't running") || e.to_ascii_lowercase().contains("no such") => Err(e),
             Err(e) => by_find(&ctx, &container, path).await.map_err(|_| e),
         };
     }
@@ -161,23 +160,10 @@ pub async fn container_files(ctx: Ctx, container: String, path: String) -> Resul
     by_find(&ctx, &container, path).await
 }
 
-/// Whether `path` is a mount point in the container, or under one.
-async fn under_a_mount(ctx: &Ctx, container: &str, path: &str) -> bool {
-    let Ok(docker) = ctx.get::<Engine>().docker() else { return false };
-    let Ok(info) = docker.inspect_container(container, None::<q::InspectContainerOptions>).await else { return false };
-    let path = path.trim_end_matches('/');
-    info.mounts.unwrap_or_default().iter().filter_map(|m| m.destination.as_deref()).chain(
-        info.host_config.as_ref().and_then(|h| h.tmpfs.as_ref()).into_iter().flat_map(|t| t.keys().map(String::as_str)),
-    ).any(|d| {
-        let d = d.trim_end_matches('/');
-        !d.is_empty() && (path == d || path.starts_with(&format!("{d}/")))
-    })
-}
-
 /// A folder's entries from `find` and `stat` in the running container.
 async fn by_find(ctx: &Ctx, container: &str, path: &str) -> Result<Vec<FileEntry>, String> {
     let cmd = ["find", path, "-mindepth", "1", "-maxdepth", "1", "-exec", "stat", "-c", "%f|%s|%Y|%n", "{}", "+"];
-    Ok(parse_stat(&exec(ctx, container, cmd.iter().map(|s| (*s).to_owned()).collect()).await?))
+    Ok(parse_stat(&exec(ctx, container, cmd.iter().map(|s| (*s).to_owned()).collect(), "This image has no find and stat to list folders with").await?))
 }
 
 /// One tar entry's header, as much as the tab needs.
@@ -233,9 +219,10 @@ impl<S: futures_util::Stream<Item = Result<Bytes, bollard::errors::Error>> + Unp
         self.buf.drain(..n).collect()
     }
 
-    /// The next real entry's header, past GNU long names and pax headers.
+    /// The next real entry's header, past GNU long names and links and pax
+    /// headers.
     async fn header(&mut self) -> Result<Header, String> {
-        let mut long_name = None;
+        let (mut long_name, mut long_link) = (None, None);
         loop {
             self.fill(512).await?;
             if self.buf.len() < 512 {
@@ -246,21 +233,29 @@ impl<S: futures_util::Stream<Item = Result<Bytes, bollard::errors::Error>> + Unp
             let padded = size.div_ceil(512) * 512;
             match h[156] {
                 // A long name or pax header is small: a huge one isn't read into memory.
-                b'L' | b'x' | b'g' if padded > MAX_EXTRA_HEADER => return Err("The archive has a header too big to read".into()),
-                b'L' | b'x' | b'g' => {
+                b'L' | b'K' | b'x' | b'g' if padded > MAX_EXTRA_HEADER => return Err("The archive has a header too big to read".into()),
+                b'L' | b'K' | b'x' | b'g' => {
                     self.fill(padded as usize).await?;
                     let data = self.take(padded as usize);
                     let data = &data[..(size as usize).min(data.len())];
-                    if h[156] == b'L' {
-                        long_name = Some(cstr(data));
-                    } else if let Some(p) = String::from_utf8_lossy(data).lines().find_map(|l| l.split_once(" path=").map(|(_, p)| p.to_owned())) {
-                        long_name = Some(p);
+                    match h[156] {
+                        b'L' => long_name = Some(cstr(data)),
+                        b'K' => long_link = Some(cstr(data)),
+                        _ => {
+                            let pax = String::from_utf8_lossy(data);
+                            let key = |k: &str| pax.lines().find_map(|l| l.split_once(' ').and_then(|(_, kv)| kv.strip_prefix(k)).map(str::to_owned));
+                            long_name = key("path=").or(long_name);
+                            long_link = key("linkpath=").or(long_link);
+                        }
                     }
                 }
                 kind => {
-                    let prefix = cstr(&h[345..500]);
+                    // Only POSIX ustar has a name prefix there; GNU keeps
+                    // times in those bytes.
+                    let prefix = if &h[257..263] == b"ustar\0" { cstr(&h[345..500]) } else { String::new() };
                     let name = long_name.unwrap_or_else(|| if prefix.is_empty() { cstr(&h[..100]) } else { format!("{prefix}/{}", cstr(&h[..100])) });
-                    return Ok(Header { name, kind: if kind == 0 { b'0' } else { kind }, size, link: cstr(&h[157..257]) });
+                    let link = long_link.unwrap_or_else(|| cstr(&h[157..257]));
+                    return Ok(Header { name, kind: if kind == 0 { b'0' } else { kind }, size, link });
                 }
             }
         }
@@ -323,11 +318,28 @@ pub async fn container_file_preview(ctx: Ctx, container: String, path: String) -
 /// as a .tar of it. Works on stopped containers too.
 #[command]
 pub async fn container_file_save(ctx: Ctx, container: String, path: String, file: ChosenFile) -> Result<(), String> {
-    use tokio::io::AsyncWriteExt;
     let path = valid_path(&path)?;
     let mut tar = TarReader { stream: archive(&ctx, &container, path)?, buf: Vec::new(), keep: Some(Vec::new()) };
     let h = tar.header().await?;
-    let mut out = tokio::fs::File::create(file.path()).await.map_err(|e| format!("{}: {e}", file.name()))?;
+    if !matches!(h.kind, b'0' | b'7' | b'5') {
+        return Err(format!("{} isn't a regular file", h.name));
+    }
+    // Written beside it and moved in place when whole: a save cut short
+    // leaves what was there.
+    let part = file.path().with_file_name(format!(".{}.edock-part", file.path().file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
+    let r = save_to(&mut tar, h, &part).await;
+    match r {
+        Ok(()) => tokio::fs::rename(&part, file.path()).await.map_err(|e| format!("{}: {e}", file.name())),
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&part).await;
+            Err(e)
+        }
+    }
+}
+
+async fn save_to<S: futures_util::Stream<Item = Result<Bytes, bollard::errors::Error>> + Unpin>(tar: &mut TarReader<S>, h: Header, to: &Path) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut out = tokio::fs::File::create(to).await.map_err(|e| format!("{}: {e}", to.display()))?;
     if h.kind == b'5' {
         // A folder: the archive as it comes.
         let so_far = tar.keep.take().unwrap_or_default();
@@ -336,9 +348,6 @@ pub async fn container_file_save(ctx: Ctx, container: String, path: String, file
             out.write_all(&b.map_err(err)?).await.map_err(err)?;
         }
     } else {
-        if !matches!(h.kind, b'0' | b'7') {
-            return Err(format!("{} isn't a regular file", h.name));
-        }
         tar.keep = None;
         let mut left = h.size as usize;
         while left > 0 {
@@ -360,9 +369,16 @@ fn tar_header(name: &str, kind: u8, size: u64, mode: u32, mtime: u64) -> Vec<u8>
     let raw = |name: &[u8], kind: u8, size: u64| {
         let mut h = [0u8; 512];
         h[..name.len().min(100)].copy_from_slice(&name[..name.len().min(100)]);
+        // Octal; GNU's base-256 when it doesn't fit (8 GiB and up).
         let field = |h: &mut [u8; 512], at: usize, len: usize, v: u64| {
             let s = format!("{v:0w$o}\0", w = len - 1);
-            h[at..at + len].copy_from_slice(s.as_bytes());
+            if s.len() == len {
+                h[at..at + len].copy_from_slice(s.as_bytes());
+            } else {
+                h[at..at + len].fill(0);
+                h[at + len - 8..at + len].copy_from_slice(&v.to_be_bytes());
+                h[at] |= 0x80;
+            }
         };
         field(&mut h, 100, 8, u64::from(mode & 0o7777));
         field(&mut h, 108, 8, 0);
@@ -467,7 +483,7 @@ pub async fn container_file_remove(ctx: Ctx, container: String, path: String) ->
     if path.trim_end_matches('/').is_empty() {
         return Err("Not the whole filesystem".into());
     }
-    exec(&ctx, &container, vec!["rm".into(), "-rf".into(), "--".into(), path.into()]).await.map(|_| ())
+    exec(&ctx, &container, vec!["rm".into(), "-rf".into(), "--".into(), path.into()], "This image has no rm to remove files with").await.map(|_| ())
 }
 
 /// Show a running container's file in Finder, through `~/eDock` (eDock's
@@ -527,6 +543,33 @@ mod tests {
         assert_eq!(r.take(5), b"hello");
         // The checksum is the one tar computes.
         let h = tar_header("a", b'0', 0, 0o644, 0);
+        let sum: u32 = h.iter().enumerate().map(|(i, b)| if (148..156).contains(&i) { 32 } else { u32::from(*b) }).sum();
+        assert_eq!(octal(&h[148..155]), u64::from(sum));
+    }
+
+    /// GNU headers (eDock's archives) keep times where ustar's prefix is;
+    /// a long link target comes as a 'K' entry; 8 GiB and up is base-256.
+    #[tokio::test]
+    async fn gnu_headers_long_links_and_big_sizes() {
+        let mut h = [0u8; 512];
+        h[..4].copy_from_slice(b"link");
+        h[124..136].copy_from_slice(b"00000000000\0");
+        h[156] = b'2';
+        h[257..265].copy_from_slice(b"ustar  \0");
+        h[345..357].copy_from_slice(b"15000000000\0");
+        let target = "t".repeat(150);
+        let mut k = tar_header("././@LongLink", b'K', target.len() as u64 + 1, 0, 0);
+        k.extend_from_slice(target.as_bytes());
+        k.resize(1024, 0);
+        k.extend_from_slice(&h);
+        k.extend_from_slice(&[0u8; 1024]);
+        let mut r = TarReader { stream: futures_util::stream::iter(vec![Ok(Bytes::from(k))]), buf: Vec::new(), keep: None };
+        let got = r.header().await.unwrap();
+        assert_eq!((got.name.as_str(), got.kind, got.link.as_str()), ("link", b'2', target.as_str()));
+
+        let big = 9 * 1024 * 1024 * 1024u64;
+        let h = tar_header("big", b'0', big, 0o644, 0);
+        assert_eq!(octal(&h[124..136]), big);
         let sum: u32 = h.iter().enumerate().map(|(i, b)| if (148..156).contains(&i) { 32 } else { u32::from(*b) }).sum();
         assert_eq!(octal(&h[148..155]), u64::from(sum));
     }

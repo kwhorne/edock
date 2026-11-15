@@ -24,6 +24,7 @@
     stop();
     lines = [];
     hidden = {};
+    services = [];
     ended = false;
     const mine = ++seq;
     const id = open ? await open(500, timestamps) : await api.logs_follow(container, 500, timestamps);
@@ -31,6 +32,9 @@
     streamId = id;
     unsub = channel(`logs:${id}`).subscribe(async (batch) => {
       if (!batch) return;
+      // New services as they turn up, not a pass over every line.
+      const fresh = batch.lines.map((l) => l.service).filter((s) => s && !services.includes(s));
+      if (fresh.length) services = [...new Set([...services, ...fresh])].sort();
       const next = lines.concat(batch.lines);
       lines = next.length > MAX ? next.slice(next.length - MAX) : next;
       if (batch.ended) ended = true;
@@ -65,9 +69,14 @@
   // A project's combined log: lines carry their service, each in its colour,
   // and services can be hidden.
   let hidden = $state({});
-  const services = $derived([...new Set(lines.map((l) => l.service).filter(Boolean))].sort());
+  let services = $state([]);
   const PALETTE = ["#4f9cf9", "#e8a33d", "#3fb68b", "#d36ac2", "#e5654e", "#8c7ae6", "#2bb5c4", "#b8a03a"];
-  const colour = (svc) => PALETTE[[...svc].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % PALETTE.length];
+  const colours = new Map();
+  const colour = (svc) => {
+    let c = colours.get(svc);
+    if (!c) colours.set(svc, (c = PALETTE[[...svc].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % PALETTE.length]));
+    return c;
+  };
 
   const shown = $derived.by(() => {
     const q = filter.trim().toLowerCase();

@@ -10,7 +10,7 @@ use bollard::query_parameters as q;
 use elyra::{command, Ctx, EventBus};
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{Engine, EDOCK};
+use crate::engine::Engine;
 
 const LABEL: &str = "app.edock.machine";
 
@@ -30,11 +30,7 @@ pub const DISTROS: [(&str, &str, &str); 7] = [
 pub struct Creating(AtomicBool);
 
 fn on_edock(ctx: &Ctx) -> Result<(), String> {
-    if ctx.get::<Engine>().context().0 == EDOCK {
-        Ok(())
-    } else {
-        Err("Linux machines run on eDock's engine: switch to it in the toolbar".into())
-    }
+    crate::engine::only_on_edock(ctx, "Linux machines run on eDock's engine: switch to it in the toolbar")
 }
 
 /// A machine name, as `edock machine` takes it: letters, digits, dashes.

@@ -66,7 +66,7 @@ async fn node_exec(ctx: &Ctx, cmd: &[&str], secs: u32) -> Result<(i64, String, S
             }
         }
     }
-    let code = docker.inspect_exec(&exec.id).await.ok().and_then(|i| i.exit_code).unwrap_or(-1);
+    let code = crate::engine::exec_exit_code(&docker, &exec.id).await;
     Ok((code, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned()))
 }
 

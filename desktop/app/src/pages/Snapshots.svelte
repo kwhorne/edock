@@ -40,7 +40,7 @@
       busy = key(s);
       const r = await attempt(() => api.container_snapshot_restore(s.id));
       busy = null;
-      if (r) toast(r.previous ? `${r.container} restored. The one before is kept as ${r.previous}.` : `${r.container} made from the snapshot`, { variant: "success", duration: 6000 });
+      if (r) toast(r.previous ? `${r.container} restored. The one before is kept ${r.previous.startsWith("edock-snapshots/") ? "as a snapshot" : "as " + r.previous}.` : `${r.container} made from the snapshot`, { variant: "success", duration: 6000 });
     } else {
       const ok = await confirm(`Put ${s.of} back as it was ${ago(s.created)}? What's in it now is replaced. Containers using it must be stopped.`, {
         danger: true,
