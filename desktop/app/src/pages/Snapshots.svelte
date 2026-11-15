@@ -33,7 +33,7 @@
   async function restore(s) {
     if (s.kind === "container") {
       const ok = await confirm(
-        `Make ${s.of} again from this snapshot? If it's running it's stopped first; it's kept, renamed ${s.of}-before-…, until you remove it. Its volumes are left as they are.`,
+        `Make ${s.of} again from this snapshot? If it's running it's stopped first, and kept: renamed ${s.of}-before-… until you remove it, or for a Compose service, as a snapshot. Its volumes stay with it.`,
         { confirmLabel: "Restore" },
       );
       if (!ok) return;

@@ -10,7 +10,7 @@ Snapshots work on any engine the app shows: eDock, OrbStack, Docker Desktop and 
 
 **Its volumes aren't in it.** A database's data usually lives in a volume, so snapshot the volume too.
 
-**Restore** makes the container again from the snapshot, with the same name and settings (ports, mounts, networks, environment, restart policy), and starts it if it was running. The container it replaces is stopped and **kept**, renamed `<name>-before-<date-time>`. Remove it once you're happy. A Compose service's container is kept as a snapshot instead (noted *Before restoring …*), so Compose never sees two of the same service. Volumes, including the anonymous ones an image declares (a database's data), stay with the restored container. If the container is gone, Restore makes a new one from the snapshot.
+**Restore** makes the container again from the snapshot, with the same name and settings (ports, mounts, networks, environment, restart policy), and starts it if it was running. The container it replaces is stopped and **kept**, renamed `<name>-before-<date-time>`. Remove it once you're happy. A Compose service's container is kept as a snapshot instead (noted *Before restoring …*), so Compose never sees two of the same service. Volumes, including the anonymous ones an image declares (a database's data), stay with the restored container. If the container is gone, Restore makes a new one from the snapshot, not started, with only what the image keeps (its command and environment, but no published ports or mounts).
 
 ## A volume
 
@@ -22,7 +22,7 @@ For a database, stop the containers that write to the volume first, as with any 
 
 ## The Snapshots page
 
-**Snapshots** in the sidebar lists them all, newest first, with their age, size and note. Each has **Restore** and **Delete**.
+**Snapshots** in the sidebar lists them in two groups, Containers and Volumes, each newest first, with their age, size and note. Each has **Restore** and **Delete**.
 
 A container's snapshot is an ordinary image, so it also shows on the **Images** page, and `docker run edock-snapshots/web:20261114-221503` works too.
 

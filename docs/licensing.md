@@ -15,7 +15,7 @@ Apache-2.0 asks that redistributions keep the licence and the NOTICE, and say th
 
 ## The guest kernel: GPL-2.0
 
-The Linux kernel that runs in eDock's VM is a separate work under the **GNU General Public License, version 2**. eDock builds it from the upstream kernel source with the configuration and patches in `engine/guest/kernel/`. `KERNEL_SOURCE_OFFER.md`, in the repository and in the app (`Contents/Resources/engine/`), says where to get the exact source.
+The Linux kernel that runs in eDock's VM is a separate work under the **GNU General Public License, version 2**. eDock builds it from the upstream kernel source with the configuration and patches in `engine/guest/kernel/`. `engine/guest/kernel/SOURCE_OFFER.md` (in the app as `Contents/Resources/engine/KERNEL_SOURCE_OFFER.md`) says where to get the exact source.
 
 ## eDock's own code: MIT
 

@@ -7,9 +7,9 @@
 Each row shows:
 
 - **A status dot.** Green while running; amber while paused, restarting or unhealthy.
-- **The name**, with the image and the short ID under it. On eDock's engine, a running container's **address** is under them: `blog.edock.localhost`, or `web.shop.edock.localhost` for a Compose service. Click it to open it. It reaches the container's web port whether or not that port is published.
+- **The name**, with the image and the short ID under it. On eDock's engine, a running container's **address** is under them: `blog.edock.localhost`, or `web.shop.edock.localhost` for a Compose service. Click it to open it. It reaches the container's web port whether or not that port is published. A container with no web page (a database, a worker with no ports) answers with a page that says what it listens on; the label `app.edock.http.port` picks the port when eDock guesses wrong.
 - **Published ports**, as `8080→80`. Click one to open `http://localhost:8080` in your browser.
-- **The state** (running, exited, created, …), its health when the image has a health check, and how long it has been up.
+- **The state** (running, exited, created, …), its health when the image has a health check, and its status: how long it has been up, or for one that has stopped, its exit code and when (`Exited (3) 16 minutes ago`). The container's page shows the exit code too, in red when it isn't 0.
 - **Actions**, which become clearer on hover:
   - **Terminal** and **Stop** while it runs; **Start** when it doesn't.
   - **Restart** and **Remove**.
@@ -45,7 +45,7 @@ eDock's own containers are hidden from the list: Linux machines (`machine-<name>
 | Mailpit | `axllent/mailpit` | SMTP on `localhost:1025`, UI on 8025 |
 | MinIO | `minio/minio` | `http://localhost:9000` (user `minio`, password `minio123`), console on 9001 |
 
-Pick one, give it a name if you like (the recipe's name otherwise, or `-2`, `-3`… when that's taken), and press **Start**. eDock pulls the image if needed, keeps the data in a volume `<name>-data`, publishes the port on your Mac, on `127.0.0.1` only (the usual port, or the next free one when it's taken), and restarts the service with the engine. When it's up, the connection string is copied, and the note shows it. A service with a web UI also opens it at `http://<name>.edock.localhost`.
+Pick one, give it a name if you like (the recipe's short name otherwise, such as `postgres`, or `-2`, `-3`… when that's taken), and press **Start**. eDock pulls the image if needed, keeps the data in a volume `<name>-data` (Mailpit and Askr keep none), publishes the port on your Mac, on `127.0.0.1` only (the usual port, or the next free one when it's taken), and restarts the service with the engine. When it's up, the connection string is copied, and the note shows it. A service with a web UI shows its address in the note, and on eDock's engine `http://<name>.edock.localhost` reaches it too.
 
 [ElyraSQL](https://github.com/kwhorne/ElyraSQL) speaks MySQL's protocol, so any MySQL client, driver or framework connects to it as to MySQL (Laravel with `DB_CONNECTION=mysql`, `DB_PORT=3307`, `DB_DATABASE=elyra`). It keeps the whole database in one file in its volume, and has one database, `elyra`: `CREATE DATABASE` isn't needed.
 
@@ -66,7 +66,7 @@ A project's header shows:
 - **The project's folder**, from Compose's `working_dir` label. Click it to open it in **Finder**, **Terminal** or your editor (Cursor, VS Code, Zed, Windsurf, Sublime Text or Nova, whichever is installed), or to copy it.
 - **Actions for the whole project:**
   - **All its logs**: every service's log as one, in time order, each line with its service in its own colour. Click a service's name above the log to hide it; filter, timestamps and copy work as for one container.
-  - **Rebuild & up**: `docker compose up -d --build`, from the project's own Compose files and folder (from the containers' labels), on the engine the app shows. Its output shows as it runs. It needs the `docker` command with Compose: [Set up](engine-and-contexts.md#command-line) installs them.
+  - **Rebuild & up**: `docker compose up -d --build --remove-orphans` (a service you took out of the Compose file is removed), from the project's own Compose files and folder (from the containers' labels), on the engine the app shows. Its output shows as it runs. It needs the `docker` command with Compose: [Set up](engine-and-contexts.md#command-line) installs them.
   - **Start all**, which skips the containers already running.
   - **Stop all**, which skips the stopped ones.
   - **Restart all**.
@@ -127,11 +127,11 @@ Click a file to preview it beside the list: text shows (its first 256 KB), and a
 | | |
 |---|---|
 | **Save to the Mac** | Saves the file where you choose. A folder is saved as a `.tar`. |
-| **Put files here** | Copies files or folders from the Mac into the folder you're in. You can also drop them on the window. They're owned by root, as with `docker cp`. |
+| **Put files here** | Copies files or folders from the Mac into the folder you're in. You can also drop them on the window. They're owned by root. |
 | **Remove** (bin) | Removes the file or folder, after asking |
 | **Show in Finder** | On eDock's engine: the file in `~/eDock`, eDock's read-only Finder view of running containers |
 
-Browsing needs the container to be running. On eDock's engine it works with any image, even one without a shell. On other engines it runs `find` and `stat` in the container, so an image without them can't be browsed. Previewing and saving work on a stopped container too, on any engine.
+The tab needs the container to be running; when it stops, the tab says so. On eDock's engine browsing works with any image, even one without a shell. On other engines it runs `find` and `stat` in the container, so an image without them can't be browsed, and the tab says so. Removing runs `rm` in the container on every engine, so it needs an image with `rm`.
 
 ### Ports
 
@@ -157,6 +157,6 @@ Ports the container binds only on its own loopback are listed at the bottom: not
 
 ## Keyboard
 
-- **⌘K** opens the command palette. Type `Containers`, `Images`, `Kubernetes` and so on to go there. It also finds things by name: containers (by name, image or Compose project), images, Linux machines and Kubernetes pods. Pick one to open it.
-- In ⌘K, **New service: …** starts a service from a [recipe](#new-service).
+- **⌘K** opens the command palette. Type `Containers`, `Images`, `Kubernetes` and so on to go there. It also finds things by name: containers (by name, image, Compose project or short ID), images, Linux machines and Kubernetes pods. Pick one to open it. It has **Check for updates**, and **Start eDock engine** while eDock's engine isn't running.
+- In ⌘K, **New service: …** (after the containers it finds) starts a service from a [recipe](#new-service).
 - **Tab** moves through the list; **Enter** opens a container.

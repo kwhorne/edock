@@ -24,12 +24,12 @@ Click a request to open it beside the list:
 
 - its status, the full URL, how long it waited for the response to start and how long it took in all, and the sizes;
 - **Headers**: the request's and the response's;
-- **Request** and **Response**: the bodies, as text. JSON is indented, and gzip and deflate are undone. A binary body shows its size.
+- **Request** and **Response**: the bodies, as text. JSON is indented, and gzip and deflate are undone for a body within 32 KB (a longer compressed one shows as binary). A binary body shows its size.
 
 | Button | |
 |---|---|
 | **Copy as curl** | The request as a `curl` command |
-| **Replay** | Sends the request again, as recorded, and it shows as a new request. Not for a body longer than 32 KB, or a WebSocket. |
+| **Replay** | Sends the request again, as recorded, and it shows as a new request. Not for a body longer than 32 KB, a binary or compressed body, or a WebSocket. |
 | **Open** | Opens a GET in the browser |
 
 A WebSocket shows as its `101 Switching Protocols`; the messages after it aren't recorded. HTTP/2 isn't recorded either: browsers use HTTP/1.1 with eDock's routers.

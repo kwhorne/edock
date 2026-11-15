@@ -16,7 +16,7 @@ A **left click** opens a small window under the icon. It shows:
 - **the running containers**, as `project/service` for Compose containers.
   - Up to two of each container's published ports, as links.
   - A **Stop** button.
-- **the last five stopped containers**, each with a **Start** button.
+- **up to five stopped containers**, each with a **Start** button.
 - **Open eDock** and **Quit**.
 
 Click a container's name to open it in the main window.

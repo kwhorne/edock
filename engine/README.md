@@ -1,15 +1,16 @@
 # eDock engine
 
 The container engine behind eDock: a small, fast Docker-compatible runtime
-for macOS (Apple silicon and Intel), written in Rust. It runs containers in
+for Apple silicon Macs, written in Rust (an Intel build is possible from source with `--arch x86_64`, but isn't released). It runs containers in
 one small Linux VM (Apple's Virtualization.framework, a custom kernel and a
 tiny PID 1 agent) and serves the Docker Engine API on a unix socket, so the
 `docker` CLI, Compose and buildx work unchanged. On Linux it runs containers
 straight on the host's kernel.
 
 The eDock desktop app (`../desktop`) is the user interface. It talks to the
-engine only through the Docker Engine API and runs the `edock` binary's
-`daemon` and `setup` subcommands.
+engine through the Docker Engine API and eDock's own `/edock/*` endpoints,
+and runs `edock` subcommands (`daemon`, `setup`, `k8s`, `machine`, `builds`,
+`import`, `diag`, …).
 
 ```sh
 cargo xtask kernel && cargo xtask disk && cargo xtask guest && cargo xtask host

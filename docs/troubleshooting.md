@@ -38,7 +38,7 @@ Every docker command answers this while eDock is stopped. Press **Start** on the
 
 ## Ports 80 or 443 are taken
 
-The engine serves `*.edock.localhost` on ports 80 and 443. When another tool holds them (a local web server, another container engine), eDock leaves them to it and turns its container domains off. To have them on other ports, for good, while the engine runs:
+The engine serves `*.edock.localhost` on ports 80 and 443. When another tool holds them (a local web server, another container engine), eDock tries again for 10 seconds, then leaves them to it and turns its container domains off. A container that publishes 80 or 443 itself gets the port, and eDock takes it back when the container lets go. To have them on other ports, for good, while the engine runs:
 
 ```sh
 curl -s --unix-socket ~/.edock/run/docker.sock -X POST \

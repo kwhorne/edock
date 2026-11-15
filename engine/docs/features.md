@@ -88,6 +88,6 @@ Kubernetes LoadBalancer services are published on `localhost`, and
   eDock's builder is a docker-container builder, so the build stops before
   eDock sees it. Docker's own docker-container builders do the same. Until
   eDock has a built-in builder (planned), use the address itself
-  (`--add-host name:172.18.0.1` on Windows and Linux, the default bridge's
+  (`--add-host name:172.18.0.1` on Linux, the default bridge's
   gateway; `198.19.248.254` on a Mac) or `DOCKER_BUILDKIT=0`, where eDock
   maps `host-gateway` itself.

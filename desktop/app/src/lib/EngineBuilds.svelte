@@ -125,11 +125,11 @@
   {#if builder}
     <form class="port-form" onsubmit={saveBuilder}>
       <label>Cache limit (GB) <input bind:value={bform.cache} inputmode="numeric" placeholder={`${builder.default_cache_gb} (default)`} /></label>
-      <label>Stop when idle (min) <input bind:value={bform.idle} inputmode="numeric" /></label>
+      <label>Pause when idle (min) <input bind:value={bform.idle} inputmode="numeric" /></label>
       <Button type="submit" size="sm" loading={busy === "builder"}>Save</Button>
     </form>
     <p class="muted text">
-      <code>docker build</code> runs on BuildKit in an eDock container, which stops when it has been idle that long. It's
+      <code>docker build</code> runs on BuildKit in an eDock container, which pauses when it has been idle that long and resumes for the next build. It's
       <Badge variant={builder.state === "running" ? "success" : "neutral"}>{builder.state === "running" ? "running" : "not running"}</Badge> now.
     </p>
   {:else}

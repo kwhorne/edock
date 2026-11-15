@@ -1036,6 +1036,61 @@ async fn restoring_keeps_anonymous_volumes_and_compose_whole() {
     let _ = docker.remove_volume(&anon, None::<q::RemoveVolumeOptions>).await;
 }
 
+/// The archive API (`docker cp`) as Docker has it: `dir/.` is the folder's
+/// contents, and an upload keeps the owners its archive gives.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine"]
+async fn the_archive_api_matches_dockers() {
+    use bollard::query_parameters as q;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    ensure_image(&app, "alpine:latest").await;
+    let name = format!("edock-test-archive-{}", std::process::id());
+    let body = bollard::models::ContainerCreateBody {
+        image: Some("alpine:latest".into()),
+        cmd: Some(vec!["sh".into(), "-c".into(), "mkdir -p /v/sub && echo a > /v/a && echo b > /v/sub/b && sleep 300".into()]),
+        labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
+        ..Default::default()
+    };
+    docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await.unwrap();
+    docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let names = |path: &'static str| {
+        let (docker, name) = (docker.clone(), name.clone());
+        async move {
+            use futures_util::StreamExt;
+            let bytes: Vec<u8> = docker
+                .download_from_container(&name, Some(q::DownloadFromContainerOptionsBuilder::default().path(path).build()))
+                .map(|b| b.unwrap().to_vec())
+                .concat()
+                .await;
+            let mut a = tar::Archive::new(&bytes[..]);
+            let mut v: Vec<String> = a.entries().unwrap().map(|e| e.unwrap().path().unwrap().to_string_lossy().trim_start_matches("./").trim_end_matches('/').to_owned()).filter(|n| !n.is_empty() && n != ".").collect();
+            v.sort();
+            v
+        }
+    };
+    assert_eq!(names("/v/.").await, ["a", "sub", "sub/b"], "dir/. is its contents");
+    assert_eq!(names("/v").await, ["v", "v/a", "v/sub", "v/sub/b"]);
+
+    let mut t = tar::Builder::new(Vec::new());
+    let mut h = tar::Header::new_ustar();
+    h.set_size(3);
+    h.set_mode(0o640);
+    h.set_uid(70);
+    h.set_gid(71);
+    t.append_data(&mut h, "owned", &b"hi\n"[..]).unwrap();
+    let tarball = t.into_inner().unwrap();
+    docker
+        .upload_to_container(&name, Some(q::UploadToContainerOptionsBuilder::default().path("/tmp").build()), bollard::body_full(tarball.into()))
+        .await
+        .unwrap();
+    let r: crate::agent::RunResult = app.invoke("container_exec", (name.clone(), "stat -c %u:%g /tmp/owned".to_string(), None::<u32>)).await.unwrap();
+    let _ = docker.remove_container(&name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    assert_eq!(r.output.trim(), "70:71", "the archive's owners kept");
+}
+
 /// The Files tab: list, preview, save, upload and remove in a container.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a Docker engine"]

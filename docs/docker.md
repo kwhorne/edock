@@ -53,7 +53,7 @@ Compose works as usual: `up`, `down`, `ps`, `logs`, `exec`, several networks, an
 
 ## Builds
 
-`docker build` and `docker buildx build` run on BuildKit inside an eDock container. That is buildx's docker-container driver, through the `edock-build` builder. The builder stops after 5 minutes without a build.
+`docker build` and `docker buildx build` run on BuildKit inside an eDock container. That is buildx's docker-container driver, through the `edock-build` builder. The builder is paused after 5 minutes without a build, and the next build resumes it (**Engine › Builds & import**, or `idle_secs` in `~/.edock/builder.json`).
 
 On Apple silicon, amd64 build steps run through Rosetta.
 

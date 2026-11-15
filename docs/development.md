@@ -68,7 +68,7 @@ cargo run
 
 With `rata dev`, the frontend reloads as you edit it (Vite HMR).
 
-The app finds the engine at `engine/target/release/edock` in the checkout, so **Start** on the Engine page runs your build.
+The app looks for the engine in `EDOCK_ENGINE`, beside the app, in `~/.edock/bin/edock` (what `edock setup` links), and last in the checkout's `engine/target/release/edock`. Set `EDOCK_ENGINE` to have **Start** on the Engine page run your build after `edock setup`.
 
 ### Adding a command
 

@@ -62,11 +62,11 @@ With `"containers": true`, new containers also get `HTTP_PROXY`, `HTTPS_PROXY` a
 | `EDOCK_IDLE_SECS` | `60` | Seconds idle before the VM sleeps; `0` keeps it awake |
 | `EDOCK_HTTP_PORT` | `80` | The port for `http://<name>.edock.localhost` |
 | `EDOCK_HTTPS_PORT` | `443` | The port for `https://<name>.edock.local` |
-| `EDOCK_NO_FINDER` | unset | `1`: don't mount container files at `~/eDock` |
-| `EDOCK_BUILDER_IDLE_SECS` | `300` | Seconds without a build before the builder stops |
+| `EDOCK_NO_FINDER` | unset | Set (to anything): don't mount container files at `~/eDock` |
+| `EDOCK_BUILDER_IDLE_SECS` | `300` | Seconds without a build before the builder is paused |
 | `EDOCK_BUILD_CACHE_GB` | by disk size | The builder's cache limit in GB |
 | `EDOCK_GUEST_DIR` | inside the app | Where the kernel and initramfs are (development) |
-| `EDOCK_NO_BALLOON` | unset | `1`: don't give unused memory back to macOS while the VM runs |
+| `EDOCK_NO_BALLOON` | unset | Set (to anything): don't give unused memory back to macOS while the VM runs |
 
 To run the engine without touching ports 80 and 443 or Finder, for example while another tool has those ports:
 

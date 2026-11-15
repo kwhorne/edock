@@ -45,7 +45,7 @@ The agent starts eDock with `--mcp` and talks to it over stdio. When the app is 
 | `recipes_list` | The services a recipe starts | |
 | `engine_log` | eDock's engine log, or only its warnings and errors | |
 | `k8s_status`, `k8s_items` | The Kubernetes cluster, its pods and services | |
-| `container_action`, `project_action` | Start, stop, restart or remove a container or a Compose project | Yes |
+| `container_action`, `project_action` | Start, stop, restart, pause, unpause, kill or remove a container or a Compose project | Yes |
 | `image_pull` | Pull an image | Yes |
 | `project_up` | `docker compose up -d` (with `--build`) for a Compose project | Yes |
 | `volume_clone` | Copy a volume into a new one | Yes |

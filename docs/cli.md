@@ -18,7 +18,7 @@ edock compose up -d
 edock build -t app .
 ```
 
-Any docker command (`run`, `ps`, `exec`, `logs`, `stop`, `rm`, `images`, `pull`, `build`, `compose`, …) runs the docker CLI against **eDock's socket**, whatever docker context is current. It needs a `docker` CLI on PATH.
+Docker's commands for containers, images, volumes, networks, builds and Compose (`run`, `ps`, `exec`, `logs`, `stop`, `rm`, `images`, `pull`, `build`, `compose`, …) run the docker CLI against **eDock's socket**, whatever docker context is current. It uses the `docker` on PATH, else the one `edock setup` downloaded.
 
 Before it runs, `edock` checks that the engine runs the same version as itself, and says on stderr when it doesn't.
 

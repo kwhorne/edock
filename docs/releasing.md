@@ -28,6 +28,8 @@ A release is a signed, notarized `eDock-<version>-arm64.dmg` on GitHub. `scripts
 
 ## Make a release
 
+First, with eDock quit (the app is single-instance, so codegen does nothing while it runs), regenerate the bindings and commit them if they changed: `cd desktop && rata codegen`. CI's *Bindings match the commands* fails when `app/src/bindings.ts` is stale.
+
 ```sh
 EDOCK_SIGN_ID="Developer ID Application: <name> (<team-id>)" \
 EDOCK_NOTARY_PROFILE=edock-notary \
@@ -39,21 +41,21 @@ This takes about 15 minutes, most of it waiting for Apple. It:
 
 1. **Sets the version** in `desktop/elyra.toml`, `desktop/Cargo.toml` and `engine/Cargo.toml`. One number then covers the app, its About box and the engine's `/version`. Without `--version`, the script refuses to build when the three differ.
 2. **Builds the engine** (`cargo xtask host`, `cargo xtask bundle`).
-3. **Builds the app** (`npm run build`, `rata bundle`).
-4. **Puts the engine into the app:** `Contents/MacOS/edock`, plus `Contents/Resources/guest`, the kernel, initramfs and disk template. Kiri's licence goes in `Contents/Resources/engine`.
-5. **Signs:**
+3. **Regenerates `desktop/NOTICE`** (`scripts/notices.sh`, with `cargo about`): the licences of the app's Rust crates and of the JavaScript in its window. It goes into the app as `Contents/Resources/NOTICE`, with the MIT `LICENSE`, and the engine's `NOTICE` and `LICENSE` go in `Contents/Resources/engine/`.
+4. **Builds the app** (`npm run build`, `rata bundle`).
+5. **Puts the engine into the app:** `Contents/MacOS/edock`, plus `Contents/Resources/guest`, the kernel, initramfs and disk template. Kiri's licence goes in `Contents/Resources/engine`.
+6. **Signs:**
    - the engine, with the `com.apple.security.virtualization` entitlement;
    - then the app around it.
 
    Both use the hardened runtime and a secure timestamp. `rata bundle` signs with `--deep`, which would drop the engine's entitlement, so the engine is signed again on its own. The script checks the entitlement is there.
-6. **Notarizes the app** and staples its ticket, so the copy in Applications opens without a network.
-7. **Makes the update:**
+7. **Notarizes the app** and staples its ticket, so the copy in Applications opens without a network.
+8. **Makes the update:**
    - `dist/eDock-<version>-arm64.zip`, the stapled app, zipped with `--norsrc` so it stays sealed;
    - `dist/latest.json`, which names that zip with its SHA-256, the update key's signature and the notes from `EDOCK_RELEASE_NOTES`.
 
    Before any of this, the script checks that the update key matches the app's `UPDATE_KEY`, so a mismatch stops it at once rather than after 15 minutes.
-8. **Writes the kernel's source archive**, `dist/eDock-<version>-kernel-source.tar.xz`: the exact Linux release with eDock's patches applied, and its build inputs. GPL-2.0 asks that this be published beside the binaries; `KERNEL_SOURCE_OFFER.md` in the app names it. It takes about 6 minutes and is about 160 MB.
-9. **Regenerates `desktop/NOTICE`** (`scripts/notices.sh`, with `cargo about`): the licences of the app's Rust crates and of the JavaScript in its window. It goes into the app as `Contents/Resources/NOTICE`, with the MIT `LICENSE`, and the engine's `NOTICE` and `LICENSE` go in `Contents/Resources/engine/`.
+9. **Writes the kernel's source archive**, `dist/eDock-<version>-kernel-source.tar.xz`: the exact Linux release with eDock's patches applied, and its build inputs. GPL-2.0 asks that this be published beside the binaries; `KERNEL_SOURCE_OFFER.md` in the app names it. It takes about 6 minutes and is about 160 MB.
 10. **Makes the `.dmg`** (the app and a link to Applications), signs it, notarizes it, and staples it.
 11. **Checks both with `spctl`**, and writes `dist/eDock-<version>-arm64.dmg.sha256`.
 

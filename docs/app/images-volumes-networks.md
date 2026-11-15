@@ -3,7 +3,7 @@
 The lists on these three pages work the same way:
 
 - **Search** filters the rows.
-- **Headers sort**; click again to reverse.
+- **Most headers sort** (names, sizes, dates); click again to reverse.
 - **Column widths** can be dragged at a header's right edge. The app remembers them.
 - **The lists update** when the engine reports a change. A container created or removed also updates which images, volumes and networks are in use.
 

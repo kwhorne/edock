@@ -3,7 +3,7 @@
 
 [package]
 name = "edock-desktop"
-version = "0.6.4"
+version = "0.6.5"
 edition = "2021"
 description = "eDock — a tiny, fast container runtime for the desktop"
 license = "MIT"
@@ -25,3 +25,6 @@ bytes = "1"
 parking_lot = "0.12"
 dirs = "6"
 libc = "0.2"
+
+[dev-dependencies]
+tar = "0.4"

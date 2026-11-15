@@ -7,7 +7,8 @@ The app manages the containers of **one engine at a time**. That can be eDock's 
 The toolbar shows the current engine:
 
 - a green dot with its name and version while it answers;
-- *not running* when it doesn't.
+- *stopped* when eDock's engine was turned off with **Stop**;
+- *not running* when it doesn't answer.
 
 Hover the dot to see its socket, or why it didn't answer.
 
@@ -31,7 +32,7 @@ When the engine goes away or comes back, the app notices within two seconds, rec
 
 ## The Engine page
 
-**Engine**, at the bottom of the sidebar, has six tabs. **Overview** shows eDock's engine, the command line setup, notifications, the version and the contexts. **Resources**, **Network**, **Builds & import** and **USB** are for eDock's own engine. **AI agents** connects Claude, Cursor and VS Code to eDock.
+**Engine**, at the bottom of the sidebar, has six tabs. **Overview** shows eDock's engine, the command line setup, notifications, the version and the contexts. **Resources**, **Network**, **Builds & import** and **USB** are for eDock's own engine, and are greyed out while the app shows another. **AI agents** connects Claude, Cursor and VS Code to eDock.
 
 ### eDock engine
 
@@ -103,7 +104,7 @@ eDock's engine reports no memory while its VM sleeps.
 
 **Size** sets the VM's CPUs, and the most memory it may take. Memory the containers don't use goes back to macOS while the VM runs, and all of it when it sleeps, so a generous cap costs nothing until it's used.
 
-The new size applies from the VM's next start. **Restart VM** starts it now; running containers stop, and those with a restart policy come back. The size is kept in `~/.edock/vm.json`. `EDOCK_CPUS` and `EDOCK_MEMORY_MIB` override it.
+The new size applies from the VM's next start. While the VM still runs with its old size, **Restart VM** restarts it now; running containers stop, and those with a restart policy come back. The size is kept in `~/.edock/vm.json`. `EDOCK_CPUS` and `EDOCK_MEMORY_MIB` override it.
 
 ## Network
 
