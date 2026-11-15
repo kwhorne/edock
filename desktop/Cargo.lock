@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "edock-desktop"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "bollard",
  "bytes",
