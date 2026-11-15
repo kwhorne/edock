@@ -40,11 +40,20 @@
       entries = null;
     }
   }
-  // Again when the container or its state changes; not on `path`, which load sets.
+  // Another container or root (a volume cloned and opened): from its top.
+  // The same one starting or stopping: the folder again.
+  let shownFor = null;
   $effect(() => {
-    container;
+    const key = `${container}\u0000${root}`;
     running;
-    untrack(() => load(path));
+    untrack(() => {
+      if (key !== shownFor) {
+        shownFor = key;
+        path = root;
+        open = null;
+      }
+      load(path);
+    });
   });
 
   async function select(e) {
@@ -62,9 +71,25 @@
     }
   }
 
-  // A link: go where it points, a folder or a file.
+  // A path with its `.` and `..` worked out.
+  function normal(p) {
+    const out = [];
+    for (const part of p.split("/")) {
+      if (part === "" || part === ".") continue;
+      if (part === "..") out.pop();
+      else out.push(part);
+    }
+    return "/" + out.join("/");
+  }
+
+  // A link: go where it points, a folder or a file, but never above the
+  // root (a volume's link to /etc is the helper's /etc, not the volume's).
   async function follow(target) {
-    const to = target.startsWith("/") ? target : join(parent(open.path), target);
+    const to = normal(target.startsWith("/") ? (root === "/" ? target : root + target) : join(parent(open.path), target));
+    if (root !== "/" && to !== root && !to.startsWith(root + "/")) {
+      toast("That link points outside it", { variant: "error" });
+      return;
+    }
     const dir = parent(to);
     await load(dir);
     const e = entries?.find((x) => x.name === to.split("/").pop());
@@ -80,7 +105,7 @@
 
   async function remove(p) {
     if (!(await confirm(`Remove ${shown(p)}? This can't be undone.`, { danger: true, confirmLabel: "Remove" }))) return;
-    await attempt(() => api.container_file_remove(container, p), `Removed ${p}`);
+    await attempt(() => api.container_file_remove(container, p), `Removed ${shown(p)}`);
     if (open?.path === p) open = null;
     load();
   }

@@ -40,6 +40,14 @@ async fn members(ctx: &Ctx, project: &str) -> Result<Vec<(String, String, HashMa
         .collect())
 }
 
+/// One line of a service's log, its time taken off, to the merge.
+fn send(tx: &tokio::sync::mpsc::UnboundedSender<(String, LogLine)>, service: &str, stream: usize, line: &[u8]) {
+    let text = String::from_utf8_lossy(line).trim_end_matches(['\n', '\r']).to_owned();
+    let (t, rest) = split_time(&text);
+    let stream = if stream == 1 { "err" } else { "out" };
+    let _ = tx.send((t.to_owned(), LogLine { stream: stream.into(), text: rest.to_owned(), service: Some(service.to_owned()) }));
+}
+
 /// Docker's timestamp off the front of a line (`2026-11-14T21:45:22.1Z text`).
 fn split_time(line: &str) -> (&str, &str) {
     match line.split_once(' ') {
@@ -53,6 +61,7 @@ fn split_time(line: &str) -> (&str, &str) {
 /// Lines arrive on `logs:<id>` like a container's.
 #[command]
 pub async fn project_logs_follow(ctx: Ctx, project: String, tail: u32, timestamps: bool) -> Result<u32, String> {
+    let tail = tail.clamp(1, 5000);
     let members = members(&ctx, &project).await?;
     let docker = ctx.get::<Engine>().docker()?;
     let streams = ctx.get::<Streams>();
@@ -74,10 +83,13 @@ pub async fn project_logs_follow(ctx: Ctx, project: String, tail: u32, timestamp
                 partial[i].extend_from_slice(&bytes);
                 while let Some(nl) = partial[i].iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = partial[i].drain(..=nl).collect();
-                    let text = String::from_utf8_lossy(&line).trim_end_matches(['\n', '\r']).to_owned();
-                    let (t, rest) = split_time(&text);
-                    let stream = if i == 1 { "err" } else { "out" };
-                    let _ = tx.send((t.to_owned(), LogLine { stream: stream.into(), text: rest.to_owned(), service: Some(service.clone()) }));
+                    send(&tx, &service, i, &line);
+                }
+            }
+            // A last line without its newline, when the service stopped.
+            for (i, rest) in partial.iter().enumerate() {
+                if !rest.is_empty() {
+                    send(&tx, &service, i, rest);
                 }
             }
         });
@@ -200,6 +212,10 @@ fn compose_args(project: &str, labels: &HashMap<String, String>) -> Result<Vec<S
     let dir = real_folder(dir)?;
     let mut args = vec!["compose".to_string(), "--ansi".into(), "never".into(), "--progress".into(), "plain".into(), "-p".into(), project.to_owned(), "--project-directory".into(), dir.display().to_string()];
     for f in labels.get("com.docker.compose.project.config_files").map(String::as_str).unwrap_or("").split(',').map(str::trim).filter(|f| !f.is_empty()) {
+        // As the folder: absolute, never read against eDock's own folder.
+        if !Path::new(f).is_absolute() || f.contains('\0') {
+            return Err(format!("{f} isn't a Compose file eDock can use"));
+        }
         if !Path::new(f).is_file() {
             return Err(format!("{f} isn't there any more"));
         }
@@ -281,6 +297,12 @@ mod tests {
         assert!(a.windows(2).any(|w| w[0] == "-f" && w[1] == file.display().to_string()));
         let gone: HashMap<String, String> = [("com.docker.compose.project.working_dir".to_string(), "/nope/x".to_string())].into();
         assert!(compose_args("shop", &gone).is_err());
+        let relative: HashMap<String, String> = [
+            ("com.docker.compose.project.working_dir".to_string(), dir.display().to_string()),
+            ("com.docker.compose.project.config_files".to_string(), "compose.yaml".to_string()),
+        ]
+        .into();
+        assert!(compose_args("shop", &relative).is_err(), "a relative file");
         assert!(real_folder("relative").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

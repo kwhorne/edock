@@ -37,7 +37,10 @@
       if (path) navigate(path);
     });
     // An AI agent at work (MCP): said when it changes something; reading is quiet.
-    const CHANGES = new Set(["container_action", "project_action", "image_pull", "container_run", "container_exec"]);
+    const CHANGES = new Set([
+      "container_action", "project_action", "project_up", "image_pull", "container_run", "container_exec", "recipe_start",
+      "volume_clone", "container_snapshot", "volume_snapshot", "container_snapshot_restore", "volume_snapshot_restore",
+    ]);
     onAgent((a) => {
       if (a.phase === "started" && CHANGES.has(a.tool)) toast(`${a.client} runs ${a.tool.replace(/_/g, " ")}…`);
       if (a.phase === "finished" && CHANGES.has(a.tool) && a.ok === false) toast(`${a.client}: ${a.tool.replace(/_/g, " ")} failed`, { variant: "error" });

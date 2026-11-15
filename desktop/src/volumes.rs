@@ -76,6 +76,15 @@ async fn made_helper(ctx: &Ctx, volume: &str) -> Result<(String, bool), String> 
     };
     let id = docker.create_container(None::<q::CreateContainerOptions>, body).await.map_err(err)?.id;
     docker.start_container(&id, None::<q::StartContainerOptions>).await.map_err(err)?;
+    // Up, not only started: its first command answers. A view of its files
+    // asked a moment too soon saw the folder under the volume, not the volume.
+    let start = std::time::Instant::now();
+    while exec(ctx, &id, &["true"], None, None).await.is_err() {
+        if start.elapsed() > std::time::Duration::from_secs(5) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     Ok((id, true))
 }
 
@@ -150,7 +159,9 @@ async fn exec(
         a?;
         b?;
     }
-    let code = docker.inspect_exec(&ex.id).await.ok().and_then(|i| i.exit_code).unwrap_or(0);
+    // No exit code (the helper died, the engine went): a failure, never a
+    // half-written archive taken for a whole one.
+    let code = docker.inspect_exec(&ex.id).await.ok().and_then(|i| i.exit_code).unwrap_or(-1);
     if code == 0 {
         Ok(())
     } else {
@@ -175,24 +186,9 @@ pub async fn volume_clone(ctx: Ctx, source: String, target: String) -> Result<()
     // Its labels, but not Compose's: the copy isn't the project's.
     let labels: HashMap<String, String> = labels.into_iter().filter(|(k, _)| !k.starts_with("com.docker.compose.")).collect();
     docker.create_volume(bollard::models::VolumeCreateRequest { name: Some(target.clone()), labels: Some(labels), ..Default::default() }).await.map_err(err)?;
-    let (from, made_from) = made_helper(&ctx, &source).await?;
-    let to = helper(&ctx, &target).await?;
-    let dir = std::env::temp_dir().join(format!("edock-clone-{}-{}", std::process::id(), target));
-    let copied = async {
-        // Through a file on the Mac: two helpers, each with its own volume.
-        let mut tmp = tokio::fs::File::create(&dir).await.map_err(err)?;
-        exec(&ctx, &from, &["tar", "-C", MOUNT, "-cf", "-", "."], None, Some(&mut tmp)).await?;
-        tmp.flush().await.map_err(err)?;
-        let back = tokio::fs::File::open(&dir).await.map_err(err)?;
-        exec(&ctx, &to, &["tar", "-C", MOUNT, "-xpf", "-"], Some(back), None).await
-    }
-    .await;
-    let _ = tokio::fs::remove_file(&dir).await;
-    // Someone browsing the source keeps their helper.
-    if made_from {
-        let _ = volume_browse_end_inner(&ctx, &source).await;
-    }
-    let _ = volume_browse_end_inner(&ctx, &target).await;
+    // One helper with both: the bytes go from volume to volume in the VM,
+    // never through the Mac.
+    let copied = crate::snapshots::helper(&ctx, vec![format!("{source}:/from:ro"), format!("{target}:/to")], "set -o pipefail; tar -C /from -cf - . | tar -C /to -xpf -".into()).await;
     if let Err(e) = copied {
         let _ = docker.remove_volume(&target, None::<q::RemoveVolumeOptions>).await;
         return Err(format!("couldn't copy {source}: {e}"));

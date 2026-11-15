@@ -24,6 +24,15 @@ fn app() -> TestApp {
     TestApp::new(crate::core(Engine::on(context, &host)))
 }
 
+/// `image` in the engine: pulled only when it isn't there, so a run of the
+/// suite doesn't spend Docker Hub's pull quota on images it has.
+async fn ensure_image(app: &TestApp, image: &str) {
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    if docker.inspect_image(image).await.is_err() {
+        let _: () = app.invoke("image_pull", (image,)).await.unwrap();
+    }
+}
+
 /// A container of our own, removed when the test ends.
 struct Scratch {
     docker: bollard::Docker,
@@ -35,7 +44,7 @@ impl Scratch {
         use bollard::query_parameters as q;
         let docker = app.ctx().get::<Engine>().docker().unwrap();
         let _ = docker.remove_container(name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
-        let _: () = app.invoke("image_pull", ("alpine:latest",)).await.unwrap();
+        ensure_image(app, "alpine:latest").await;
         let body = bollard::models::ContainerCreateBody {
             image: Some("alpine:latest".into()),
             cmd: Some(vec!["sh".into(), "-c".into(), "i=0; while true; do echo tick $i; i=$((i+1)); sleep 0.2; done".into()]),
@@ -355,7 +364,7 @@ async fn ports_domains_and_env_on_a_running_container() {
     let docker = app.ctx().get::<Engine>().docker().unwrap();
     let name = "edock-desktop-test-ports";
     let _ = docker.remove_container(name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
-    let _: () = app.invoke("image_pull", ("nginx:alpine",)).await.unwrap();
+    ensure_image(&app, "nginx:alpine").await;
     let body = bollard::models::ContainerCreateBody { image: Some("nginx:alpine".into()), env: Some(vec!["GREETING=hello".into()]), ..Default::default() };
     let id = docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(name).build()), body).await.unwrap().id;
     docker.start_container(&id, None::<q::StartContainerOptions>).await.unwrap();
@@ -516,7 +525,7 @@ async fn an_images_layers_scan_and_sbom() {
     let _shared = ENGINE.read().await;
     let app = app();
     app.listen();
-    let _: () = app.invoke("image_pull", ("alpine:3.20",)).await.unwrap();
+    ensure_image(&app, "alpine:3.20").await;
 
     let l: ImageLayers = app.invoke("image_layers", ("alpine:3.20".to_string(),)).await.unwrap();
     assert!(l.platform.contains("arm64"), "{}", l.platform);
@@ -566,19 +575,35 @@ async fn resources_builder_import_list_and_diagnostics() {
 
     let before: VmInfo = app.invoke("vm_info", ()).await.unwrap();
     assert!(before.max_cpus >= 1 && before.max_memory_mib >= 1024 && before.cpus >= 1);
+    // The user's own size, as it was (no file: eDock's defaults): put back
+    // whatever happens below, or a failed run leaves their VM small.
+    let file = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".edock/vm.json");
+    let saved = std::fs::read(&file).ok();
     let cpus = if before.cpus > 1 { before.cpus - 1 } else { 2.min(before.max_cpus) };
-    let after: VmInfo = app.invoke("vm_set_resources", (cpus, 4096u32)).await.unwrap();
-    assert_eq!((after.cpus, after.memory_mib), (cpus, 4096));
-    assert!(app.invoke_err("vm_set_resources", (0u32, 4096u32)).await.contains("cpus"));
-    // Restart now: the VM comes back with the new size.
+    let tried = async {
+        let after: VmInfo = app.invoke("vm_set_resources", (cpus, 4096u32)).await.map_err(|e| format!("{e:?}"))?;
+        let bad = app.invoke_err("vm_set_resources", (0u32, 4096u32)).await;
+        // Restart now: the VM comes back with the new size.
+        let _: () = app.invoke("vm_restart", ()).await.map_err(|e| format!("{e:?}"))?;
+        let docker = app.ctx().get::<Engine>().docker().map_err(|e| e.to_string())?;
+        let _ = docker.info().await; // wakes it
+        let now: VmInfo = app.invoke("vm_info", ()).await.map_err(|e| format!("{e:?}"))?;
+        Ok::<_, String>((after, bad, now))
+    }
+    .await;
+    let _: Result<VmInfo, _> = app.invoke("vm_set_resources", (before.cpus, before.memory_mib)).await;
+    match &saved {
+        Some(bytes) => std::fs::write(&file, bytes).unwrap(),
+        None => {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
     let _: () = app.invoke("vm_restart", ()).await.unwrap();
-    let docker = app.ctx().get::<Engine>().docker().unwrap();
-    let _ = docker.info().await; // wakes it
-    let now: VmInfo = app.invoke("vm_info", ()).await.unwrap();
+    let (after, bad, now) = tried.unwrap();
+    assert_eq!((after.cpus, after.memory_mib), (cpus, 4096));
+    assert!(bad.contains("cpus"));
     assert!(now.awake, "the VM is up again");
     assert_eq!(now.running_cpus, cpus);
-    let _: VmInfo = app.invoke("vm_set_resources", (before.cpus, before.memory_mib)).await.unwrap();
-    let _: () = app.invoke("vm_restart", ()).await.unwrap();
 
     let b: BuilderInfo = app.invoke("builder_info", ()).await.unwrap();
     let set: BuilderInfo = app.invoke("builder_set", (Some(7u32), 420u32)).await.unwrap();
@@ -774,7 +799,6 @@ async fn a_usb_device_in_and_out() {
 #[ignore = "needs eDock's engine"]
 async fn the_http_inspector() {
     use crate::inspector::{HttpExchange, HttpLog};
-    use futures_util::StreamExt;
     use bollard::query_parameters as q;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
@@ -793,8 +817,7 @@ async fn the_http_inspector() {
         labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
         ..Default::default()
     };
-    let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image("nginx").tag("alpine").build()), None, None);
-    while pull.next().await.is_some() {}
+    ensure_image(&app, "nginx:alpine").await;
     docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await.unwrap();
     docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
 
@@ -852,14 +875,12 @@ async fn the_http_inspector() {
 async fn snapshots_of_a_container_and_a_volume() {
     use crate::snapshots::{Restored, Snapshot};
     use bollard::query_parameters as q;
-    use futures_util::StreamExt;
     let _alone = ENGINE.read().await;
     let app = app();
     let docker = app.ctx().get::<Engine>().docker().unwrap();
     let tag = std::process::id();
     let (name, vol) = (format!("edock-test-snap-{tag}"), format!("edock-test-snapvol-{tag}"));
-    let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image("alpine").tag("latest").build()), None, None);
-    while pull.next().await.is_some() {}
+    ensure_image(&app, "alpine:latest").await;
     let labels: std::collections::HashMap<String, String> = [("app.edock.test".to_string(), "1".to_string())].into();
     docker.create_volume(bollard::models::VolumeCreateRequest { name: Some(vol.clone()), labels: Some(labels.clone()), ..Default::default() }).await.unwrap();
     let body = bollard::models::ContainerCreateBody {
@@ -921,13 +942,11 @@ async fn a_containers_files() {
     use crate::files::{FileEntry, FilePreview};
     use bollard::query_parameters as q;
     use elyra::files::ChosenFile;
-    use futures_util::StreamExt;
     let _alone = ENGINE.read().await;
     let app = app();
     let docker = app.ctx().get::<Engine>().docker().unwrap();
     let name = format!("edock-test-files-{}", std::process::id());
-    let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image("nginx").tag("alpine").build()), None, None);
-    while pull.next().await.is_some() {}
+    ensure_image(&app, "nginx:alpine").await;
     let body = bollard::models::ContainerCreateBody {
         image: Some("nginx:alpine".into()),
         labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
@@ -1017,24 +1036,51 @@ async fn recipes_start_services() {
         }
     };
 
-    let redis: Started = app.invoke("recipe_start", ("redis".to_string(), Some(format!("edock-test-redis-{tag}")))).await.unwrap();
+    let redis: Started = app.invoke("recipe_start", ("redis".to_string(), Some(format!("edock-test-redis-{tag}")), None::<String>)).await.unwrap();
     assert_eq!(redis.connect, format!("redis://localhost:{}", redis.port));
     wait_for(redis.port, b"PING\r\n", "+PONG").await;
     let info = docker.inspect_container(&redis.container, None::<q::InspectContainerOptions>).await.unwrap();
     assert_eq!(info.host_config.and_then(|h| h.restart_policy).and_then(|r| r.name).map(|n| n.to_string()), Some("unless-stopped".into()));
 
     // The same name again: the next one.
-    let again: Started = app.invoke("recipe_start", ("redis".to_string(), Some(format!("edock-test-redis-{tag}")))).await.unwrap();
+    let again: Started = app.invoke("recipe_start", ("redis".to_string(), Some(format!("edock-test-redis-{tag}")), None::<String>)).await.unwrap();
     assert_eq!(again.container, format!("edock-test-redis-{tag}-2"));
     assert_ne!(again.port, redis.port);
 
-    let mail: Started = app.invoke("recipe_start", ("mailpit".to_string(), Some(format!("edock-test-mail-{tag}")))).await.unwrap();
+    let mail: Started = app.invoke("recipe_start", ("mailpit".to_string(), Some(format!("edock-test-mail-{tag}")), None::<String>)).await.unwrap();
     let ui: u16 = mail.ui.as_deref().and_then(|u| u.rsplit(':').next()).and_then(|p| p.parse().ok()).unwrap();
     wait_for(ui, b"GET / HTTP/1.0\r\n\r\n", "200 OK").await;
     wait_for(mail.port, b"", "220").await;
 
-    assert!(app.invoke::<Started>("recipe_start", ("nope".to_string(), None::<String>)).await.is_err());
-    for c in [&redis.container, &again.container, &mail.container] {
+    // ElyraSQL: MySQL's greeting, with its own version in it, on 3307 (or the next free).
+    let esql: Started = app.invoke("recipe_start", ("elyrasql".to_string(), Some(format!("edock-test-esql-{tag}")), None::<String>)).await.unwrap();
+    assert_eq!(esql.connect, format!("mysql://root:elyrasql@localhost:{}/elyra", esql.port));
+    wait_for(esql.port, b"", "ElyraSQL").await;
+
+    // SQL Anywhere: sqld's health and version over HTTP.
+    let sqla: Started = app.invoke("recipe_start", ("sqlanywhere".to_string(), Some(format!("edock-test-sqla-{tag}")), None::<String>)).await.unwrap();
+    assert_eq!(sqla.connect, format!("http://localhost:{}", sqla.port));
+    wait_for(sqla.port, b"GET /version HTTP/1.0\r\n\r\n", "sqld 0.11").await;
+
+    // Askr: a PHP folder from the Mac, served and written as the Mac user,
+    // named after the folder.
+    let dir = std::env::temp_dir().join(format!("edock-test-askr-{tag}"));
+    std::fs::create_dir_all(dir.join("public")).unwrap();
+    std::fs::write(dir.join("public/index.php"), "<?php file_put_contents(__DIR__.'/../written.txt', 'ok'); echo 'askr-says-hi uid=', getmyuid();").unwrap();
+    assert!(app.invoke::<Started>("recipe_start", ("askr".to_string(), None::<String>, None::<String>)).await.is_err(), "it needs a folder");
+    let askr: Started = app.invoke("recipe_start", ("askr".to_string(), None::<String>, Some(dir.display().to_string()))).await.unwrap();
+    assert_eq!(askr.container, format!("edock-test-askr-{tag}"));
+    // SAFETY: getuid cannot fail.
+    let uid = unsafe { libc::getuid() };
+    wait_for(askr.port, b"GET / HTTP/1.0\r\n\r\n", "askr-says-hi").await;
+    wait_for(askr.port, b"GET / HTTP/1.0\r\n\r\n", Box::leak(format!("uid={uid}").into_boxed_str())).await;
+    assert_eq!(std::fs::read_to_string(dir.join("written.txt")).unwrap(), "ok");
+    let info = docker.inspect_container(&askr.container, None::<q::InspectContainerOptions>).await.unwrap();
+    assert_eq!(info.config.and_then(|c| c.labels).and_then(|l| l.get("app.edock.http.port").cloned()).as_deref(), Some("8080"));
+
+    assert!(app.invoke::<Started>("recipe_start", ("nope".to_string(), None::<String>, None::<String>)).await.is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+    for c in [&redis.container, &again.container, &mail.container, &esql.container, &sqla.container, &askr.container] {
         let _ = docker.remove_container(c, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
         let _ = docker.remove_volume(&format!("{c}-data"), None::<q::RemoveVolumeOptions>).await;
     }
@@ -1162,6 +1208,9 @@ async fn a_volume_browsed_cloned_exported_imported() {
     assert_eq!(helper, again, "one helper per volume");
     let rows: Vec<crate::resources::ContainerRow> = app.invoke("containers_list", (false,)).await.unwrap();
     assert_eq!(rows.iter().find(|c| c.id == helper).and_then(|c| c.system.clone()).as_deref(), Some("helper"));
+    // The volume's own top (where a volume is mounted, not the empty folder under it).
+    let top: Vec<FileEntry> = app.invoke("container_files", (helper.clone(), "/v".to_string())).await.unwrap();
+    assert_eq!(top.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["sub"], "the volume at /v");
     let list: Vec<FileEntry> = app.invoke("container_files", (helper.clone(), "/v/sub".to_string())).await.unwrap();
     assert_eq!(list.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["a.txt"]);
     let p: FilePreview = app.invoke("container_file_preview", (helper.clone(), "/v/sub/a.txt".to_string())).await.unwrap();

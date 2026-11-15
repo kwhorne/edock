@@ -531,6 +531,8 @@ export type RecipeRow = {
 	title: string,
 	about: string,
 	image: string,
+	/**  It serves a folder from the Mac, which `recipe_start` needs. */
+	needs_folder: boolean,
 };
 
 export type Restored = {
@@ -1329,16 +1331,20 @@ export const api = {
    * Start a recipe's service (see `recipes_list`): pulls its image if
    * needed, keeps its data in the volume `<name>-data`, publishes its port on
    * the Mac's loopback (the usual one, or the next free one) and restarts it
-   * with the engine. Returns how to connect. `name` defaults to the recipe's id.
+   * with the engine. Returns how to connect. `name` defaults to the recipe's
+   * id (to the folder's name for one that serves a folder). `folder`: the Mac
+   * folder an app server serves (Askr), required for those.
    *
    * @remarks Needs `edock.manage`.
    */
-  recipe_start(recipe: string, name: string | null): Promise<Started> {
-    return invoke("recipe_start", recipe, name);
+  recipe_start(recipe: string, name: string | null, folder: string | null): Promise<Started> {
+    return invoke("recipe_start", recipe, name, folder);
   },
   /**
-   * The services a recipe starts: PostgreSQL, MySQL, MariaDB, Redis,
-   * MongoDB, RabbitMQ, Mailpit (a mail catcher) and MinIO (S3).
+   * The services a recipe starts: PostgreSQL, MySQL, MariaDB, ElyraSQL
+   * (MySQL-compatible, with vector search), SQL Anywhere (SQLite over HTTP),
+   * Askr (a PHP app server for a folder on the Mac), Redis, MongoDB, RabbitMQ,
+   * Mailpit (a mail catcher) and MinIO (S3).
    *
    * @remarks Needs `edock.view`.
    */

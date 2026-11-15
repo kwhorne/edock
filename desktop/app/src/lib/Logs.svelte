@@ -23,6 +23,7 @@
   async function start() {
     stop();
     lines = [];
+    hidden = {};
     ended = false;
     const mine = ++seq;
     const id = open ? await open(500, timestamps) : await api.logs_follow(container, 500, timestamps);
@@ -100,6 +101,8 @@
     {/each}
     {#if lines.length === 0}
       <div class="muted">{ended ? "No output." : "Waiting for output…"}</div>
+    {:else if shown.length === 0}
+      <div class="muted">No lines match{Object.values(hidden).some(Boolean) ? " (some services are hidden)" : ""}.</div>
     {/if}
   </div>
   {#if !follow}

@@ -92,7 +92,8 @@ pub async fn container_run(ctx: Ctx, image: String, command: String, network: Op
     let body = bollard::models::ContainerCreateBody {
         image: Some(image.clone()),
         cmd: Some(vec!["/bin/sh".into(), "-c".into(), command]),
-        labels: Some([("app.edock.agent-run".to_string(), "1".to_string())].into()),
+        // eDock's own: out of the list, the menu bar's count and the alerts.
+        labels: Some([("app.edock.agent-run".to_string(), "1".to_string()), ("app.edock.helper".to_string(), "agent-run".to_string())].into()),
         host_config: Some(bollard::models::HostConfig {
             network_mode: Some(if network.unwrap_or(false) { "bridge" } else { "none" }.into()),
             ..Default::default()

@@ -2,7 +2,6 @@
 <script>
   import { confirm, dialog, navigate, prompt, toast } from "@elyra/runtime";
   import { Badge, Button, Callout, Skeleton } from "@elyra/ui";
-  import { onDestroy } from "svelte";
   import { api } from "../bindings";
   import Files from "../lib/Files.svelte";
   import Icon from "../lib/Icon.svelte";
@@ -15,18 +14,23 @@
   let helper = $state(null);
   let error = $state(null);
 
+  // A helper while the page shows this volume. Left before it was ready
+  // (Back while the VM wakes): it goes as soon as it's there.
   $effect(() => {
     const n = name;
+    let left = false;
     api.volumes_list().then((all) => (info = all.find((v) => v.name === n) ?? null));
     helper = null;
     error = null;
     api
       .volume_browse(n)
-      .then((id) => (helper = id))
-      .catch((e) => (error = e?.message ?? String(e)));
-    return () => api.volume_browse_end(n).catch(() => {});
+      .then((id) => (left ? api.volume_browse_end(n).catch(() => {}) : (helper = id)))
+      .catch((e) => !left && (error = e?.message ?? String(e)));
+    return () => {
+      left = true;
+      api.volume_browse_end(n).catch(() => {});
+    };
   });
-  onDestroy(() => api.volume_browse_end(name).catch(() => {}));
 
   async function snapshot() {
     const note = await prompt(`Snapshot ${name}'s files. A note, if you like:`, { placeholder: "before the migration", confirmLabel: "Take snapshot" });

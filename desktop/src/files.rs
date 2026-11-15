@@ -21,6 +21,8 @@ use crate::engine::{Engine, EDOCK};
 
 /// How much of a file a preview shows.
 const PREVIEW: usize = 256 * 1024;
+/// The largest long-name or pax header read (they're a path and a few keys).
+const MAX_EXTRA_HEADER: u64 = 1024 * 1024;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -99,7 +101,7 @@ async fn exec(ctx: &Ctx, container: &str, cmd: Vec<String>) -> Result<String, St
             }
         }
     }
-    let code = docker.inspect_exec(&ex.id).await.ok().and_then(|i| i.exit_code).unwrap_or(0);
+    let code = docker.inspect_exec(&ex.id).await.ok().and_then(|i| i.exit_code).unwrap_or(-1);
     if code != 0 && out.trim().is_empty() {
         let e = errs.trim();
         return Err(if e.contains("executable file not found") || e.contains("no such file or directory") && e.contains("exec") {
@@ -119,6 +121,14 @@ async fn exec(ctx: &Ctx, container: &str, cmd: Vec<String>) -> Result<String, St
 pub async fn container_files(ctx: Ctx, container: String, path: String) -> Result<Vec<FileEntry>, String> {
     let path = valid_path(&path)?;
     if ctx.get::<Engine>().context().0 == EDOCK {
+        // The engine reads the image's layers: at or under a mount (a
+        // volume, a bind mount, a tmpfs) it would show the folder under it.
+        // There, the container's own `find` looks, when it has one.
+        if under_a_mount(&ctx, &container, path).await {
+            if let Ok(list) = by_find(&ctx, &container, path).await {
+                return Ok(list);
+            }
+        }
         let from_engine = match crate::daemon::engine_request("GET", &format!("/edock/containers/{}/files?path={}", enc(&container), enc(path))).await {
             Some((200, v)) => serde_json::from_value::<Vec<serde_json::Value>>(v).map_err(err).map(|list| {
                 list.iter()
@@ -149,6 +159,19 @@ pub async fn container_files(ctx: Ctx, container: String, path: String) -> Resul
         return Err("Start the container to browse its files".into());
     }
     by_find(&ctx, &container, path).await
+}
+
+/// Whether `path` is a mount point in the container, or under one.
+async fn under_a_mount(ctx: &Ctx, container: &str, path: &str) -> bool {
+    let Ok(docker) = ctx.get::<Engine>().docker() else { return false };
+    let Ok(info) = docker.inspect_container(container, None::<q::InspectContainerOptions>).await else { return false };
+    let path = path.trim_end_matches('/');
+    info.mounts.unwrap_or_default().iter().filter_map(|m| m.destination.as_deref()).chain(
+        info.host_config.as_ref().and_then(|h| h.tmpfs.as_ref()).into_iter().flat_map(|t| t.keys().map(String::as_str)),
+    ).any(|d| {
+        let d = d.trim_end_matches('/');
+        !d.is_empty() && (path == d || path.starts_with(&format!("{d}/")))
+    })
 }
 
 /// A folder's entries from `find` and `stat` in the running container.
@@ -222,6 +245,8 @@ impl<S: futures_util::Stream<Item = Result<Bytes, bollard::errors::Error>> + Unp
             let size = octal(&h[124..136]);
             let padded = size.div_ceil(512) * 512;
             match h[156] {
+                // A long name or pax header is small: a huge one isn't read into memory.
+                b'L' | b'x' | b'g' if padded > MAX_EXTRA_HEADER => return Err("The archive has a header too big to read".into()),
                 b'L' | b'x' | b'g' => {
                     self.fill(padded as usize).await?;
                     let data = self.take(padded as usize);

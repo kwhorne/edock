@@ -45,6 +45,11 @@ pub fn from_event(v: &Value) -> Option<Alert> {
     }
     let id = v["Actor"]["ID"].as_str()?.to_owned();
     let name = attrs["name"].as_str().map_or_else(|| id.chars().take(12).collect(), str::to_owned);
+    // BuildKit's container is the builder's, not the user's (a big build
+    // running out of memory says so in the build).
+    if name.starts_with("buildx_buildkit_") {
+        return None;
+    }
     Some(Alert { id, name, what })
 }
 
@@ -115,6 +120,8 @@ mod tests {
         assert!(from_event(&ev("health_status: healthy", json!({"name": "api"}))).is_none());
         assert!(from_event(&ev("die", json!({"name": "api", "exitCode": "137"}))).is_none());
         assert!(from_event(&ev("oom", json!({"name": "k", "app.edock.k8s": "1"}))).is_none(), "eDock's own");
+        assert!(from_event(&ev("oom", json!({"name": "buildx_buildkit_edock-build0"}))).is_none(), "BuildKit");
+        assert!(from_event(&ev("oom", json!({"name": "x", "app.edock.helper": "agent-run"}))).is_none(), "a helper");
         assert!(from_event(&json!({"Type": "image", "Action": "oom"})).is_none());
     }
 

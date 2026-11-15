@@ -9,7 +9,8 @@
 //!   Volumes aren't part of it: they're snapshotted on their own.
 //! - A volume's snapshot is a `.tar.gz` of its files, owners kept, in
 //!   `~/.edock/snapshots/volumes/<volume>/` on the Mac, written and read by
-//!   a short-lived helper container.
+//!   a short-lived helper container. Each engine (context) has its own
+//!   folder of them there.
 
 use std::path::PathBuf;
 
@@ -66,8 +67,33 @@ fn valid_file(file: &str) -> Result<&str, String> {
     if ok { Ok(file) } else { Err("That isn't a snapshot".into()) }
 }
 
-fn volumes_dir() -> Result<PathBuf, String> {
-    Ok(dirs::home_dir().ok_or("HOME is not set")?.join(".edock/snapshots/volumes"))
+/// Where the engine the app shows keeps its volume snapshots:
+/// `~/.edock/snapshots/volumes/<context>/`, since a `postgres` volume on
+/// OrbStack isn't the one on eDock. The first snapshots (eDock 0.5.0, one
+/// folder for all) were eDock's: moved into `edock/` the first time.
+fn volumes_dir(ctx: &Ctx) -> Result<PathBuf, String> {
+    let base = dirs::home_dir().ok_or("HOME is not set")?.join(".edock/snapshots/volumes");
+    let context = ctx.get::<Engine>().context().0;
+    let context: String = context.chars().map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' }).collect();
+    let mine = base.join(if context.is_empty() || context.starts_with('.') { "_".into() } else { context });
+    migrate(&base);
+    Ok(mine)
+}
+
+/// A volume's folder of snapshots straight under `base` is 0.5.0's: it
+/// moves to `base/edock/`. A context's folder holds folders, not archives.
+fn migrate(base: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(base) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        let old = std::fs::read_dir(&path).map(|f| f.flatten().any(|f| valid_file(&f.file_name().to_string_lossy()).is_ok())).unwrap_or(false);
+        if old {
+            let to = base.join(crate::engine::EDOCK).join(e.file_name());
+            if std::fs::create_dir_all(base.join(crate::engine::EDOCK)).is_ok() && !to.exists() {
+                let _ = std::fs::rename(&path, &to);
+            }
+        }
+    }
 }
 
 fn changed(ctx: &Ctx, kind: &str) {
@@ -110,7 +136,7 @@ pub async fn snapshots_list(ctx: Ctx) -> Result<Vec<Snapshot>, String> {
             });
         }
     }
-    if let Ok(dir) = volumes_dir() {
+    if let Ok(dir) = volumes_dir(&ctx) {
         if let Ok(mut vols) = tokio::fs::read_dir(&dir).await {
             while let Ok(Some(v)) = vols.next_entry().await {
                 let volume = v.file_name().to_string_lossy().into_owned();
@@ -266,8 +292,10 @@ pub async fn container_snapshot_restore(ctx: Ctx, image: String) -> Result<Resto
     Ok(Restored { container: name, previous: Some(previous) })
 }
 
-/// Runs the helper with `mounts` and a shell `script`, and waits for it.
-async fn helper(ctx: &Ctx, mounts: Vec<String>, script: String) -> Result<(), String> {
+/// Runs a short-lived helper (alpine, no network) with `mounts` and a shell
+/// `script`, waits for it, and removes it; its last error line when it
+/// fails. Volume snapshots and clones use it.
+pub(crate) async fn helper(ctx: &Ctx, mounts: Vec<String>, script: String) -> Result<(), String> {
     let docker = ctx.get::<Engine>().docker()?;
     if docker.inspect_image(HELPER).await.is_err() {
         let mut pull = docker.create_image(Some(q::CreateImageOptionsBuilder::default().from_image("alpine").tag("latest").build()), None, None);
@@ -278,7 +306,7 @@ async fn helper(ctx: &Ctx, mounts: Vec<String>, script: String) -> Result<(), St
     let body = bollard::models::ContainerCreateBody {
         image: Some(HELPER.into()),
         cmd: Some(vec!["sh".into(), "-c".into(), script]),
-        labels: Some([("app.edock.helper".to_string(), "snapshot".to_string())].into()),
+        labels: Some([("app.edock.helper".to_string(), "task".to_string())].into()),
         host_config: Some(bollard::models::HostConfig { binds: Some(mounts), network_mode: Some("none".into()), ..Default::default() }),
         ..Default::default()
     };
@@ -311,7 +339,7 @@ pub async fn volume_snapshot(ctx: Ctx, volume: String, note: Option<String>) -> 
     let volume = valid_volume(&volume)?.to_owned();
     let docker = ctx.get::<Engine>().docker()?;
     docker.inspect_volume(&volume).await.map_err(|_| format!("There's no volume {volume}"))?;
-    let dir = volumes_dir()?.join(&volume);
+    let dir = volumes_dir(&ctx)?.join(&volume);
     tokio::fs::create_dir_all(&dir).await.map_err(err)?;
     let file = format!("{}.tar.gz", stamp());
     helper(
@@ -337,7 +365,7 @@ pub async fn volume_snapshot(ctx: Ctx, volume: String, note: Option<String>) -> 
 pub async fn volume_snapshot_restore(ctx: Ctx, volume: String, file: String) -> Result<(), String> {
     let volume = valid_volume(&volume)?.to_owned();
     let file = valid_file(&file)?.to_owned();
-    let dir = volumes_dir()?.join(&volume);
+    let dir = volumes_dir(&ctx)?.join(&volume);
     if !dir.join(&file).is_file() {
         return Err("That snapshot isn't there any more".into());
     }
@@ -376,7 +404,7 @@ pub async fn snapshot_delete(ctx: Ctx, kind: String, of: String, id: String) -> 
             changed(&ctx, "image");
         }
         "volume" => {
-            let dir = volumes_dir()?.join(valid_volume(&of)?);
+            let dir = volumes_dir(&ctx)?.join(valid_volume(&of)?);
             let file = valid_file(&id)?;
             tokio::fs::remove_file(dir.join(file)).await.map_err(err)?;
             let _ = tokio::fs::remove_file(dir.join(format!("{}.note", file.trim_end_matches(".tar.gz")))).await;
@@ -391,6 +419,21 @@ pub async fn snapshot_delete(ctx: Ctx, kind: String, of: String, id: String) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_first_snapshots_move_into_edocks_folder() {
+        let base = std::env::temp_dir().join(format!("edock-snapmig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("pgdata")).unwrap();
+        std::fs::write(base.join("pgdata/20261114-221503.tar.gz"), "x").unwrap();
+        std::fs::create_dir_all(base.join("orbstack/redis")).unwrap();
+        std::fs::write(base.join("orbstack/redis/20261114-221503.tar.gz"), "x").unwrap();
+        super::migrate(&base);
+        assert!(base.join("edock/pgdata/20261114-221503.tar.gz").is_file());
+        assert!(!base.join("pgdata").exists());
+        assert!(base.join("orbstack/redis/20261114-221503.tar.gz").is_file(), "a context's folder stays");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn names_become_safe_repositories_and_files() {
         assert_eq!(super::repo_part("My_App.web-1"), "my_app.web-1");
