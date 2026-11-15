@@ -448,7 +448,7 @@ fn image_layers_live() {
     println!("{}", serde_json::to_string_pretty(&image_layers(&name).unwrap()).unwrap());
 }
 
-/// `edock builds [list] | show BUILDER ID | rm BUILDER ID`: the build
+/// `edock builds [list] | show BUILDER ID | layers BUILDER ID | rm BUILDER ID`: the build
 /// history as JSON, for the app's Builds view (and scripts).
 pub fn run(args: &[String]) -> io::Result<()> {
     let out = match args.first().map(String::as_str) {
@@ -457,6 +457,11 @@ pub fn run(args: &[String]) -> io::Result<()> {
             (Some(b), Some(id)) => serde_json::to_string(&detail(b, id)?),
             _ => return Err(io::Error::other("usage: edock builds show BUILDER ID")),
         },
+        // The image a build made: its size, its ID and each layer's.
+        Some("layers") => match (args.get(1), args.get(2)) {
+            (Some(b), Some(id)) => serde_json::to_string(&layers(b, id)?),
+            _ => return Err(io::Error::other("usage: edock builds layers BUILDER ID")),
+        },
         Some("rm") => match (args.get(1), args.get(2)) {
             (Some(b), Some(id)) => {
                 remove(b, id)?;
@@ -464,7 +469,7 @@ pub fn run(args: &[String]) -> io::Result<()> {
             }
             _ => return Err(io::Error::other("usage: edock builds rm BUILDER ID")),
         },
-        _ => return Err(io::Error::other("usage: edock builds [list] | show BUILDER ID | rm BUILDER ID")),
+        _ => return Err(io::Error::other("usage: edock builds [list] | show BUILDER ID | layers BUILDER ID | rm BUILDER ID")),
     };
     println!("{}", out.map_err(io::Error::other)?);
     Ok(())

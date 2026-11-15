@@ -88,11 +88,11 @@ usage: edock COMMAND          docker's commands, on eDock: edock run, ps, exec,
                              logs, stop, rm, images, pull, build, compose…
        edock daemon
        edock setup [--use] [--no-agent] | edock setup --uninstall
-       edock build-with [docker|edock]   which builder docker build uses
+       edock build-with [docker|edock] [--json]   which builder docker build uses
        edock diag logs [-f] [--engine|--cli] [--errors] [-n N]
        edock diag report [--out PATH]   (a local file, tokens taken out)
        edock k8s start [--use] | stop | status | delete | set [--lan on|off] [--tls-san NAME,…] [--port N]
-       edock builds [list] | show BUILDER ID | rm BUILDER ID   build history, as JSON
+       edock builds [list] | show|layers|rm BUILDER ID   build history, as JSON
        edock tls status | trust | untrust   HTTPS for *.edock.local(host) in browsers
        edock usb [list] | attach DEVICE | detach DEVICE   USB devices for containers, beta (Mac: pass through to the VM)
        edock machine create NAME [--distro D] | list | shell NAME | stop | delete NAME

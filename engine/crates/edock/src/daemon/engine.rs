@@ -1261,6 +1261,10 @@ impl Engine {
                 }
                 drop(st);
                 if let Some((image, attrs)) = actor {
+                    // As Docker: `oom` first, when the kernel killed it for memory.
+                    if oom {
+                        self.emit_container_with("oom", id, &image, attrs.clone(), &[]);
+                    }
                     self.emit_container_with("die", id, &image, attrs.clone(), &[("exitCode", code.to_string())]);
                     if remove {
                         self.emit_container_with("destroy", id, &image, attrs, &[]);

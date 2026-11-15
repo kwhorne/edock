@@ -45,7 +45,7 @@ pub fn run(args: &[String]) -> io::Result<()> {
         Some("create") => {
             need_name()?;
             let pick = args.iter().position(|a| a == "--distro" || a == "--image").and_then(|i| args.get(i + 1)).map_or("ubuntu", String::as_str);
-            create(name, pick, args.iter().any(|a| a == "--systemd"))
+            create(name, pick, args.iter().any(|a| a == "--systemd"), args.iter().any(|a| a == "--ssh-agent"))
         }
         Some("list" | "ls") => list(),
         Some("shell") => {
@@ -65,7 +65,7 @@ pub fn run(args: &[String]) -> io::Result<()> {
             Ok(())
         }
         _ => Err(io::Error::other(
-            "usage: edock machine create NAME [--distro ubuntu|debian|alpine|fedora|arch|rocky|opensuse | --image IMAGE] [--systemd]\n       edock machine list | shell NAME [-- CMD...] | start | stop | restart | delete NAME",
+            "usage: edock machine create NAME [--distro ubuntu|debian|alpine|fedora|arch|rocky|opensuse | --image IMAGE] [--systemd] [--ssh-agent]\n       edock machine list | shell NAME [-- CMD...] | start | stop | restart | delete NAME",
         )),
     }
 }
@@ -88,7 +88,11 @@ fn home(user: &str) -> String {
     if user == "root" { "/root".to_owned() } else { format!("{HOMES}/{user}") }
 }
 
-fn create(name: &str, pick: &str, systemd: bool) -> io::Result<()> {
+/// Where a machine reaches the Mac's SSH agent: the engine relays it there
+/// (Docker Desktop's and OrbStack's path for it).
+const SSH_AGENT: &str = "/run/host-services/ssh-auth.sock";
+
+fn create(name: &str, pick: &str, systemd: bool, ssh_agent: bool) -> io::Result<()> {
     if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') || name.starts_with('-') {
         return Err(io::Error::other("a machine name is letters, digits and dashes"));
     }
@@ -117,8 +121,10 @@ if ! id -u {user} >/dev/null 2>&1; then
 fi
 mkdir -p /etc/sudoers.d && echo '{user} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/edock && chmod 440 /etc/sudoers.d/edock
 # Slim images have no sudo: fetch it once, in the background.
-command -v sudo >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sudo || apk add -q sudo || dnf -y -q install sudo || pacman -Sy --noconfirm sudo || zypper -n -q in sudo) >/dev/null 2>&1 &
+{ssh}command -v sudo >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sudo || apk add -q sudo || dnf -y -q install sudo || pacman -Sy --noconfirm sudo || zypper -n -q in sudo) >/dev/null 2>&1 &
 {tail}"#,
+        // The Mac's SSH agent for login shells too (sudo -i, a new session).
+        ssh = if ssh_agent { format!("mkdir -p /etc/profile.d && echo 'export SSH_AUTH_SOCK={SSH_AGENT}' > /etc/profile.d/edock-ssh-agent.sh\n") } else { String::new() },
         tail = if systemd {
             // A full init: systemd as PID 1 (installed first if the image lacks it).
             "wait\nfor i in /lib/systemd/systemd /usr/lib/systemd/systemd; do [ -x $i ] && exec $i; done\n(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq systemd systemd-sysv dbus || dnf -y -q install systemd || pacman -Sy --noconfirm systemd || zypper -n -q in systemd) >/dev/null 2>&1\nfor i in /lib/systemd/systemd /usr/lib/systemd/systemd; do [ -x $i ] && exec $i; done\necho 'no systemd for this distro' >&2; exit 1"
@@ -137,11 +143,17 @@ command -v sudo >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=nonint
             "CapAdd": ["NET_ADMIN", "SYS_PTRACE"],
         },
     });
+    if ssh_agent {
+        body["HostConfig"]["Binds"].as_array_mut().expect("binds").push(format!("{SSH_AGENT}:{SSH_AGENT}").into());
+        body["Env"] = json!([format!("SSH_AUTH_SOCK={SSH_AGENT}")]);
+    }
     if systemd {
         // systemd needs its own cgroup tree, tmpfs /run and /tmp, and stops
         // on SIGRTMIN+3.
         body["StopSignal"] = "SIGRTMIN+3".into();
-        body["Env"] = json!(["container=docker"]);
+        let mut env = vec![json!("container=docker")];
+        env.extend(body["Env"].as_array().cloned().unwrap_or_default());
+        body["Env"] = env.into();
         body["HostConfig"]["Privileged"] = true.into();
         body["HostConfig"]["Tmpfs"] = json!({"/run": "", "/run/lock": "", "/tmp": ""});
     }

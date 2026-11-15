@@ -422,6 +422,9 @@ pub fn ask() -> Option<&'static str> {
 pub fn cli(args: &[String]) -> io::Result<()> {
     let p = places()?;
     let other = other_engine();
+    // `--json`: the status as the window reads it, after any switch.
+    let as_json = args.iter().any(|a| a == "--json");
+    let args: Vec<&String> = args.iter().filter(|a| *a != "--json").collect();
     if let Some(a) = args.first() {
         let with = With::parse(a).ok_or_else(|| io::Error::other("usage: edock build-with [docker|edock]"))?;
         p.choose(with)?;
@@ -430,6 +433,10 @@ pub fn cli(args: &[String]) -> io::Result<()> {
         }
     }
     let s = p.status(other);
+    if as_json {
+        println!("{s}");
+        return Ok(());
+    }
     let builder = &p.builder;
     match (s["with"].as_str(), other) {
         (Some("edock"), _) if !p.ready() => println!("docker build builds on eDock once its builder `{builder}` is made (the window or `edock setup` makes it while eDock runs)"),
