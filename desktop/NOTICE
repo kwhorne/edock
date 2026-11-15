@@ -6358,7 +6358,7 @@ Used by:
 - elyra-macros 0.46.0 (https://github.com/kwhorne/elyra-framework)
 - elyra 0.46.0 (https://github.com/kwhorne/elyra-framework)
 - substrate-core 0.46.0 (https://github.com/kwhorne/elyra-framework)
-- edock-desktop 0.5.0
+- edock-desktop 0.6.0
 - block2 0.6.2 (https://github.com/madsmtm/objc2)
 - dpi 0.1.2 (https://github.com/rust-windowing/winit)
 - objc2-encode 4.1.0 (https://github.com/madsmtm/objc2)
