@@ -150,6 +150,67 @@ pub fn get(path: &str) -> io::Result<Value> {
     Ok(r.json())
 }
 
+/// A GET whose body (any size: `docker save`'s archive) is written to
+/// `out` as it arrives. Errors with the daemon's message on a failure.
+pub fn download(path: &str, out: &mut impl Write) -> io::Result<u64> {
+    let mut s = connect(Some(Duration::from_secs(120)))?;
+    write!(s, "GET {path} HTTP/1.1\r\nHost: edock\r\nConnection: close\r\n\r\n")?;
+    let mut r = BufReader::new(s);
+    let (status, len, chunked) = head(&mut r)?;
+    if !(200..300).contains(&status) {
+        let mut body = Vec::new();
+        r.read_to_end(&mut body)?;
+        return Err(io::Error::other(Response { status, body }.error()));
+    }
+    let mut n = 0u64;
+    if chunked {
+        while let Some(c) = chunk(&mut r)? {
+            out.write_all(&c)?;
+            n += c.len() as u64;
+        }
+    } else if let Some(len) = len {
+        n = io::copy(&mut (&mut r).take(len as u64), out)?;
+    } else {
+        n = io::copy(&mut r, out)?;
+    }
+    Ok(n)
+}
+
+/// Puts one file into a container at `dir`, named `name`, through the
+/// archive API (`docker cp`), streamed from disk.
+pub fn put_file(container: &str, dir: &str, name: &str, file: &std::path::Path) -> io::Result<()> {
+    let size = std::fs::metadata(file)?.len();
+    // One header, the file padded to 512, and the two empty blocks that end a tar.
+    let len = 512 + size.div_ceil(512) * 512 + 1024;
+    let mut s = connect(Some(Duration::from_secs(600)))?;
+    write!(s, "PUT /containers/{container}/archive?path={dir} HTTP/1.1\r\nHost: edock\r\nConnection: close\r\nContent-Type: application/x-tar\r\nContent-Length: {len}\r\n\r\n")?;
+    one_file_tar(&mut s, name, size, std::fs::File::open(file)?)?;
+    let mut r = BufReader::new(s);
+    let (status, _, _) = head(&mut r)?;
+    if !(200..300).contains(&status) {
+        let mut body = Vec::new();
+        let _ = r.read_to_end(&mut body);
+        return Err(io::Error::other(Response { status, body }.error()));
+    }
+    Ok(())
+}
+
+/// A tar of one file, `size` bytes from `data`, named `name`.
+fn one_file_tar(w: &mut impl Write, name: &str, size: u64, data: impl Read) -> io::Result<()> {
+    let mut tar = tar::Builder::new(w);
+    let mut header = tar::Header::new_ustar();
+    header.set_size(size);
+    header.set_mode(0o644);
+    // Root's, said: new_ustar leaves the owner fields empty, which an
+    // unpack that keeps owners (the guest's) can't read.
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+    header.set_entry_type(tar::EntryType::Regular);
+    tar.append_data(&mut header, name, data)?;
+    tar.finish()
+}
+
 /// Whether the daemon answers at all.
 pub fn alive() -> bool {
     send("GET", "/_ping", None, "X-Edock-Background: 1\r\n").is_ok_and(|r| r.ok())
@@ -318,5 +379,31 @@ pub fn pull_or_keep(repo: &str, tag: &str) -> io::Result<()> {
             Ok(())
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn one_file_is_a_tar_of_the_size_put_file_says() {
+        let data = vec![7u8; 1000];
+        let mut out = Vec::new();
+        super::one_file_tar(&mut out, "a.tar", data.len() as u64, &data[..]).unwrap();
+        assert_eq!(out.len() as u64, 512 + 1000u64.div_ceil(512) * 512 + 1024);
+        let dir = std::env::temp_dir().join(format!("edock-one-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a = tar::Archive::new(&out[..]);
+        a.set_preserve_permissions(true);
+        a.set_preserve_mtime(true);
+        a.set_unpack_xattrs(false);
+        // As the guest's: owners kept (they must be readable numbers).
+        let h = tar::Archive::new(&out[..]).entries().unwrap().next().unwrap().unwrap().header().clone();
+        assert_eq!((h.uid().unwrap(), h.gid().unwrap()), (0, 0));
+        a.set_overwrite(true);
+        for e in a.entries().unwrap() {
+            e.unwrap().unpack_in(&dir).unwrap();
+        }
+        assert_eq!(std::fs::read(dir.join("a.tar")).unwrap(), data);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

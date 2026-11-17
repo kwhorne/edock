@@ -486,6 +486,10 @@ fn images(req: &Request, engine: &Engine) -> Result<Value, Error> {
 
 fn image_inspect(engine: &Engine, name: &str) -> Result<Value, Error> {
     let i = engine.image(name)?.ok_or_else(|| Error::NotFound(format!("No such image: {name}")))?;
+    // What eDock's image model doesn't keep, from the image's own config:
+    // `docker image inspect`, Compose and the app's Run read its ports.
+    let raw: Value = engine.store.read_config(&i.config_digest).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
+    let some = |v: &Value| if v.as_object().is_some_and(|m| !m.is_empty()) || v.as_str().is_some_and(|s| !s.is_empty()) { v.clone() } else { Value::Null };
     Ok(json!({
         "Id": i.config_digest,
         "RepoTags": [i.name],
@@ -500,8 +504,11 @@ fn image_inspect(engine: &Engine, name: &str) -> Result<Value, Error> {
             "Entrypoint": if i.config.entrypoint.is_empty() { Value::Null } else { json!(i.config.entrypoint) },
             "WorkingDir": i.config.working_dir,
             "User": i.config.user,
-            "Healthcheck": image_healthcheck(engine, &i),
+            "Healthcheck": raw["config"]["Healthcheck"].clone(),
             "Labels": image_labels(engine, &i),
+            "ExposedPorts": some(&raw["config"]["ExposedPorts"]),
+            "Volumes": some(&raw["config"]["Volumes"]),
+            "StopSignal": some(&raw["config"]["StopSignal"]),
         },
         "RootFS": {"Type": "layers", "Layers": i.layers.iter().map(|l| &l.digest).collect::<Vec<_>>()},
     }))
@@ -1724,12 +1731,6 @@ fn image_labels(engine: &Engine, i: &edock_image::Image) -> Value {
     }
     seen.insert(i.config_digest.clone(), labels.clone());
     labels
-}
-
-/// The image's HEALTHCHECK, which eDock's image model does not keep.
-fn image_healthcheck(engine: &Engine, i: &edock_image::Image) -> Value {
-    let cfg: Value = engine.store.read_config(&i.config_digest).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
-    cfg["config"]["Healthcheck"].clone()
 }
 
 /// `docker ps`'s Status: "Up 2 minutes (healthy)" while running unpaused

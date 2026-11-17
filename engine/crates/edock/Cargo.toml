@@ -7,6 +7,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# `edock k8s load` sends an image into the node as a tar (edock-image has it too).
+tar = "0.4"
 edock-image = { path = "../edock-image" }
 edock-proto = { path = "../edock-proto" }
 serde = { version = "1", features = ["derive"] }
@@ -30,11 +32,6 @@ block2 = "0.6.2"
 dispatch2 = "0.3.1"
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSNotification", "NSGeometry", "NSObject", "NSAppleScript", "NSDictionary"] }
-
-
-# The tests read back the tar archives the managed builder writes.
-[dev-dependencies]
-tar = "0.4"
 
 
 [lints]

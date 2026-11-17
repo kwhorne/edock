@@ -59,9 +59,12 @@ Apple silicon and Intel Macs (macOS 14+), and Linux hosts (no VM; built with
 - **Resources**: the VM's CPUs and memory (`~/.edock/vm.json`, used from
   the VM's next start; `EDOCK_CPUS` and `EDOCK_MEMORY_MIB` override it)
 - **Kubernetes**: `edock k8s start` — a single-node k3s cluster in one
-  container, ready in ~20 s, as the `edock` kubectl context
+  container, ready in ~20 s, as the `edock` kubectl context; `edock k8s load
+  IMAGE` puts an image built or pulled on eDock into it, with no registry
 - **Linux machines**: `edock machine create dev --distro ubuntu` and
-  `edock machine shell dev` — your user, sudo, and `/Users` at the same path
+  `edock machine shell dev` — your user, sudo, and `/Users` at the same path;
+  `edock machine ssh on` makes `ssh dev.edock` (and VS Code, Cursor, Zed) reach
+  them, through the engine, with no sshd left running
 - **Linux hosts**: the same `edock` with no VM — the agent runs on the host's
   kernel (`cargo xtask linux`, `contrib/linux/edock.service`); arm64 and
   x86-64; `tests/linux-host.sh` checks it. Membership of the `edock` group is

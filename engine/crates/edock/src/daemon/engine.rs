@@ -515,6 +515,9 @@ pub struct Engine {
     /// daemon came up, held because eDock was stopped (Start starts them) or
     /// because the VM did not boot (`retry_held` tries it again).
     held_restarts: Mutex<Vec<String>>,
+    /// sleep_now is stopping the containers: an exit doesn't restart one
+    /// (those with a policy are held for the next start instead).
+    stopping_to_sleep: std::sync::atomic::AtomicBool,
     /// Memory ceiling and the balloon's current target, in bytes. The
     /// ceiling is read again at each boot, so Settings applies on restart.
     ceiling: std::sync::atomic::AtomicU64,
@@ -619,6 +622,7 @@ impl Engine {
             saving: Mutex::new(()),
             me: OnceLock::new(),
             held_restarts: Mutex::new(Vec::new()),
+            stopping_to_sleep: std::sync::atomic::AtomicBool::new(false),
             ceiling: std::sync::atomic::AtomicU64::new(ceiling),
             cpus: std::sync::atomic::AtomicUsize::new(vm_cpus()),
             memory_target: Mutex::new(ceiling),
@@ -1005,11 +1009,38 @@ impl Engine {
 
     /// Stop every container, then let the VM sleep (it wakes on the next
     /// request). The window's Stop is stop_all; restarting the engine is this.
+    ///
+    /// Containers whose policy restarts them (`always`, `unless-stopped`) stop
+    /// as for the daemon's shutdown, not as stopped by the user: they're held,
+    /// and the next Start (or the wake after Restart VM) starts them again,
+    /// as Docker's daemon does when it comes back.
     pub fn sleep_now(&self) -> Result<(), Error> {
         let running = self.each(|c| (c.status == Status::Running).then(|| c.id.clone()));
-        for id in running {
-            self.stop(&id, self.stop_timeout(&id))?;
+        let comes_back: Vec<String> = self.each(|c| {
+            (c.status == Status::Running && !c.spec.auto_remove && !c.stopped_by_user && matches!(c.spec.restart.name.as_str(), "always" | "unless-stopped")).then(|| c.id.clone())
+        });
+        self.stopping_to_sleep.store(true, std::sync::atomic::Ordering::SeqCst);
+        let stopped = running.iter().try_for_each(|id| self.stop_as(id, self.stop_timeout(id), !comes_back.contains(id)).map(|_| ()));
+        if !comes_back.is_empty() {
+            // Pending until it starts, as at the daemon's start: a `docker
+            // stop` in the meantime cancels it (mark_stopped).
+            {
+                let mut st = self.lock();
+                for id in &comes_back {
+                    if let Some(c) = st.containers.get_mut(id) {
+                        c.restart_pending = true;
+                    }
+                }
+            }
+            let mut held = self.held_restarts.lock().unwrap_or_else(|e| e.into_inner());
+            for id in comes_back {
+                if !held.contains(&id) {
+                    held.push(id);
+                }
+            }
         }
+        self.stopping_to_sleep.store(false, std::sync::atomic::Ordering::SeqCst);
+        stopped?;
         // Passed-through USB devices go back to the Mac, as containers stop.
         detach_usb();
         if self.sleep_if_idle() {
@@ -1243,7 +1274,7 @@ impl Engine {
                             "on-failure" => code != 0 && !c.stopped_by_user && (p.max_retries == 0 || c.restart_count < p.max_retries),
                             _ => false,
                         };
-                        if wants && !c.spec.auto_remove && !SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst) {
+                        if wants && !c.spec.auto_remove && !SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst) && !self.stopping_to_sleep.load(std::sync::atomic::Ordering::SeqCst) {
                             let backoff = RESTART_BASE.saturating_mul(1 << c.restart_count.min(10)).min(RESTART_CAP);
                             c.restart_count += 1;
                             c.restart_pending = true;
@@ -2665,9 +2696,15 @@ impl Engine {
     /// `docker stop`. False when there was nothing to stop: the container
     /// was not running and its restart policy was not about to start it.
     pub fn stop(&self, key: &str, timeout: Duration) -> Result<bool, Error> {
+        self.stop_as(key, timeout, true)
+    }
+
+    /// `stop`, as the user's (`docker stop`: its restart policy doesn't
+    /// bring it back) or not (sleep_now holds it for the next start).
+    fn stop_as(&self, key: &str, timeout: Duration, by_user: bool) -> Result<bool, Error> {
         let id = self.resolve(key)?;
         self.thaw_for_signal(&id);
-        let cancelled = self.mark_stopped(&id);
+        let cancelled = if by_user { self.mark_stopped(&id) } else { false };
         if !self.is_running(&id) {
             return Ok(cancelled);
         }

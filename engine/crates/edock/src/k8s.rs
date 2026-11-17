@@ -218,7 +218,8 @@ fn run_inner(args: &[String]) -> io::Result<()> {
         Some("status") => status(),
         Some("delete") => delete(),
         Some("set") => set(&args[1..]),
-        _ => Err(io::Error::other("usage: edock k8s start [--use] | stop | status | delete | set [--lan on|off] [--tls-san NAME,…] [--port N]")),
+        Some("load") if args.len() > 1 => args[1..].iter().try_for_each(|i| load(i)),
+        _ => Err(io::Error::other("usage: edock k8s start [--use] | stop | status | delete | set [--lan on|off] [--tls-san NAME,…] [--port N] | load IMAGE…")),
     }
 }
 
@@ -318,6 +319,61 @@ fn start(use_context: bool) -> io::Result<()> {
     kubeconfig(use_context, port)?;
     let moved = if port != want { format!(" ({want} was in use)") } else { String::new() };
     println!("Kubernetes is ready in {:.0} s, API on 127.0.0.1:{port}{moved}: kubectl --context {CONTEXT} get nodes", t0.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// `edock k8s load IMAGE`: an image from eDock (built or pulled) into the
+/// cluster's own containerd, where pods find it without a registry. It goes
+/// as `docker save` makes it, through a file on the Mac and `docker cp`,
+/// and k3s's containerd (`ctr`) imports it.
+fn load(image: &str) -> io::Result<()> {
+    ensure_daemon()?;
+    // A reference's own characters only: it goes in the URL as it is, as
+    // the docker CLI sends it.
+    if image.is_empty() || image.starts_with('-') || !image.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:/@".contains(&b)) {
+        return Err(io::Error::other(format!("{image:?} isn't an image")));
+    }
+    let running = client::get(&format!("/containers/{NAME}/json")).ok().is_some_and(|i| i["State"]["Running"] == true);
+    if !running {
+        return Err(io::Error::other("Kubernetes isn't running: `edock k8s start` first"));
+    }
+    let found = client::request("GET", &format!("/images/{image}/json"), None)?;
+    if !found.ok() {
+        return Err(io::Error::other(format!("{image} isn't on eDock: `docker build -t {image} .` or `docker pull {image}` first")));
+    }
+    let id = found.json()["Id"].as_str().unwrap_or_default().to_owned();
+    let tmp = std::env::temp_dir().join(format!("edock-k8s-load-{}.tar", std::process::id()));
+    let result = (|| {
+        println!("saving {image}…");
+        use std::io::Write;
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        let size = client::download(&format!("/images/get?names={image}"), &mut f)?;
+        f.flush()?;
+        drop(f);
+        println!("copying {} MB into the node…", size / 1_000_000);
+        let name = format!("edock-load-{}.tar", std::process::id());
+        if let Err(e) = client::put_file(NAME, "/tmp", &name, &tmp) {
+            // What came across before it broke off.
+            let _ = client::exec(NAME, &["rm", "-f", &format!("/tmp/{name}")]);
+            return Err(e);
+        }
+        println!("importing into Kubernetes…");
+        // Dots while it works: the exec stream stays alive for a big image.
+        let script = format!(
+            "f=/tmp/{name}; ctr -n k8s.io images import \"$f\" > /tmp/{name}.out 2>&1 & p=$!; \
+             i=0; while kill -0 $p 2>/dev/null; do i=$((i+1)); [ $((i % 5)) -eq 0 ] && echo .; sleep 1; done; wait $p; c=$?; cat /tmp/{name}.out; rm -f \"$f\" /tmp/{name}.out; exit $c"
+        );
+        let (code, out) = client::exec(NAME, &["sh", "-c", &script])?;
+        if code != 0 {
+            let said: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty() && *l != ".").collect();
+            return Err(io::Error::other(format!("k3s couldn't import {image}: {}", said.last().copied().unwrap_or("it failed"))));
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    result?;
+    let short = id.trim_start_matches("sha256:").get(..12).unwrap_or("");
+    println!("{image} ({short}) is in Kubernetes. Pods use it with imagePullPolicy: IfNotPresent (the default, except for :latest) or Never");
     Ok(())
 }
 

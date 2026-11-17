@@ -78,12 +78,13 @@ usage: edock COMMAND          docker's commands, on eDock: edock run, ps, exec,
        edock build-with [docker|edock] [--json]   which builder docker build uses
        edock diag logs [-f] [--engine|--cli] [--errors] [-n N]
        edock diag report [--out PATH]   (a local file, tokens taken out)
-       edock k8s start [--use] | stop | status | delete | set [--lan on|off] [--tls-san NAME,…] [--port N]
+       edock k8s start [--use] | stop | status | delete | set [--lan on|off] [--tls-san NAME,…] [--port N] | load IMAGE…
        edock builds [list] | show|layers|rm BUILDER ID   build history, as JSON
        edock tls status | trust | untrust   HTTPS for *.edock.local(host) in browsers
        edock usb [list] | attach DEVICE | detach DEVICE   USB devices for containers, beta (Mac: pass through to the VM)
        edock machine create NAME [--distro D | --image IMAGE] [--systemd] [--ssh-agent]
        edock machine list | shell NAME [-- CMD...] | start | stop | restart | delete NAME
+       edock machine ssh on | off | status   `ssh NAME.edock` reaches a machine
        edock import [orbstack | desktop-linux] [--list] | orbstack image|volume|container NAME
        edock bench [--runs N] [--image IMAGE] [--network none|bridge]
        edock boot [--console] [--pings N]

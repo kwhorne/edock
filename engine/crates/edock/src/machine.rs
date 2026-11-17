@@ -3,6 +3,14 @@
 //! name and uid inside (and passwordless sudo), and the homes folder
 //! (`/Users` on a Mac, `/home` on Linux) at the same path as on the host.
 //! `edock machine shell` opens a login shell in it.
+//!
+//! `ssh NAME.edock` reaches a machine too, for editors that work over SSH
+//! (VS Code, Cursor, Zed): `edock machine ssh on` adds a `Host *.edock`
+//! block (in `~/.edock/ssh/config`, included from `~/.ssh/config`) whose
+//! ProxyCommand is `edock machine stdio NAME`. That runs the machine's own
+//! `sshd -i` over the engine's exec API, with eDock's key: no daemon, no
+//! port, no password. openssh-server is installed in the machine the first
+//! time.
 
 use std::io;
 use std::process::Command;
@@ -56,6 +64,11 @@ pub fn run(args: &[String]) -> io::Result<()> {
             ok(client::request("POST", &format!("/containers/{}/{verb}", container(name)), None))?;
             Ok(())
         }
+        Some("stdio") => {
+            need_name()?;
+            stdio(name)
+        }
+        Some("ssh") => ssh(args.get(1).map_or("status", String::as_str)),
         Some("delete" | "rm") => {
             need_name()?;
             ok(client::request("DELETE", &format!("/containers/{}?force=1&v=1", container(name)), None))?;
@@ -63,7 +76,7 @@ pub fn run(args: &[String]) -> io::Result<()> {
             Ok(())
         }
         _ => Err(io::Error::other(
-            "usage: edock machine create NAME [--distro ubuntu|debian|alpine|fedora|arch|rocky|opensuse | --image IMAGE] [--systemd] [--ssh-agent]\n       edock machine list | shell NAME [-- CMD...] | start | stop | restart | delete NAME",
+            "usage: edock machine create NAME [--distro ubuntu|debian|alpine|fedora|arch|rocky|opensuse | --image IMAGE] [--systemd] [--ssh-agent]\n       edock machine list | shell NAME [-- CMD...] | start | stop | restart | delete NAME\n       edock machine ssh on | off | status   `ssh NAME.edock` for every machine\n       edock machine stdio NAME   (ssh's ProxyCommand)",
         )),
     }
 }
@@ -206,4 +219,198 @@ fn shell(name: &str, cmd: &[&str]) -> io::Result<()> {
         std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
+}
+
+// ── SSH ────────────────────────────────────────────────────────────────
+
+/// Installs openssh-server with the distro's own package manager, once
+/// another one has finished (a new machine fetches sudo in the background,
+/// holding apt's lock). Its last lines when it fails.
+const INSTALL_SSHD: &str = r#"busy() { grep -qsxE 'apt-get|apt|dpkg|apk|dnf|rpm|pacman|zypper' /proc/[0-9]*/comm; }
+for i in $(seq 180); do busy || break; sleep 1; done
+log=/tmp/edock-ssh-install.log
+if command -v apt-get >/dev/null; then
+  { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server; } >$log 2>&1
+elif command -v apk >/dev/null; then apk add -q openssh >$log 2>&1
+elif command -v dnf >/dev/null; then dnf -y -q install openssh-server >$log 2>&1
+elif command -v pacman >/dev/null; then pacman -Sy --noconfirm openssh >$log 2>&1
+elif command -v zypper >/dev/null; then zypper -n -q in openssh >$log 2>&1
+else echo "no package manager eDock knows"; exit 1
+fi
+c=$?; [ $c -eq 0 ] || tail -3 $log; exit $c"#;
+
+/// eDock's own SSH files: its key, and the `Host *.edock` block.
+fn ssh_dir() -> io::Result<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is not set"))?;
+    Ok(std::path::PathBuf::from(home).join(crate::flavor::STATE.get()).join("ssh"))
+}
+
+/// The line that brings eDock's block into `~/.ssh/config`. First in the
+/// file: an Include after a `Host` line would only apply to that host.
+fn include_line() -> String {
+    format!("Include ~/{}/ssh/config", crate::flavor::STATE.get())
+}
+
+fn user_ssh_config() -> io::Result<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is not set"))?;
+    Ok(std::path::PathBuf::from(home).join(".ssh/config"))
+}
+
+/// The `Host *.edock` block: this `edock` as the ProxyCommand, eDock's key,
+/// and no host-key checks (the way in is the engine's socket, which only
+/// this user can open, and a machine made again has new host keys).
+fn host_block(edock: &std::path::Path, user: &str, key: &std::path::Path) -> String {
+    format!(
+        "# Written by eDock (`edock machine ssh on`): `ssh NAME.edock` reaches the machine NAME.\n\
+         Host *.edock\n  User {user}\n  ProxyCommand \"{}\" machine stdio %n\n  IdentityFile \"{}\"\n  IdentitiesOnly yes\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n",
+        edock.display(),
+        key.display()
+    )
+}
+
+/// `~/.ssh/config` with eDock's Include first, or without it.
+fn with_include(config: &str, on: bool) -> String {
+    let line = include_line();
+    let rest: Vec<&str> = config.lines().filter(|l| l.trim() != line).collect();
+    let rest = rest.join("\n");
+    let rest = rest.trim_start_matches('\n');
+    match (on, rest.is_empty()) {
+        (true, true) => format!("{line}\n"),
+        (true, false) => format!("{line}\n\n{rest}\n"),
+        (false, true) => String::new(),
+        (false, false) => format!("{rest}\n"),
+    }
+}
+
+fn ssh(what: &str) -> io::Result<()> {
+    let dir = ssh_dir()?;
+    let key = dir.join("id_ed25519");
+    let config = user_ssh_config()?;
+    let current = std::fs::read_to_string(&config).unwrap_or_default();
+    let on = current.lines().any(|l| l.trim() == include_line()) && dir.join("config").is_file();
+    match what {
+        "status" => {
+            println!("{}", if on { "on" } else { "off" });
+            Ok(())
+        }
+        "on" => {
+            std::fs::create_dir_all(&dir)?;
+            if !key.is_file() {
+                let made = Command::new("/usr/bin/ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", "edock"]).arg("-f").arg(&key).status()?;
+                if !made.success() {
+                    return Err(io::Error::other("ssh-keygen couldn't make eDock's key"));
+                }
+            }
+            let me = std::env::current_exe()?.canonicalize()?;
+            std::fs::write(dir.join("config"), host_block(&me, &user().0, &key))?;
+            if let Some(parent) = config.parent() {
+                std::fs::create_dir_all(parent)?;
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
+            write_private(&config, &with_include(&current, true))?;
+            println!("on: `ssh NAME.edock` reaches the machine NAME (VS Code, Cursor and Zed too)");
+            Ok(())
+        }
+        "off" => {
+            if config.is_file() {
+                write_private(&config, &with_include(&current, false))?;
+            }
+            let _ = std::fs::remove_file(dir.join("config"));
+            println!("off: ~/.ssh/config no longer includes eDock's");
+            Ok(())
+        }
+        _ => Err(io::Error::other("usage: edock machine ssh on | off | status")),
+    }
+}
+
+/// Writes a file only this user can read or write, as ssh wants its config.
+fn write_private(path: &std::path::Path, text: &str) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = path.with_extension("edock-tmp");
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    f.write_all(text.as_bytes())?;
+    drop(f);
+    std::fs::rename(&tmp, path)
+}
+
+/// `edock machine stdio NAME`: ssh's ProxyCommand. The machine's `sshd -i`
+/// on this process's stdin and stdout, as root through the exec API, with
+/// eDock's key as the one that may log in. Starts the machine when it's
+/// stopped, and installs openssh-server in it the first time.
+fn stdio(name: &str) -> io::Result<()> {
+    let name = name.strip_suffix(".edock").unwrap_or(name);
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') || name.starts_with('-') {
+        return Err(io::Error::other(format!("{name:?} isn't a machine's name")));
+    }
+    let id = container(name);
+    let info = client::get(&format!("/containers/{id}/json")).map_err(|_| io::Error::other(format!("there's no machine {name}: `edock machine list`")))?;
+    if info["Config"]["Labels"][LABEL].as_str() != Some(name) {
+        return Err(io::Error::other(format!("there's no machine {name}: `edock machine list`")));
+    }
+    if info["State"]["Running"] != true {
+        eprintln!("starting {name}…");
+        ok(client::request("POST", &format!("/containers/{id}/start"), None))?;
+    }
+    let pubkey = std::fs::read_to_string(ssh_dir()?.join("id_ed25519.pub")).map_err(|_| io::Error::other("eDock's SSH key isn't there: `edock machine ssh on`"))?;
+    let (user, _, _) = user();
+    if client::exec(&id, &["test", "-x", "/usr/sbin/sshd"])?.0 != 0 {
+        eprintln!("installing openssh-server in {name} (once)…");
+        let (code, out) = client::exec(&id, &["sh", "-c", INSTALL_SSHD])?;
+        if code != 0 {
+            return Err(io::Error::other(format!("couldn't install openssh-server in {name}: {}", out.trim())));
+        }
+    }
+    // Host keys, the run directory sshd wants, eDock's key, and the user
+    // unlocked for key logins (useradd leaves `!`, which sshd refuses
+    // without PAM).
+    let prepare = format!(
+        "set -e; mkdir -p /etc/edock /run/sshd; chmod 755 /run/sshd; ssh-keygen -A >/dev/null 2>&1; \
+         printf '%s\\n' \"$1\" > /etc/edock/authorized_keys; chmod 644 /etc/edock/authorized_keys; \
+         sed -i 's/^{user}:![^:]*:/{user}:*:/' /etc/shadow 2>/dev/null || true"
+    );
+    let (code, out) = client::exec(&id, &["sh", "-c", &prepare, "sh", pubkey.trim()])?;
+    if code != 0 {
+        return Err(io::Error::other(format!("couldn't make {name} ready for ssh: {}", out.trim())));
+    }
+    let docker = client::docker_cli().ok_or_else(|| io::Error::other("no docker CLI found: run `edock setup` (Engine › Command line › Set up in the app)"))?;
+    let mut c = Command::new(docker);
+    c.env("DOCKER_HOST", format!("unix://{}", client::socket()?.display())).env_remove("DOCKER_CONTEXT");
+    c.args(["exec", "-i", &id, "/usr/sbin/sshd", "-i", "-e"]);
+    // Forwarding on whatever the distro's sshd_config says (Alpine's is
+    // off): VS Code's Remote-SSH and `ssh -L` need it.
+    for o in ["AuthorizedKeysFile=/etc/edock/authorized_keys .ssh/authorized_keys", "PasswordAuthentication=no", "KbdInteractiveAuthentication=no", "PermitRootLogin=no", "AllowTcpForwarding=yes", "LogLevel=ERROR"] {
+        c.args(["-o", o]);
+    }
+    use std::os::unix::process::CommandExt;
+    // This process becomes the docker CLI: ssh's pipes go straight through.
+    Err(c.exec())
+}
+
+#[cfg(test)]
+mod ssh_tests {
+    use super::*;
+
+    #[test]
+    fn the_include_goes_first_once_and_comes_out_cleanly() {
+        let line = include_line();
+        assert_eq!(with_include("", true), format!("{line}\n"));
+        let mine = "Host gh\n  HostName github.com\n";
+        let on = with_include(mine, true);
+        assert!(on.starts_with(&format!("{line}\n\n")), "{on}");
+        assert!(on.ends_with(mine), "{on}");
+        assert_eq!(with_include(&on, true), on, "once");
+        assert_eq!(with_include(&on, false), mine);
+        assert_eq!(with_include(&format!("{line}\n"), false), "");
+    }
+
+    #[test]
+    fn the_block_uses_this_edock_and_the_key() {
+        let b = host_block(std::path::Path::new("/Applications/eDock.app/Contents/MacOS/edock"), "kh", std::path::Path::new("/Users/kh/.edock/ssh/id_ed25519"));
+        assert!(b.contains("Host *.edock\n"));
+        assert!(b.contains("ProxyCommand \"/Applications/eDock.app/Contents/MacOS/edock\" machine stdio %n"));
+        assert!(b.contains("IdentityFile \"/Users/kh/.edock/ssh/id_ed25519\""));
+        assert!(b.contains("User kh"));
+    }
 }
