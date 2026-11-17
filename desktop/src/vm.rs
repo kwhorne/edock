@@ -52,6 +52,10 @@ pub struct VmInfo {
     pub agent_memory: f64,
     pub cpu_percent: f64,
     pub oom_kills: u32,
+    /// The share of the last 10 s its containers all waited on memory, in percent.
+    pub memory_stall: f64,
+    /// "none", "some" or "high": how short of memory the VM is.
+    pub memory_pressure: String,
 }
 
 #[command]
@@ -74,6 +78,8 @@ pub async fn vm_info(ctx: Ctx) -> Result<VmInfo, String> {
         agent_memory: n(&i["EdockAgentMemory"]),
         cpu_percent: n(&i["EdockCpuPercent"]),
         oom_kills: n(&i["EdockOomKills"]) as u32,
+        memory_stall: n(&i["EdockMemoryStall"]),
+        memory_pressure: if r["awake"] == true { crate::alerts::pressure(n(&i["EdockMemoryStall"]), n(&i["EdockMemoryUsed"]), n(&i["EdockMemoryCeiling"])) } else { "none" }.into(),
     })
 }
 

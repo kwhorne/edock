@@ -401,3 +401,56 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: v
 .machine-shell > p { margin: 0 0 8px; }
 .machine-shell .machine-term { flex: 1; min-height: 0; }
 .machine-shell .terminal { height: auto; }
+
+/* Requests › Logs: what the containers wrote during a request */
+.log-box.during { max-height: 52vh; }
+.log-box.during .line { display: flex; gap: 8px; white-space: normal; }
+.log-box.during .line.outside { opacity: 0.55; }
+.log-box.during .at { flex: none; width: 72px; text-align: right; }
+.log-box.during .svc { flex: none; color: var(--elyra-muted); }
+.log-box.during .svc.mine { color: var(--elyra-accent); }
+.log-box.during .text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Memory pressure: the meter, and the popover's VM line */
+.meter.some > span { background: var(--elyra-warning); }
+.meter.high > span { background: var(--elyra-danger); }
+.quick-vm .link-btn { border: none; background: none; padding: 0; color: var(--elyra-warning); font-size: inherit; }
+.quick-vm .link-btn.bad { color: var(--elyra-danger); }
+
+/* A Compose project: what it's made of */
+.compose-view { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; }
+.compose-service { border: 1px solid var(--elyra-border); border-radius: var(--elyra-radius-lg); padding: 8px 12px; background: var(--elyra-surface); }
+.compose-service-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.compose-service .small { margin: 6px 0 0; overflow-wrap: anywhere; }
+.compose-facts { display: grid; grid-template-columns: 90px 1fr; gap: 3px 10px; margin: 6px 0 0; font-size: 12px; }
+.compose-facts dt { color: var(--elyra-muted); }
+.compose-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Above every page: the engine runs the version before an update */
+.engine-outdated {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 22px 0; padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--elyra-warning) 45%, transparent); border-radius: var(--elyra-radius-lg);
+  background: color-mix(in srgb, var(--elyra-warning) 10%, var(--elyra-surface)); font-size: 12.5px;
+}
+
+/* The terminal: its find bar (⌘F), and the hint over a link */
+.terminal-wrap { position: relative; display: flex; flex-direction: column; flex: 1; height: 100%; min-height: 0; min-width: 0; }
+.terminal-wrap > .terminal { flex: 1; }
+.term-find {
+  position: absolute; top: 8px; right: 14px; z-index: 5; display: flex; align-items: center; gap: 4px; padding: 4px 6px;
+  background: var(--elyra-raised); border: 1px solid var(--elyra-border); border-radius: var(--elyra-radius); box-shadow: var(--elyra-shadow);
+}
+.term-find input {
+  width: 180px; padding: 3px 6px; border-radius: var(--elyra-radius); border: 1px solid var(--elyra-border);
+  background: var(--elyra-inset); color: var(--elyra-text); font-family: var(--elyra-font-mono); font-size: 12px;
+}
+.term-find input:focus { outline: none; border-color: var(--elyra-accent); }
+.term-find .count { font-size: 11px; min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
+.term-find .rot { display: inline-grid; place-items: center; }
+.term-find .rot.up { transform: rotate(-90deg); }
+.term-find .rot.down { transform: rotate(90deg); }
+.term-link-hint {
+  position: absolute; bottom: 8px; right: 14px; z-index: 5; max-width: 70%; padding: 2px 8px; border-radius: var(--elyra-radius);
+  background: var(--elyra-raised); border: 1px solid var(--elyra-border); color: var(--elyra-muted); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none;
+}

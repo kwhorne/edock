@@ -50,19 +50,6 @@
 
   const s = $derived(engine.status);
 
-  // After an update the engine that ran keeps the old version until it
-  // starts again (a checkout's engine says 0.0.0: no comparing then).
-  const outdated = $derived(
-    s?.context === "edock" && s?.connected && s.version && s.version !== s.app_version && s.version !== "0.0.0" && s.app_version !== "0.0.0",
-  );
-
-  async function restart() {
-    busy = "restart";
-    await attempt(() => api.daemon_restart(), `The engine runs ${s.app_version} now`);
-    busy = null;
-    await Promise.all([loadDaemon(), refreshEngine()]);
-  }
-
   // The command line: `edock setup`.
   let cli = $state(null);
   let useAsCurrent = $state(true);
@@ -169,14 +156,6 @@
     {/snippet}
   </Card>
 
-  {#if outdated}
-    <Callout variant="warning" title="The engine runs an older eDock">
-      eDock was updated to {s.app_version}, and the engine still runs {s.version}. Restart it to run the new one;
-      running containers stop and start again.
-      <div class="callout-action"><Button size="sm" variant="primary" loading={busy === "restart"} onclick={restart}>Restart engine</Button></div>
-    </Callout>
-  {/if}
-
   <Card title="Command line">
     <div class="engine-card">
       {#if cli?.stale}
@@ -211,8 +190,8 @@
 
   <Card title="Notifications">
     <div class="engine-card">
-      <label class="toggle"><Switch checked={!!alerts} onchange={setAlerts} disabled={alerts === null} /> Tell me when a container runs out of memory or turns unhealthy</label>
-      <p class="muted text">A macOS notification, once per container every ten minutes; click it for the container's log. Not for eDock's own containers.</p>
+      <label class="toggle"><Switch checked={!!alerts} onchange={setAlerts} disabled={alerts === null} /> Tell me when a container runs out of memory or turns unhealthy, or containers keep waiting for memory</label>
+      <p class="muted text">A macOS notification, once per container every ten minutes (for memory, once in half an hour); click it for the container's log, or this page. Not for eDock's own containers.</p>
     </div>
   </Card>
 

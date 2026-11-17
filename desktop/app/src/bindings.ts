@@ -129,6 +129,14 @@ export type CliStatus = {
 	stale: string | null,
 };
 
+export type ComposeView = {
+	dir: string,
+	files: string[],
+	services: ServiceView[],
+	/**  The project's `.env`, and the env files it was started with. */
+	env_files: EnvFileView[],
+};
+
 export type ContainerDetail = {
 	id: string,
 	name: string,
@@ -240,6 +248,35 @@ export type DomainsInfo = {
 	trusted: boolean,
 };
 
+export type DuringLine = {
+	/**  The container that wrote it. */
+	container: string,
+	/**  Its Compose service, in a project. */
+	service: string | null,
+	stderr: boolean,
+	/**  Seconds after the request arrived; negative just before it. */
+	offset: number,
+	text: string,
+};
+
+export type DuringLogs = {
+	/**
+	 *  The window, in Unix seconds: from a moment before the request
+	 *  arrived to a moment after its response ended.
+	 */
+	from: number,
+	to: number,
+	/**
+	 *  The containers read: the one that answered, and the rest of its
+	 *  Compose project.
+	 */
+	containers: string[],
+	/**  In time order. */
+	lines: DuringLine[],
+	/**  More lines than shown (the first ones are kept). */
+	cut: boolean,
+};
+
 /**  eDock's engine as the app sees it. */
 export type EngineState = 
 /**  No daemon answers on the socket. */
@@ -272,6 +309,12 @@ export type EngineStatus = {
 	containers: number,
 	running: number,
 	images: number,
+};
+
+export type EnvFileView = {
+	path: string,
+	/**  Its variables' names; never their values. */
+	keys: string[],
 };
 
 /**  How the user chose it, which is what it may be used for. */
@@ -575,7 +618,10 @@ export type ProxyInfo = {
 export type RecentAlert = {
 	id: string,
 	name: string,
-	/**  "oom" (the kernel stopped it: out of memory) or "unhealthy". */
+	/**
+	 *  "oom" (the kernel stopped it: out of memory), "unhealthy", or
+	 *  "memory" (containers kept waiting on it; `id` is "vm").
+	 */
 	what: string,
 	/**  How long ago, in seconds. */
 	ago: number,
@@ -700,6 +746,21 @@ export type ServiceRow = {
 	created: string,
 };
 
+export type ServiceView = {
+	name: string,
+	image: string | null,
+	/**  Its build context, when Compose builds its image. */
+	build: string | null,
+	/**  `8080:80/tcp` and the like, as published on the Mac. */
+	ports: string[],
+	/**  `source:target` (a volume's name or a folder), `:ro` when read-only. */
+	volumes: string[],
+	/**  Its environment variables' names; never their values. */
+	env: string[],
+	depends_on: string[],
+	profiles: string[],
+};
+
 export type Snapshot = {
 	/**  container or volume. */
 	kind: string,
@@ -775,6 +836,10 @@ export type VmInfo = {
 	agent_memory: number,
 	cpu_percent: number,
 	oom_kills: number,
+	/**  The share of the last 10 s its containers all waited on memory, in percent. */
+	memory_stall: number,
+	/**  "none", "some" or "high": how short of memory the VM is. */
+	memory_pressure: string,
 };
 
 export type VolumeRow = {
@@ -922,6 +987,17 @@ export const api = {
    */
   compose_projects(): Promise<ProjectRow[]> {
     return invoke("compose_projects");
+  },
+  /**
+   * What a project is made of, as Compose reads its files: each service's
+   * image or build, ports, volumes, dependencies and the names of its
+   * variables, and the names in its `.env` and env files. Values never
+   * leave the Mac's files: they can be passwords.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  compose_view(project: string): Promise<ComposeView> {
+    return invoke("compose_view", project);
   },
   /**
    * start, stop, restart, pause, unpause, kill or remove one container.
@@ -1223,6 +1299,17 @@ export const api = {
     return invoke("http_request", seq);
   },
   /**
+   * What the containers wrote while a request was handled: the one that
+   * answered, and the rest of its Compose project, from a moment before
+   * the request arrived to a moment after its response ended (or now, while
+   * it hasn't). Each line with its offset from the request's start.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  http_request_logs(seq: number): Promise<DuringLogs> {
+    return invoke("http_request_logs", seq);
+  },
+  /**
    * HTTP requests to containers through `*.edock.localhost` (and
    * `https://…`), with their status, timing and size, oldest first, while
    * the inspector records. `since` (a version from an earlier answer) gives
@@ -1467,9 +1554,8 @@ export const api = {
   /**
    * `ssh NAME.edock` on or off for every machine: `edock machine ssh on|off`.
    * On makes eDock's key (`~/.edock/ssh`) and puts one `Include` line first
-   * in `~/.ssh/config`; off takes the line out.
-   *
-   * @remarks Needs `edock.manage`.
+   * in `~/.ssh/config`; off takes the line out. The window's only: not an
+   * agent's tool, as it changes the user's SSH settings.
    */
   machine_ssh_set(on: boolean): Promise<null> {
     return invoke("machine_ssh_set", on);
@@ -1566,6 +1652,18 @@ export const api = {
    */
   recipes_list(): Promise<RecipeRow[]> {
     return invoke("recipes_list");
+  },
+  /**
+   * One service of a project made again, the rest left as they are:
+   * `docker compose up -d --no-deps --force-recreate SERVICE`, with
+   * `--build` when `build` (its image built again first). After a change
+   * to its part of compose.yaml or .env, or to its code. Output on
+   * `compose:progress`.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  service_up(project: string, service: string, build: boolean): Promise<null> {
+    return invoke("service_up", project, service, build);
   },
   /**
    * Delete a snapshot: a container's (its image) or a volume's (its file).

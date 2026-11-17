@@ -224,7 +224,7 @@ fn send(tx: &tokio::sync::mpsc::UnboundedSender<(String, LogLine)>, service: &st
 }
 
 /// Docker's timestamp off the front of a line (`2026-11-14T21:45:22.1Z text`).
-fn split_time(line: &str) -> (&str, &str) {
+pub(crate) fn split_time(line: &str) -> (&str, &str) {
     match line.split_once(' ') {
         Some((t, rest)) if t.len() >= 20 && t.as_bytes()[4] == b'-' && t.contains('T') => (t, rest),
         _ => ("", line),
@@ -402,23 +402,59 @@ fn compose_args(project: &str, labels: &HashMap<String, String>) -> Result<Vec<S
     Ok(args)
 }
 
+/// The `docker compose` flags for a project: from its containers' labels,
+/// or, when it's down, from what eDock remembers of it.
+async fn project_args(ctx: &Ctx, project: &str) -> Result<Vec<String>, String> {
+    match members(ctx, project).await {
+        Ok(members) => compose_args(project, &members[0].2),
+        Err(none) => {
+            let context = ctx.get::<Engine>().context().0;
+            compose_args(project, &saved(&context, project).ok_or(none)?.labels())
+        }
+    }
+}
+
 /// `docker compose up -d` for a project, from its own files and folder,
 /// with `--build` when `build` (Rebuild & up). On the engine the app shows;
 /// a project that is down comes up from what eDock remembers of it.
 /// Output on `compose:progress`.
 #[command(can = "edock.manage")]
 pub async fn project_up(ctx: Ctx, project: String, build: bool) -> Result<(), String> {
-    let mut args = match members(&ctx, &project).await {
-        Ok(members) => compose_args(&project, &members[0].2)?,
-        Err(none) => {
-            let context = ctx.get::<Engine>().context().0;
-            compose_args(&project, &saved(&context, &project).ok_or(none)?.labels())?
-        }
-    };
+    let mut args = project_args(&ctx, &project).await?;
     args.extend(["up".into(), "-d".into(), "--remove-orphans".into()]);
     if build {
         args.push("--build".into());
     }
+    run_compose(&ctx, &project, args).await
+}
+
+/// A service's name, as Compose takes it (and never a flag).
+fn valid_service(name: &str) -> Result<&str, String> {
+    let ok = !name.is_empty() && name.len() <= 128 && name.as_bytes()[0].is_ascii_alphanumeric() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    if ok { Ok(name) } else { Err(format!("{name:?} isn't a Compose service's name")) }
+}
+
+/// One service of a project made again, the rest left as they are:
+/// `docker compose up -d --no-deps --force-recreate SERVICE`, with
+/// `--build` when `build` (its image built again first). After a change
+/// to its part of compose.yaml or .env, or to its code. Output on
+/// `compose:progress`.
+#[command(can = "edock.manage")]
+pub async fn service_up(ctx: Ctx, project: String, service: String, build: bool) -> Result<(), String> {
+    let service = valid_service(&service)?.to_owned();
+    let mut args = project_args(&ctx, &project).await?;
+    args.extend(["up".into(), "-d".into(), "--no-deps".into(), "--force-recreate".into()]);
+    if build {
+        args.push("--build".into());
+    }
+    args.push(service);
+    run_compose(&ctx, &project, args).await
+}
+
+/// Runs `docker compose ARGS` on the engine the app shows, its lines on
+/// `compose:progress` for `project`, and says how it ended there too.
+async fn run_compose(ctx: &Ctx, project: &str, args: Vec<String>) -> Result<(), String> {
+    let project = project.to_owned();
     let docker = docker_cli().ok_or("The docker command isn't installed: Set up on the Engine page installs it")?;
     let host = ctx.get::<Engine>().context().1;
     let mut child = tokio::process::Command::new(docker)
@@ -454,9 +490,193 @@ pub async fn project_up(ctx: Ctx, project: String, build: bool) -> Result<(), St
     error.map_or(Ok(()), Err)
 }
 
+// ── What a project is made of ──────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, specta::Type, Clone, Debug, PartialEq)]
+pub struct ServiceView {
+    pub name: String,
+    pub image: Option<String>,
+    /// Its build context, when Compose builds its image.
+    pub build: Option<String>,
+    /// `8080:80/tcp` and the like, as published on the Mac.
+    pub ports: Vec<String>,
+    /// `source:target` (a volume's name or a folder), `:ro` when read-only.
+    pub volumes: Vec<String>,
+    /// Its environment variables' names; never their values.
+    pub env: Vec<String>,
+    pub depends_on: Vec<String>,
+    pub profiles: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, specta::Type, Clone, Debug, PartialEq)]
+pub struct EnvFileView {
+    pub path: String,
+    /// Its variables' names; never their values.
+    pub keys: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, specta::Type)]
+pub struct ComposeView {
+    pub dir: String,
+    pub files: Vec<String>,
+    pub services: Vec<ServiceView>,
+    /// The project's `.env`, and the env files it was started with.
+    pub env_files: Vec<EnvFileView>,
+}
+
+/// The services as `docker compose config --format json` gives them.
+fn services(config: &serde_json::Value) -> Vec<ServiceView> {
+    let strs = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect::<Vec<_>>()).unwrap_or_default();
+    let mut out: Vec<ServiceView> = config["services"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(name, s)| {
+            let mut env: Vec<String> = match &s["environment"] {
+                serde_json::Value::Object(m) => m.keys().cloned().collect(),
+                serde_json::Value::Array(a) => a.iter().filter_map(|x| x.as_str()).map(|x| x.split('=').next().unwrap_or(x).to_owned()).collect(),
+                _ => Vec::new(),
+            };
+            env.sort();
+            let ports = s["ports"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|p| {
+                    let host = p["published"].as_str().map(str::to_owned).or_else(|| p["published"].as_u64().map(|n| n.to_string()));
+                    let target = p["target"].as_u64().map(|n| n.to_string()).unwrap_or_default();
+                    let proto = p["protocol"].as_str().unwrap_or("tcp");
+                    let ip = p["host_ip"].as_str().filter(|i| !i.is_empty()).map(|i| format!("{i}:")).unwrap_or_default();
+                    match host {
+                        Some(h) if !h.is_empty() => format!("{ip}{h}:{target}/{proto}"),
+                        _ => format!("{target}/{proto}"),
+                    }
+                })
+                .collect();
+            let volumes = s["volumes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|v| {
+                    let ro = if v["read_only"] == true { ":ro" } else { "" };
+                    match v["source"].as_str().filter(|x| !x.is_empty()) {
+                        Some(src) => format!("{src}:{}{ro}", v["target"].as_str().unwrap_or("")),
+                        None => format!("{}{ro}", v["target"].as_str().unwrap_or("")),
+                    }
+                })
+                .collect();
+            let mut depends_on: Vec<String> = match &s["depends_on"] {
+                serde_json::Value::Object(m) => m.keys().cloned().collect(),
+                other => strs(other),
+            };
+            depends_on.sort();
+            ServiceView {
+                name: name.clone(),
+                image: s["image"].as_str().map(str::to_owned),
+                build: s["build"]["context"].as_str().or(s["build"].as_str()).map(str::to_owned),
+                ports,
+                volumes,
+                env,
+                depends_on,
+                profiles: strs(&s["profiles"]),
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// A dotenv file's variable names, in order, once each; comments and
+/// `export ` left out. Never the values.
+fn env_keys(text: &str) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        if let Some((k, _)) = line.split_once('=') {
+            let k = k.trim().to_owned();
+            if !k.is_empty() && !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+    }
+    keys
+}
+
+/// What a project is made of, as Compose reads its files: each service's
+/// image or build, ports, volumes, dependencies and the names of its
+/// variables, and the names in its `.env` and env files. Values never
+/// leave the Mac's files: they can be passwords.
+#[command(can = "edock.view")]
+pub async fn compose_view(ctx: Ctx, project: String) -> Result<ComposeView, String> {
+    let args = project_args(&ctx, &project).await?;
+    let dir = args.iter().position(|a| a == "--project-directory").and_then(|i| args.get(i + 1)).cloned().unwrap_or_default();
+    let files: Vec<String> = args.windows(2).filter(|w| w[0] == "-f").map(|w| w[1].clone()).collect();
+    let env_paths: Vec<String> = args.windows(2).filter(|w| w[0] == "--env-file").map(|w| w[1].clone()).collect();
+    let docker = docker_cli().ok_or("The docker command isn't installed: Set up on the Engine page installs it")?;
+    let mut cmd = args.clone();
+    cmd.extend(["config".into(), "--format".into(), "json".into()]);
+    let out = tokio::process::Command::new(docker)
+        .args(&cmd)
+        .env_remove("DOCKER_CONTEXT")
+        .env_remove("COMPOSE_PROJECT_NAME")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("Couldn't run docker compose: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("docker compose can't read the project: {}", err.lines().map(str::trim).rev().find(|l| !l.is_empty()).unwrap_or("it failed")));
+    }
+    let config: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| "docker compose said something eDock can't read".to_string())?;
+    // The project's own .env (unless env files were given instead), then those.
+    let mut env_files = Vec::new();
+    let default_env = Path::new(&dir).join(".env");
+    let paths: Vec<PathBuf> = if env_paths.is_empty() { vec![default_env] } else { env_paths.iter().map(PathBuf::from).collect() };
+    for p in paths {
+        if let Ok(text) = std::fs::read_to_string(&p) {
+            env_files.push(EnvFileView { path: p.display().to_string(), keys: env_keys(&text) });
+        }
+    }
+    Ok(ComposeView { dir, files, services: services(&config), env_files })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_reads_without_its_values() {
+        let config = serde_json::json!({"services": {
+            "web": {"build": {"context": "/x/web"}, "ports": [{"target": 80, "published": "8080", "protocol": "tcp", "host_ip": "127.0.0.1"}],
+                    "environment": {"DB_PASSWORD": "s3cret", "APP_ENV": "dev"}, "depends_on": {"db": {"condition": "service_healthy"}},
+                    "volumes": [{"type": "bind", "source": "/x/web", "target": "/app", "read_only": true}]},
+            "db": {"image": "postgres:17", "volumes": [{"type": "volume", "source": "pgdata", "target": "/var/lib/postgresql/data"}], "profiles": ["full"],
+                   "environment": ["POSTGRES_PASSWORD=hunter2"]}
+        }});
+        let s = services(&config);
+        assert_eq!(s.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["db", "web"]);
+        let (db, web) = (&s[0], &s[1]);
+        assert_eq!((db.image.as_deref(), db.build.as_deref()), (Some("postgres:17"), None));
+        assert_eq!(db.volumes, ["pgdata:/var/lib/postgresql/data"]);
+        assert_eq!(db.env, ["POSTGRES_PASSWORD"]);
+        assert_eq!(db.profiles, ["full"]);
+        assert_eq!(web.build.as_deref(), Some("/x/web"));
+        assert_eq!(web.ports, ["127.0.0.1:8080:80/tcp"]);
+        assert_eq!(web.volumes, ["/x/web:/app:ro"]);
+        assert_eq!(web.env, ["APP_ENV", "DB_PASSWORD"]);
+        assert_eq!(web.depends_on, ["db"]);
+        let all = format!("{s:?}");
+        assert!(!all.contains("s3cret") && !all.contains("hunter2"), "no values");
+        assert_eq!(env_keys("# c\nA=1\nexport B=\"two\"\n\nA=again\nnot a line\n C = 3"), ["A", "B", "C"]);
+        assert!(valid_service("web-1.api").is_ok());
+        for bad in ["", "-d", "a b", "../x"] {
+            assert!(valid_service(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn timestamps_come_off_the_front() {

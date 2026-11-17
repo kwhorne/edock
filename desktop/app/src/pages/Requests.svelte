@@ -1,4 +1,5 @@
-<!-- The HTTP inspector: requests through *.edock.localhost, and what the containers answered. -->
+<!-- The HTTP inspector: requests through *.edock.localhost, what the
+     containers answered, and what they wrote to their logs meanwhile. -->
 <script>
   import { clipboard, shell, toast } from "@elyra/runtime";
   import { Badge, Button, Callout, Empty, Input, Select, Switch, Tabs } from "@elyra/ui";
@@ -22,6 +23,9 @@
   let selected = $state(null);
   let detail = $state(null);
   let tab = $state("headers");
+  // What the containers wrote while the open request was handled.
+  let during = $state(null);
+  let duringError = $state(null);
 
   async function load() {
     if (!onEdock) return;
@@ -65,14 +69,63 @@
     if (!quiet) {
       selected = seq;
       detail = null;
+      during = null;
+      duringError = null;
     }
     try {
       const d = await api.http_request(seq);
-      if (selected === seq) detail = d;
+      if (selected !== seq) return;
+      detail = d;
+      // A failed one opens on what the containers said about it.
+      if (!quiet && (d.row.error || (d.row.status ?? 0) >= 500)) tab = "logs";
+      loadDuring(seq);
     } catch (e) {
       if (!quiet) toast(errorText(e), { variant: "error" });
     }
   }
+  async function loadDuring(seq) {
+    try {
+      const l = await api.http_request_logs(seq);
+      if (selected === seq) {
+        during = l;
+        duringError = null;
+      }
+    } catch (e) {
+      if (selected === seq) duringError = errorText(e);
+    }
+  }
+  // +12 ms, −300 ms, +1.20 s: from the request's arrival.
+  const offset = (s) => {
+    const ms = s * 1000;
+    const sign = ms < 0 ? "−" : "+";
+    const a = Math.abs(ms);
+    return `${sign}${a < 1000 ? `${Math.round(a)} ms` : `${(a / 1000).toFixed(2)} s`}`;
+  };
+  // Before it arrived, or after its response ended: the window's margins.
+  const outside = (l, row) => l.offset < 0 || (row.ms != null && l.offset * 1000 > row.ms);
+  const who = (l) => l.service ?? l.container;
+
+  // The exchange and its logs as Markdown, for an AI assistant (or a bug
+  // report). Secrets in headers are left out.
+  const SECRET = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-csrf-token)$/i;
+  function forAi(d, l) {
+    const fence = "```";
+    const cap = (t) => (t && t.length > 4000 ? `${t.slice(0, 4000)}\n… (cut)` : t || "");
+    const hs = (h) => h.map(([k, v]) => `${k}: ${SECRET.test(k) ? "[hidden]" : v}`).join("\n");
+    const out = [`## ${d.row.method} ${url(d.row)} → ${d.row.error ? `failed: ${d.row.error}` : `${d.row.status ?? "no answer"} ${d.row.reason}`} (${took(d.row.ms)})`, "", `Answered by the container \`${d.row.container}\`.`];
+    out.push("", "### Request headers", fence, hs(d.req_headers), fence);
+    if (d.req_body?.text) out.push("", "### Request body", fence, cap(d.req_body.text), fence);
+    if (d.res_headers.length) out.push("", "### Response headers", fence, hs(d.res_headers), fence);
+    if (d.res_body?.text) out.push("", "### Response body", fence, cap(pretty(d.res_body)), fence);
+    if (l) {
+      out.push("", `### Container logs from ${BEFORE_S} s before to ${AFTER_S} s after (${l.containers.join(", ")})`, fence);
+      out.push(l.lines.length ? l.lines.map((x) => `${offset(x.offset)} ${who(x)}${x.stderr ? " (stderr)" : ""}: ${x.text}`).join("\n") : "(nothing)");
+      out.push(fence);
+    }
+    return out.join("\n");
+  }
+  const BEFORE_S = 0.5;
+  const AFTER_S = 1;
 
   const all = $derived([...rows.values()].reverse());
   const containers = $derived([...new Set(all.map((r) => r.container))].sort());
@@ -209,6 +262,7 @@
             <div class="chips">
               <Button size="sm" onclick={() => clipboard.writeText(curl(detail)).then(() => toast("Copied as curl"))}>Copy as curl</Button>
               <Button size="sm" onclick={() => replay(detail)}>Replay</Button>
+              <Button size="sm" title="The request, the response and the container logs meanwhile, as Markdown (secrets in headers left out)" onclick={() => clipboard.writeText(forAi(detail, during)).then(() => toast("Copied for AI"))}>Copy for AI</Button>
               {#if detail.row.method === "GET"}<Button size="sm" variant="ghost" onclick={() => shell.openExternal(url(detail.row))}>Open</Button>{/if}
             </div>
             <Tabs
@@ -216,12 +270,37 @@
                 { id: "headers", label: "Headers" },
                 { id: "request", label: "Request", disabled: !detail.req_body },
                 { id: "response", label: "Response", disabled: !detail.res_body },
+                { id: "logs", label: `Logs${during?.lines.length ? ` (${during.lines.length})` : ""}` },
               ]}
               bind:value={tab}
               label="Request"
             >
               {#snippet panel(id)}
-                {#if id === "headers"}
+                {#if id === "logs"}
+                  {#if duringError}
+                    <Callout variant="warning">{duringError}</Callout>
+                  {:else if !during}
+                    <p class="muted">Loading…</p>
+                  {:else}
+                    <p class="muted small">
+                      What {during.containers.length > 1 ? `${during.containers.length} containers of its project` : during.containers[0]} wrote from {BEFORE_S} s before the request to {AFTER_S} s after its response{detail.row.done ? "" : " (so far)"}.
+                    </p>
+                    {#if during.lines.length}
+                      <div class="log-box during">
+                        {#each during.lines as l, i (i)}
+                          <div class="line" class:err={l.stderr} class:outside={outside(l, detail.row)}>
+                            <span class="muted mono at">{offset(l.offset)}</span>
+                            {#if during.containers.length > 1}<span class="svc" class:mine={l.container === detail.row.container}>{who(l)}</span>{/if}
+                            <span class="text">{l.text}</span>
+                          </div>
+                        {/each}
+                      </div>
+                      {#if during.cut}<p class="muted small">The first 1,000 lines.</p>{/if}
+                    {:else}
+                      <p class="muted">Nothing was written meanwhile.</p>
+                    {/if}
+                  {/if}
+                {:else if id === "headers"}
                   <h4>Request</h4>
                   <table class="kv"><tbody>{#each detail.req_headers as [k, v], i (i)}<tr><td>{k}</td><td class="mono">{v}</td></tr>{/each}</tbody></table>
                   <h4>Response</h4>

@@ -17,6 +17,7 @@ Each row shows:
 Click a row, or press Enter on it, to open the container. Right-click a row for more:
 
 - Open, Terminal and Logs
+- for a Compose service, **Recreate** and **Rebuild & recreate** that service (see [Compose projects](#compose-projects))
 - Start or Stop, Restart, and Pause or Resume
 - Copy ID and Copy name
 - Remove
@@ -79,6 +80,7 @@ A project's header shows:
 - **How many run**, for example `2/3 running`.
 - **The project's folder**, from Compose's `working_dir` label. Click it to open it in **Finder**, **Terminal** or your editor (Cursor, VS Code, Zed, Windsurf, Sublime Text or Nova, whichever is installed), or to copy it.
 - **Actions for the whole project:**
+  - **What it's made of** (the page icon): each service as `docker compose config` reads the project's files, with its image or build folder, ports, volumes, the services it needs, its profiles, and the names of its variables. The project's `.env` (or the env files it was started with) shows its variables' names too. Values never show: they're often passwords. Each service has **Recreate** (`docker compose up -d --no-deps --force-recreate SERVICE`), and one that's built has **Rebuild & recreate** (`… --build`), which make that service again and leave the rest as they are. Use them after changing its part of `compose.yaml` or `.env`, or its code.
   - **All its logs**: every service's log as one, in time order, each line with its service in its own colour. Click a service's name above the log to hide it; filter, timestamps and copy work as for one container.
   - **Rebuild & up**: `docker compose up -d --build --remove-orphans` (a service you took out of the Compose file is removed), from the project's own Compose files and folder (from the containers' labels), on the engine the app shows. Its output shows as it runs. It needs the `docker` command with Compose: [Set up](engine-and-contexts.md#command-line) installs them.
   - **Start all**, which skips the containers already running.
@@ -145,6 +147,11 @@ Live, about once a second, with a graph of the last minute for each:
 This is a shell in the running container: `bash` when the image has it, otherwise `sh`. It's a full terminal with colours, cursor keys and full-screen programs such as `vim` and `top`. It follows the window's size.
 
 When the shell exits, press **Enter** to open a new one.
+
+- **Links**: a web address in the output is a link. **⌘-click** it to open it in your browser; a plain click still selects text. Over a link, the bottom corner says where it goes.
+- **Find**: **⌘F** opens a find bar over the terminal, with what's selected in it already. It finds in what the terminal shows and the 5,000 lines it has scrolled by, and says how many matches there are. **Enter** or **⌘G** goes to the next one, **⇧Enter** or **⇧⌘G** to the one before, and **Esc** closes it.
+
+The same terminal is in [Linux machines](machines.md) and [Kubernetes pods](kubernetes.md#a-pod) (**Shell**).
 
 ### Files
 

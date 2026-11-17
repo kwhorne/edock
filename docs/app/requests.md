@@ -25,10 +25,12 @@ Click a request to open it beside the list:
 - its status, the full URL, how long it waited for the response to start and how long it took in all, and the sizes;
 - **Headers**: the request's and the response's;
 - **Request** and **Response**: the bodies, as text. JSON is indented, and gzip and deflate are undone for a body within 32 KB (a longer compressed one shows as binary). A binary body shows its size.
+- **Logs**: what the container wrote while it handled the request, and the rest of its Compose project too, from half a second before the request arrived to a second after its response ended. Each line says how long after the request's arrival it came (`+12 ms`), and, in a project, which service wrote it. Lines from before the request or after its response are dimmed, and stderr lines are marked. A request that failed (no answer, or a 5xx status) opens on this tab.
 
 | Button | |
 |---|---|
 | **Copy as curl** | The request as a `curl` command |
+| **Copy for AI** | The request, the response and the logs meanwhile, as Markdown to paste into an AI assistant or a bug report. `Authorization`, `Cookie` and other secret headers are left out, and long bodies are cut. |
 | **Replay** | Sends the request again, as recorded, and it shows as a new request. Not for a body longer than 32 KB, a binary or compressed body, or a WebSocket. |
 | **Open** | Opens a GET in the browser |
 
@@ -36,4 +38,4 @@ A WebSocket shows as its `101 Switching Protocols`; the messages after it aren't
 
 ## AI agents
 
-`http_requests` and `http_request` are among eDock's [MCP tools](ai-agents.md), so an agent can see which requests fail and what the container answered.
+`http_requests`, `http_request` and `http_request_logs` are among eDock's [MCP tools](ai-agents.md), so an agent can see which requests fail, what the container answered, and what it logged meanwhile.

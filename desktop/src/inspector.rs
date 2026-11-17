@@ -148,6 +148,120 @@ pub async fn http_request(ctx: Ctx, seq: u32) -> Result<HttpExchange, String> {
     })
 }
 
+#[derive(Serialize, Deserialize, specta::Type, Clone, Debug)]
+pub struct DuringLine {
+    /// The container that wrote it.
+    pub container: String,
+    /// Its Compose service, in a project.
+    pub service: Option<String>,
+    pub stderr: bool,
+    /// Seconds after the request arrived; negative just before it.
+    pub offset: f64,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, specta::Type)]
+pub struct DuringLogs {
+    /// The window, in Unix seconds: from a moment before the request
+    /// arrived to a moment after its response ended.
+    pub from: f64,
+    pub to: f64,
+    /// The containers read: the one that answered, and the rest of its
+    /// Compose project.
+    pub containers: Vec<String>,
+    /// In time order.
+    pub lines: Vec<DuringLine>,
+    /// More lines than shown (the first ones are kept).
+    pub cut: bool,
+}
+
+/// How far before the request, and after its end, the window reaches:
+/// lines are stamped as they reach the engine, a little after they're written.
+const BEFORE: f64 = 0.5;
+const AFTER: f64 = 1.0;
+const MAX_LINES: usize = 1000;
+
+/// Unix seconds from Docker's log timestamp (`2026-11-17T21:45:22.123456789Z`,
+/// always UTC).
+fn unix_time(t: &str) -> Option<f64> {
+    let t = t.strip_suffix('Z')?;
+    let (date, clock) = t.split_once('T')?;
+    let mut d = date.split('-').map(|n| n.parse::<i64>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    let (hms, frac) = clock.split_once('.').unwrap_or((clock, ""));
+    let mut c = hms.split(':').map(|n| n.parse::<i64>().ok());
+    let (h, min, sec) = (c.next()??, c.next()??, c.next()??);
+    // Days since 1970-01-01, by Howard Hinnant's days_from_civil.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let frac: f64 = if frac.is_empty() { 0.0 } else { format!("0.{frac}").parse().ok()? };
+    Some((days * 86_400 + h * 3600 + min * 60 + sec) as f64 + frac)
+}
+
+/// What the containers wrote while a request was handled: the one that
+/// answered, and the rest of its Compose project, from a moment before
+/// the request arrived to a moment after its response ended (or now, while
+/// it hasn't). Each line with its offset from the request's start.
+#[command(can = "edock.view")]
+pub async fn http_request_logs(ctx: Ctx, seq: u32) -> Result<DuringLogs, String> {
+    use bollard::query_parameters as q;
+    use futures_util::StreamExt;
+    on_edock(&ctx)?;
+    let r = row(&ask("GET", &format!("/edock/http/{seq}"), None).await?);
+    let end = match r.ms {
+        Some(ms) if r.done => r.at + ms / 1000.0,
+        _ => now(),
+    };
+    let (from, to) = (r.at - BEFORE, end + AFTER);
+    let docker = ctx.get::<crate::engine::Engine>().docker()?;
+    // The project's containers, when it's in one; else it alone.
+    let mut who: Vec<(String, Option<String>)> = vec![(r.container.clone(), None)];
+    if let Ok(info) = docker.inspect_container(&r.container, None::<q::InspectContainerOptions>).await {
+        let labels = info.config.and_then(|c| c.labels).unwrap_or_default();
+        who[0].1 = labels.get("com.docker.compose.service").cloned();
+        if let Some(project) = labels.get("com.docker.compose.project") {
+            let mut filters = std::collections::HashMap::new();
+            filters.insert("label".to_string(), vec![format!("com.docker.compose.project={project}")]);
+            let list = docker.list_containers(Some(q::ListContainersOptionsBuilder::default().all(true).filters(&filters).build())).await.unwrap_or_default();
+            for c in list {
+                let name = c.names.and_then(|n| n.first().map(|n| n.trim_start_matches('/').to_owned())).unwrap_or_default();
+                if !name.is_empty() && name != r.container {
+                    who.push((name, c.labels.unwrap_or_default().get("com.docker.compose.service").cloned()));
+                }
+            }
+        }
+    }
+    let mut lines = Vec::new();
+    for (name, service) in &who {
+        // Whole seconds for the API; the lines are cut to the window below.
+        let opts = q::LogsOptionsBuilder::default().stdout(true).stderr(true).timestamps(true).since(from.floor() as i32).until(to.ceil() as i32 + 1).build();
+        let mut logs = docker.logs(name, Some(opts));
+        while let Some(Ok(chunk)) = logs.next().await {
+            let stderr = matches!(chunk, bollard::container::LogOutput::StdErr { .. });
+            let raw = String::from_utf8_lossy(&chunk.into_bytes()).into_owned();
+            for line in raw.lines() {
+                let (stamp, text) = crate::compose::split_time(line);
+                let Some(t) = unix_time(stamp) else { continue };
+                if t >= from && t <= to {
+                    lines.push(DuringLine { container: name.clone(), service: service.clone(), stderr, offset: t - r.at, text: text.to_owned() });
+                }
+            }
+        }
+    }
+    lines.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+    let cut = lines.len() > MAX_LINES;
+    lines.truncate(MAX_LINES);
+    Ok(DuringLogs { from, to, containers: who.into_iter().map(|(n, _)| n).collect(), lines, cut })
+}
+
+fn now() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
 /// Start or stop recording.
 #[command]
 pub async fn http_record(ctx: Ctx, on: bool) -> Result<(), String> {
@@ -205,4 +319,18 @@ pub async fn http_replay(ctx: Ctx, seq: u32) -> Result<(), String> {
         Ok::<_, String>(())
     };
     tokio::time::timeout(std::time::Duration::from_secs(60), fut).await.map_err(|_| "The container took over a minute to answer".to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn docker_timestamps_read_as_unix_seconds() {
+        assert_eq!(super::unix_time("1970-01-01T00:00:00Z"), Some(0.0));
+        assert_eq!(super::unix_time("2000-03-01T00:00:00Z"), Some(951_868_800.0));
+        let t = super::unix_time("2026-11-17T21:45:22.123456789Z").unwrap();
+        assert!((t - 1_794_951_922.123_456_789).abs() < 1e-6, "{t}");
+        assert_eq!(super::unix_time("2024-02-29T12:00:00.5Z"), Some(1_709_208_000.5));
+        assert!(super::unix_time("not a time").is_none());
+        assert!(super::unix_time("2026-11-17T21:45:22+01:00").is_none(), "UTC only, as Docker writes them");
+    }
 }

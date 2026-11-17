@@ -688,6 +688,7 @@ async fn resources_builder_import_list_and_diagnostics() {
 
     let before: VmInfo = app.invoke("vm_info", ()).await.unwrap();
     assert!(before.max_cpus >= 1 && before.max_memory_mib >= 1024 && before.cpus >= 1);
+    assert!(["none", "some", "high"].contains(&before.memory_pressure.as_str()) && before.memory_stall >= 0.0, "{}", before.memory_pressure);
     // The user's own size, as it was (no file: eDock's defaults): put back
     // whatever happens below, or a failed run leaves their VM small.
     let file = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".edock/vm.json");
@@ -960,6 +961,8 @@ async fn the_http_inspector() {
         assert!(start.elapsed() < Duration::from_secs(20), "nginx never answered");
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
+    // Well before the request: its log lines stay out of its window.
+    tokio::time::sleep(Duration::from_secs(2)).await;
     ask("/api/orders", r#"{"n":1}"#).await;
 
     let mine = |l: &HttpLog| l.items.iter().filter(|r| r.container == name && r.url == "/api/orders").map(|r| r.seq).collect::<Vec<_>>();
@@ -970,6 +973,16 @@ async fn the_http_inspector() {
     assert_eq!((d.row.method.as_str(), d.row.status, d.row.done), ("POST", Some(404), true));
     assert_eq!(d.req_body.and_then(|b| b.text).as_deref(), Some(r#"{"n":1}"#));
     assert!(d.res_headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("server") && v.starts_with("nginx")));
+
+    // What nginx wrote while it answered: its access line (stdout) and its
+    // error line (stderr), not the earlier requests to /.
+    let during: crate::inspector::DuringLogs = app.invoke("http_request_logs", (seqs[0],)).await.unwrap();
+    assert_eq!(during.containers, [name.clone()]);
+    assert!(during.lines.iter().any(|l| !l.stderr && l.text.contains("POST /api/orders") && l.text.contains(" 404 ")), "{:?}", during.lines);
+    assert!(during.lines.iter().any(|l| l.stderr && l.text.contains("/api/orders")), "nginx's error line: {:?}", during.lines);
+    assert!(during.lines.iter().all(|l| !l.text.contains("POST / HTTP")), "an earlier request's line: {:?}", during.lines);
+    assert!(during.lines.iter().all(|l| l.offset >= -0.5 && l.offset <= during.to - during.from), "{:?}", during.lines);
+    assert!(during.lines.windows(2).all(|w| w[0].offset <= w[1].offset), "in time order");
 
     // Only what changed since: nothing.
     let since: HttpLog = app.invoke("http_requests", (Some(log.version),)).await.unwrap();
@@ -1395,9 +1408,10 @@ async fn a_compose_project_as_a_whole() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("compose.yaml"),
-        "services:\n  api:\n    image: alpine:latest\n    command: sh -c 'echo api-says-hi; sleep 300'\n    labels: [app.edock.test=1]\n  worker:\n    image: alpine:latest\n    command: sh -c 'echo worker-says-hi; sleep 300'\n    labels: [app.edock.test=1]\n",
+        "services:\n  api:\n    image: alpine:latest\n    command: sh -c 'echo api-says-hi; sleep 300'\n    environment:\n      API_SECRET: hunter2\n      FROM_DOTENV: ${DOTENV_VALUE}\n    labels: [app.edock.test=1]\n  worker:\n    image: alpine:latest\n    command: sh -c 'echo worker-says-hi; sleep 300'\n    labels: [app.edock.test=1]\n",
     )
     .unwrap();
+    std::fs::write(dir.join(".env"), "# for the test\nDOTENV_VALUE=s3cret\n").unwrap();
     let compose = |args: &[&str]| std::process::Command::new("docker").args(["compose", "-p", &project]).args(args).current_dir(&dir).env("DOCKER_HOST", &host).env_remove("DOCKER_CONTEXT").output().unwrap();
     let up = compose(&["up", "-d"]);
     assert!(up.status.success(), "{}", String::from_utf8_lossy(&up.stderr));
@@ -1417,6 +1431,30 @@ async fn a_compose_project_as_a_whole() {
     let _: () = app.invoke("stream_stop", (id,)).await.unwrap();
 
     assert!(app.invoke::<String>("folder_open", ("relative/path".to_string(), "finder".to_string())).await.is_err());
+
+    // What it's made of: names, never values.
+    let view: crate::compose::ComposeView = app.invoke("compose_view", (project.clone(),)).await.unwrap();
+    let api = view.services.iter().find(|s| s.name == "api").expect("api");
+    assert_eq!(api.env, ["API_SECRET", "FROM_DOTENV"]);
+    assert_eq!(view.env_files.len(), 1);
+    assert_eq!(view.env_files[0].keys, ["DOTENV_VALUE"]);
+    let shown = serde_json::to_string(&view.services).unwrap() + &serde_json::to_string(&view.env_files).unwrap();
+    assert!(!shown.contains("hunter2") && !shown.contains("s3cret"), "no values: {shown}");
+
+    // One service made again; the other stays as it was.
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let ids = |docker: bollard::Docker, project: String| async move {
+        let mut filters = std::collections::HashMap::new();
+        filters.insert("label".to_string(), vec![format!("com.docker.compose.project={project}")]);
+        let list = docker.list_containers(Some(bollard::query_parameters::ListContainersOptionsBuilder::default().filters(&filters).build())).await.unwrap();
+        list.into_iter().map(|c| (c.labels.unwrap_or_default().get("com.docker.compose.service").cloned().unwrap_or_default(), c.id.unwrap_or_default())).collect::<std::collections::HashMap<_, _>>()
+    };
+    let before = ids(docker.clone(), project.clone()).await;
+    let _: () = app.invoke("service_up", (project.clone(), "api".to_string(), false)).await.unwrap();
+    let after = ids(docker.clone(), project.clone()).await;
+    assert_ne!(before["api"], after["api"], "api made again");
+    assert_eq!(before["worker"], after["worker"], "worker left alone");
+    assert!(app.invoke_err("service_up", (project.clone(), "--all".to_string(), false)).await.contains("isn't a Compose service"));
 
     // Remembered, and still there after `docker compose down`, with Up.
     use crate::compose::ProjectRow;

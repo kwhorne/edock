@@ -26,7 +26,7 @@ It also uses:
 | Component | Licence |
 |---|---|
 | [bollard](https://github.com/fussybeaver/bollard), the Docker API client | Apache-2.0 |
-| [xterm.js](https://xtermjs.org), the terminal | MIT |
+| [xterm.js](https://xtermjs.org), the terminal, with its fit, web-links and search add-ons | MIT |
 | [Svelte](https://svelte.dev) | MIT |
 
 ## What runs in containers

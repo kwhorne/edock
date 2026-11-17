@@ -68,7 +68,37 @@ impl Provider for Watcher {
                 refresh_tray(&ctx, Some(connected)).await;
             });
         }, on_alert);
+        watch_memory(ctx.clone());
     }
+}
+
+/// eDock's VM short of memory for half a minute (two looks, 15 s apart):
+/// told as an alert (the popover, the menu bar's dot, a note). A
+/// background look at /info, which doesn't keep the VM awake.
+fn watch_memory(ctx: Ctx) {
+    tokio::spawn(async move {
+        let mut high = 0u32;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            if ctx.get::<engine::Engine>().context().0 != engine::EDOCK {
+                high = 0;
+                continue;
+            }
+            let level = match daemon::engine_request("GET", "/info").await {
+                Some((200, i)) if i["EdockVmAwake"] == true => {
+                    let n = |k: &str| i[k].as_f64().unwrap_or(0.0);
+                    alerts::pressure(n("EdockMemoryStall"), n("EdockMemoryUsed"), n("EdockMemoryCeiling"))
+                }
+                _ => "none",
+            };
+            high = if level == "high" { high + 1 } else { 0 };
+            if high == 2 {
+                let a = alerts::Alert { id: "vm".into(), name: "Containers".into(), what: alerts::What::MemoryPressure };
+                alerts::show(&ctx.get::<alerts::Alerts>(), &ctx.get::<elyra::notifier::Notifier>(), &ctx.get::<EventBus>(), a);
+                refresh_tray(&ctx, None).await;
+            }
+        }
+    });
 }
 
 /// The menu bar item: how many of the user's containers run, a dot when
@@ -246,6 +276,7 @@ fn core(engine: Arc<engine::Engine>) -> App {
             inspector::http_record,
             inspector::http_clear,
             inspector::http_replay,
+            inspector::http_request_logs,
             snapshots::snapshots_list,
             snapshots::container_snapshot,
             snapshots::container_snapshot_restore,
@@ -271,6 +302,8 @@ fn core(engine: Arc<engine::Engine>) -> App {
             compose::compose_projects,
             compose::compose_project_open,
             compose::compose_project_forget,
+            compose::service_up,
+            compose::compose_view,
             alerts::alerts_recent,
             alerts::alerts_seen,
             volumes::volume_browse,

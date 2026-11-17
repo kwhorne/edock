@@ -193,8 +193,9 @@ pub async fn machine_ssh(_ctx: Ctx) -> Result<MachineSsh, String> {
 
 /// `ssh NAME.edock` on or off for every machine: `edock machine ssh on|off`.
 /// On makes eDock's key (`~/.edock/ssh`) and puts one `Include` line first
-/// in `~/.ssh/config`; off takes the line out.
-#[command(can = "edock.manage")]
+/// in `~/.ssh/config`; off takes the line out. The window's only: not an
+/// agent's tool, as it changes the user's SSH settings.
+#[command]
 pub async fn machine_ssh_set(_ctx: Ctx, on: bool) -> Result<(), String> {
     let bin = crate::daemon::engine_binary().ok_or("The eDock engine (edock) isn't installed")?;
     let out = tokio::process::Command::new(bin)

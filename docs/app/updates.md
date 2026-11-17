@@ -14,7 +14,7 @@ eDock replaces itself only in a folder you can write to, normally Applications. 
 
 ## Then restart the engine
 
-The engine that was running keeps running the previous version, so your containers aren't interrupted by the update. The Engine page notices and offers **Restart engine**. Press it when it suits you. Running containers stop and start again, and an engine you'd stopped stays stopped.
+The engine that was running keeps running the previous version, so your containers aren't interrupted by the update. A bar above every page notices and offers **Restart engine**. Press it when it suits you, or **Later** to hide the bar until eDock starts again. Running containers stop and start again, and an engine you'd stopped stays stopped.
 
 ## How an update is checked
 

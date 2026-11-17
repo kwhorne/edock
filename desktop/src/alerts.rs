@@ -24,6 +24,24 @@ use crate::engine::Settings;
 pub enum What {
     OutOfMemory,
     Unhealthy,
+    /// Containers keep waiting on memory (`id` "vm"): the VM is nearly
+    /// full, or a container's own limit is too low.
+    MemoryPressure,
+}
+
+/// How short of memory eDock's VM is, from PSI's "full avg10" (the share of
+/// the last 10 s in which every task waited on memory, in percent) and how
+/// much of the most it may take its containers use. One rule for the Engine
+/// page, the popover and the warning.
+pub fn pressure(stall: f64, used: f64, ceiling: f64) -> &'static str {
+    let share = if ceiling > 0.0 { used / ceiling } else { 0.0 };
+    if stall >= 10.0 || share >= 0.95 {
+        "high"
+    } else if stall >= 2.0 || share >= 0.85 {
+        "some"
+    } else {
+        "none"
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -64,6 +82,8 @@ pub struct Alerts {
 }
 
 const QUIET: Duration = Duration::from_secs(600);
+/// The VM's memory: once in half an hour, while it lasts.
+const QUIET_MEMORY: Duration = Duration::from_secs(1800);
 /// How long the popover lists an alert.
 const RECENT: Duration = Duration::from_secs(3600);
 
@@ -95,7 +115,8 @@ impl Alerts {
     fn due(&self, a: &Alert) -> bool {
         let key = (a.id.clone(), a.what as u8);
         let mut last = self.last.lock();
-        if last.get(&key).is_some_and(|t| t.elapsed() < QUIET) {
+        let quiet = if a.what == What::MemoryPressure { QUIET_MEMORY } else { QUIET };
+        if last.get(&key).is_some_and(|t| t.elapsed() < quiet) {
             return false;
         }
         last.insert(key, Instant::now());
@@ -113,9 +134,13 @@ pub fn show(alerts: &Alerts, notifier: &Notifier, bus: &Arc<EventBus>, a: Alert)
     let (title, body) = match a.what {
         What::OutOfMemory => (format!("{} ran out of memory", a.name), "The kernel stopped it: it used all the memory it may have. Click for its last log lines."),
         What::Unhealthy => (format!("{} is unhealthy", a.name), "Its health check keeps failing. Click for its log."),
+        What::MemoryPressure => (
+            "Containers are waiting for memory".to_owned(),
+            "The kernel may soon stop one. A container's own memory limit may be too low, or the VM too small: the Engine page says which.",
+        ),
     };
     let bus = bus.clone();
-    let path = format!("/containers/{}?tab=logs", a.id);
+    let path = if a.what == What::MemoryPressure { "/engine".to_owned() } else { format!("/containers/{}?tab=logs", a.id) };
     let on_click = Box::new(move || {
         let _ = bus.emit("tray", &"open");
         let _ = bus.emit("navigate", &path);
@@ -127,7 +152,8 @@ pub fn show(alerts: &Alerts, notifier: &Notifier, bus: &Arc<EventBus>, a: Alert)
 pub struct RecentAlert {
     pub id: String,
     pub name: String,
-    /// "oom" (the kernel stopped it: out of memory) or "unhealthy".
+    /// "oom" (the kernel stopped it: out of memory), "unhealthy", or
+    /// "memory" (containers kept waiting on it; `id` is "vm").
     pub what: String,
     /// How long ago, in seconds.
     pub ago: u32,
@@ -140,7 +166,17 @@ pub async fn alerts_recent(ctx: Ctx) -> Vec<RecentAlert> {
     ctx.get::<Alerts>()
         .list()
         .into_iter()
-        .map(|(a, ago)| RecentAlert { id: a.id, name: a.name, what: if a.what == What::OutOfMemory { "oom" } else { "unhealthy" }.into(), ago: ago.as_secs() as u32 })
+        .map(|(a, ago)| RecentAlert {
+            id: a.id,
+            name: a.name,
+            what: match a.what {
+                What::OutOfMemory => "oom",
+                What::Unhealthy => "unhealthy",
+                What::MemoryPressure => "memory",
+            }
+            .into(),
+            ago: ago.as_secs() as u32,
+        })
         .collect()
 }
 
@@ -185,6 +221,26 @@ mod tests {
         assert!(from_event(&ev("oom", json!({"name": "buildx_buildkit_edock-build0"}))).is_none(), "BuildKit");
         assert!(from_event(&ev("oom", json!({"name": "x", "app.edock.helper": "agent-run"}))).is_none(), "a helper");
         assert!(from_event(&json!({"Type": "image", "Action": "oom"})).is_none());
+    }
+
+    #[test]
+    fn memory_pressure_from_stall_and_use() {
+        assert_eq!(pressure(0.0, 1e9, 8e9), "none");
+        assert_eq!(pressure(3.0, 1e9, 8e9), "some", "stalled a little");
+        assert_eq!(pressure(0.0, 7e9, 8e9), "some", "most of it used");
+        assert_eq!(pressure(12.0, 1e9, 8e9), "high", "stalled a lot");
+        assert_eq!(pressure(0.0, 7.7e9, 8e9), "high", "nearly all used");
+        assert_eq!(pressure(0.0, 0.0, 0.0), "none", "asleep");
+    }
+
+    #[test]
+    fn memory_is_told_once_in_half_an_hour() {
+        let alerts = Alerts::default();
+        let vm = Alert { id: "vm".into(), name: "eDock's VM".into(), what: What::MemoryPressure };
+        assert!(alerts.due(&vm));
+        assert!(!alerts.due(&vm));
+        *alerts.last.lock().get_mut(&("vm".to_string(), What::MemoryPressure as u8)).unwrap() -= Duration::from_secs(900);
+        assert!(!alerts.due(&vm), "still within half an hour");
     }
 
     #[test]

@@ -37,17 +37,27 @@ The agent starts eDock with `--mcp` and talks to it over stdio. When the app is 
 | `container_ports` | The ports a container really listens on, published or not | |
 | `domains_info` | Where containers answer (`<name>.edock.localhost`) | |
 | `http_requests`, `http_request` | Requests through container domains, while [Requests](requests.md) records | |
+| `http_request_logs` | What the containers (the one that answered and the rest of its Compose project) wrote while a request was handled | |
+| `alerts_recent` | Containers that ran out of memory or turned unhealthy in the last hour | |
+| `compose_projects` | Compose projects eDock remembers, those that are down too | |
+| `compose_view` | What a Compose project is made of: each service's image or build, ports, volumes, dependencies, and its variables' names (never their values) | |
 | `images_list`, `image_layers` | Images, and each Dockerfile line's size | |
+| `image_run_defaults` | What Run image… suggests for an image: a name, its ports, where it keeps data | |
 | `image_scans`, `image_scan_result` | Vulnerability scans | |
 | `volumes_list`, `networks_list` | Volumes and networks | |
-| `machines_list` | Linux machines | |
+| `machines_list`, `machine_ssh` | Linux machines, and whether `ssh NAME.edock` reaches them | |
 | `container_files`, `container_file_preview` | A container's folders, and the start of a file | |
 | `recipes_list` | The services a recipe starts | |
 | `engine_log` | eDock's engine log, or only its warnings and errors | |
-| `k8s_status`, `k8s_items` | The Kubernetes cluster, its pods and services | |
+| `k8s_status`, `k8s_items` | The Kubernetes cluster, its pods (and why one is stuck) and services | |
+| `k8s_pod_events` | What Kubernetes said about a pod | |
 | `container_action`, `project_action` | Start, stop, restart, pause, unpause, kill or remove a container or a Compose project | Yes |
 | `image_pull` | Pull an image | Yes |
-| `project_up` | `docker compose up -d` (with `--build`) for a Compose project | Yes |
+| `project_up` | `docker compose up -d` (with `--build`) for a Compose project, one that is down too | Yes |
+| `service_up` | Make one service of a Compose project again (`up -d --no-deps --force-recreate`, with `--build` if asked), the rest left as they are | Yes |
+| `compose_project_open`, `compose_project_forget` | Remember a Compose project from its folder, or forget one | Yes |
+| `image_run` | A container from an image, as `docker run -d`: name, ports, Mac folders and volumes, variables, command | Yes |
+| `k8s_load` | Load an image from eDock into the Kubernetes cluster | Yes |
 | `volume_clone` | Copy a volume into a new one | Yes |
 | `recipe_start` | Start PostgreSQL, MySQL, ElyraSQL, SQL Anywhere, Redis, RabbitMQ… for development, or Askr for a project folder | Yes |
 | `snapshots_list` | Snapshots of containers and volumes | |
@@ -58,7 +68,7 @@ The agent starts eDock with `--mcp` and talks to it over stdio. When the app is 
 
 `container_run` is the safe place to try something: the container has **no network** unless the agent asks for it, stops after 60 seconds (at most 10 minutes), and is removed afterwards. It touches nothing on the Mac. Output longer than 64 KB is cut.
 
-Agents can't create or remove volumes or networks, change the engine's settings, or reach Kubernetes beyond reading it.
+Agents can't create or remove volumes or networks, change the engine's settings or your SSH settings, or reach Kubernetes beyond reading it and loading an image into it.
 
 ## Try it
 

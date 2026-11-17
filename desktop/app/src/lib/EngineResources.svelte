@@ -56,7 +56,23 @@
     <div class="engine-card">
     <dl class="facts-grid">
       <dt>VM</dt><dd>{#if vm.awake}<Badge variant="success">awake</Badge> {vm.running_cpus} CPUs, {Math.round(vm.running_memory_mib / 1024)} GB{:else}<Badge variant="accent">asleep</Badge> it wakes when something needs it{/if}</dd>
-      <dt>Containers use</dt><dd>{vm.awake ? `${bytes(vm.memory_used)} of ${bytes(vm.memory_ceiling)}` : "—"} {#if vm.awake && vm.memory_ceiling}<span class="meter"><span style="width: {Math.min(100, (vm.memory_used / vm.memory_ceiling) * 100)}%"></span></span>{/if}</dd>
+      <dt>Containers use</dt><dd>{vm.awake ? `${bytes(vm.memory_used)} of ${bytes(vm.memory_ceiling)}` : "—"} {#if vm.awake && vm.memory_ceiling}<span class="meter {vm.memory_pressure}"><span style="width: {Math.min(100, (vm.memory_used / vm.memory_ceiling) * 100)}%"></span></span>{/if}</dd>
+      {#if vm.awake}
+        <dt>Memory pressure</dt>
+        <dd>
+          <Badge variant={vm.memory_pressure === "high" ? "danger" : vm.memory_pressure === "some" ? "warning" : "success"}>{vm.memory_pressure === "high" ? "high" : vm.memory_pressure === "some" ? "some" : "none"}</Badge>
+          <span class="muted">{vm.memory_stall ? `waiting on memory ${vm.memory_stall.toFixed(1)}% of the last 10 s` : "nothing waits on memory"}</span>
+          {#if vm.memory_pressure !== "none"}
+            <div class="muted small">
+              {#if vm.memory_ceiling && vm.memory_used / vm.memory_ceiling >= 0.85}
+                The VM's memory is nearly all used: give it more below, or stop what you don't need, before the kernel stops a container.
+              {:else}
+                The VM has room, so a container's own memory limit (<code>-m</code>, <code>mem_limit</code>) is the likely cause: its Stats tab shows which one is at its limit. Raise that limit, or give the VM more below.
+              {/if}
+            </div>
+          {/if}
+        </dd>
+      {/if}
       <dt>CPU</dt><dd>{vm.awake ? percent(vm.cpu_percent) : "—"}</dd>
       <dt>The engine</dt><dd>{bytes(vm.engine_memory)} on the Mac</dd>
       <dt>Guest agent</dt><dd>{vm.awake ? `${bytes(vm.agent_memory)} in the VM` : "—"}</dd>

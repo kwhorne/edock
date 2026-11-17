@@ -117,7 +117,7 @@
   });
   onDestroy(offUp);
   async function projectUp(g, build) {
-    up = { project: g.project, build, lines: [], done: false, error: null };
+    up = { project: g.project, title: `${build ? "Rebuild & up" : "Up"}: ${g.project}`, what: build ? "docker compose up -d --build" : "docker compose up -d", lines: [], done: false, error: null };
     upOpen = true;
     busy[g.project] = "up";
     try {
@@ -127,6 +127,42 @@
       up = { ...up, done: true, error: errorText(e) };
     }
     busy[g.project] = null;
+  }
+
+  // One service made again, the rest left as they are.
+  async function serviceUp(project, service, build) {
+    viewOpen = false;
+    up = {
+      project,
+      title: `${build ? "Rebuild & recreate" : "Recreate"}: ${service}`,
+      what: `docker compose up -d --no-deps --force-recreate${build ? " --build" : ""} ${service}`,
+      lines: [],
+      done: false,
+      error: null,
+    };
+    upOpen = true;
+    busy[project] = "up";
+    try {
+      await api.service_up(project, service, build);
+      toast(`${service} made again`, { variant: "success" });
+    } catch (e) {
+      up = { ...up, done: true, error: errorText(e) };
+    }
+    busy[project] = null;
+  }
+
+  // ── What a project is made of ──
+  let view = $state(null); // { project, data, error }
+  let viewOpen = $state(false);
+  async function showView(g) {
+    view = { project: g.project, data: null, error: null };
+    viewOpen = true;
+    try {
+      const data = await api.compose_view(g.project);
+      if (view?.project === g.project) view = { ...view, data };
+    } catch (e) {
+      if (view?.project === g.project) view = { ...view, error: errorText(e) };
+    }
   }
 
   async function openProject() {
@@ -165,6 +201,9 @@
       { label: "Open", action: () => navigate(`/containers/${c.id}`) },
       { label: "Terminal", disabled: !running, action: () => navigate(`/containers/${c.id}?tab=terminal`) },
       { label: "Logs", action: () => navigate(`/containers/${c.id}?tab=logs`) },
+      c.project && c.service && c.working_dir ? { separator: true } : null,
+      c.project && c.service && c.working_dir ? { label: `Recreate ${c.service}`, action: () => serviceUp(c.project, c.service, false) } : null,
+      c.project && c.service && c.working_dir ? { label: `Rebuild & recreate ${c.service}`, action: () => serviceUp(c.project, c.service, true) } : null,
       { separator: true },
       running ? { label: "Stop", action: () => act(c, "stop") } : { label: "Start", action: () => act(c, "start") },
       { label: "Restart", action: () => act(c, "restart") },
@@ -206,7 +245,42 @@
       {/key}
     {/if}
   </Modal>
-  <Modal bind:open={upOpen} title={up ? `${up.build ? "Rebuild & up" : "Up"}: ${up.project}` : ""} description={up?.build ? "docker compose up -d --build, from the project's own files and folder." : "docker compose up -d, from the project's own files and folder."} size="lg">
+  <Modal bind:open={viewOpen} title={view ? `${view.project}: what it's made of` : ""} description="As docker compose reads its files. Variables show by name only: their values stay in your files." size="lg">
+    {#if view?.error}
+      <Callout variant="warning" title="docker compose couldn't read it">{view.error}</Callout>
+    {:else if !view?.data}
+      <Skeleton lines={5} />
+    {:else}
+      <p class="muted small mono">{view.data.files.join(" · ")}</p>
+      <div class="compose-view">
+        {#each view.data.services as sv (sv.name)}
+          <section class="compose-service">
+            <div class="compose-service-head">
+              <strong>{sv.name}</strong>
+              <span class="muted mono">{sv.build ? `build ${sv.build.replace(view.data.dir, ".")}` : sv.image}</span>
+              {#each sv.profiles as p (p)}<Badge>{p}</Badge>{/each}
+              <span class="spacer"></span>
+              <Button size="sm" disabled={!!busy[view.project]} onclick={() => serviceUp(view.project, sv.name, false)} title="docker compose up -d --no-deps --force-recreate {sv.name}">Recreate</Button>
+              {#if sv.build}<Button size="sm" disabled={!!busy[view.project]} onclick={() => serviceUp(view.project, sv.name, true)} title="… --build: its image built again first">Rebuild &amp; recreate</Button>{/if}
+            </div>
+            <dl class="compose-facts">
+              {#if sv.ports.length}<dt>Ports</dt><dd class="mono">{sv.ports.join(", ")}</dd>{/if}
+              {#if sv.volumes.length}<dt>Volumes</dt><dd class="mono">{sv.volumes.map((v) => v.replace(view.data.dir, ".")).join(", ")}</dd>{/if}
+              {#if sv.depends_on.length}<dt>Needs</dt><dd>{sv.depends_on.join(", ")}</dd>{/if}
+              {#if sv.env.length}<dt>Variables</dt><dd class="mono">{sv.env.join(", ")}</dd>{/if}
+            </dl>
+          </section>
+        {/each}
+        {#each view.data.env_files as f (f.path)}
+          <section class="compose-service">
+            <div class="compose-service-head"><strong class="mono">{f.path.replace(view.data.dir + "/", "")}</strong><span class="muted">{f.keys.length} variable{f.keys.length === 1 ? "" : "s"}</span></div>
+            {#if f.keys.length}<p class="mono small">{f.keys.join(", ")}</p>{/if}
+          </section>
+        {/each}
+      </div>
+    {/if}
+  </Modal>
+  <Modal bind:open={upOpen} title={up?.title ?? ""} description={up ? `${up.what}, from the project's own files and folder.` : ""} size="lg">
     {#if up}
       {#if up.error}<Callout variant="danger" title="It didn't go up">{up.error}</Callout>{:else if up.done}<Callout variant="success">Up.</Callout>{/if}
       <pre class="progress compose-out">{up.lines.join("\n") || "Starting…"}</pre>
@@ -258,6 +332,9 @@
             {:else}
             <div class="row-actions">
               <button class="icon-btn" title="All its logs" onclick={() => showLogs(g)}><Icon name="logs" size={14} /></button>
+              {#if g.dir}
+                <button class="icon-btn" title="What it's made of: services, ports, volumes, variables; recreate one service" onclick={() => showView(g)}><Icon name="file" size={14} /></button>
+              {/if}
               {#if g.dir}
                 <button class="icon-btn" title="Rebuild & up (docker compose up -d --build)" disabled={!!busy[g.project]} onclick={() => projectUp(g, true)}><Icon name="hammer" size={14} /></button>
               {/if}

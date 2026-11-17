@@ -80,7 +80,7 @@ amd64 images run through Rosetta. That's fast, but slower than an arm64 image. C
 - **In a folder you can't write to**, such as another account's Applications: install it in `~/Applications` instead.
 - **A development build** (`target/…`) never updates itself.
 
-**The engine runs an older eDock.** Press **Restart engine** on the Engine page after an update.
+**The engine runs an older eDock.** Press **Restart engine** in the bar above the page after an update (or **Later**, and restart it when it suits you).
 
 ## Kubernetes
 
