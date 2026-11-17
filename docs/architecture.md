@@ -94,12 +94,13 @@ The app is an Elyra app:
 | `streams.rs` | What streams to the window: logs, stats, terminals (exec with a TTY, input, resize), and the engine's event stream. |
 | `k8s.rs` | Kubernetes (and forwarding a service to the Mac): `edock k8s start/stop/delete` as a child process with its output as progress, and `kubectl` in the node container for pods, services, logs, shells, deletes and restarts. |
 | `edock.rs` | eDock's own API for containers: domains and HTTPS trust, the ports a container listens on, publishing ports and changing the environment while it runs |
-| `machines.rs` | Linux machines: listing, `edock machine create` with progress, start/stop/delete, and a login shell as the Mac user |
+| `machines.rs` | Linux machines: listing, `edock machine create` with progress, start/stop/delete, a login shell as the Mac user, and `ssh NAME.edock` on or off (`edock machine ssh`) |
 | `images.rs` | An image's layers, Grype scans (streamed progress), their findings and SBOM |
 | `builds.rs` | The build history, through `edock builds` |
 | `vm.rs` | The VM's size and use, the BuildKit builder, importing from other engines, the diagnostics report |
 | `daemon.rs` | eDock's engine: finding the `edock` binary, running `edock daemon` when none runs, and Start and Stop through the engine's own `POST /edock/wake` and `POST /edock/stop`. It also reads the engine's state (`EdockStopped`, `EdockVmAwake` in `/info`), with a small HTTP client, since a Docker client library drops those fields. |
-| `compose.rs` | Compose projects as a whole: one log for all their services, their folder in Finder, Terminal or an editor, and **Rebuild & up** |
+| `compose.rs` | Compose projects as a whole: one log for all their services, their folder in Finder, Terminal or an editor, **Up** and **Rebuild & up**, and the projects remembered (seen in events and lists, or opened from a folder) so one that is down still shows |
+| `run.rs` | **Run image…**: a container from an image with ports, Mac folders and volumes, variables and a command, as `docker run -d` makes one |
 | `files.rs` | A container's Files tab: folders (from the engine on eDock, `find` and `stat` elsewhere), preview, save, upload and remove |
 | `volumes.rs` | A volume's files through a helper container, clone, export and import |
 | `snapshots.rs` | Snapshots of containers (`docker commit`) and volumes (`.tar.gz` on the Mac), and restoring them |

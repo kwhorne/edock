@@ -45,7 +45,7 @@ This part shows eDock's engine and which `edock` binary the app found, with a **
 | **stopped** | Turned off with **Stop**. Containers don't run until **Start**. |
 | **not running** | No engine process at all |
 
-- **Stop**, after asking, turns eDock off. Its containers stop and its VM powers off. The engine process stays, using about 15 MB, and answers that it's stopped, so nothing can start a container. Stop stays in force across restarts of the engine and of the Mac, until **Start**.
+- **Stop**, after asking, turns eDock off. Its containers stop and its VM powers off. The engine process stays, using about 15 MB, and answers that it's stopped, so nothing can start a container. Stop stays in force across restarts of the engine and of the Mac, until **Start**. **Start** starts again the containers that ran with a restart policy (`always`, `unless-stopped`).
   - It works however the engine was started: by the app (this run or an earlier one), by the LaunchAgent from `edock setup`, or by `edock daemon` in a terminal.
 - **Start** turns a stopped engine on again and wakes its VM. When no engine process runs, it starts one first (`edock daemon`). Either way, it switches the app to eDock.
 
@@ -74,7 +74,7 @@ The app looks for the engine binary in this order:
 
 ### Notifications
 
-**Tell me when a container runs out of memory or turns unhealthy** (on by default) shows a macOS notification when the kernel kills a container for using all the memory it may have, or when its health check starts failing. Click it for the container's log. Each container gets at most one of each every ten minutes, and eDock's own containers (Linux machines, Kubernetes, helpers) none. It works on any engine the app shows, as long as the app runs.
+**Tell me when a container runs out of memory or turns unhealthy** (on by default) shows a macOS notification when the kernel kills a container for using all the memory it may have, or when its health check starts failing. Click it for the container's log. Each container gets at most one of each every ten minutes, and eDock's own containers (Linux machines, Kubernetes, helpers) none. It works on any engine the app shows, as long as the app runs. With them off, the [menu bar](menu-bar.md) still marks such a container, with a dot and in its popover.
 
 ### Contexts
 

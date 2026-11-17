@@ -164,6 +164,53 @@ fn mac_user() -> (String, String) {
     (name, home)
 }
 
+#[derive(Serialize, Deserialize, specta::Type)]
+pub struct MachineSsh {
+    /// `ssh NAME.edock` works: eDock's block is in `~/.ssh/config`.
+    pub on: bool,
+    /// Where a remote editor opens: the Mac user's home, shared with the machine.
+    pub home: String,
+    /// Installed editors that open a machine over SSH (VS Code, Cursor).
+    pub editors: Vec<String>,
+}
+
+const REMOTE_EDITORS: [(&str, &str); 2] = [("Cursor", "Cursor.app"), ("Visual Studio Code", "Visual Studio Code.app")];
+
+/// Whether `ssh NAME.edock` reaches the machines, and the editors that can
+/// open one over it.
+#[command(can = "edock.view")]
+pub async fn machine_ssh(_ctx: Ctx) -> Result<MachineSsh, String> {
+    let bin = crate::daemon::engine_binary().ok_or("The eDock engine (edock) isn't installed")?;
+    let out = tokio::process::Command::new(bin).args(["machine", "ssh", "status"]).stdin(std::process::Stdio::null()).output().await.map_err(|e| e.to_string())?;
+    let home = dirs::home_dir().unwrap_or_default();
+    let editors = REMOTE_EDITORS
+        .iter()
+        .filter(|(_, app)| std::path::Path::new("/Applications").join(app).exists() || home.join("Applications").join(app).exists())
+        .map(|(n, _)| (*n).to_owned())
+        .collect();
+    Ok(MachineSsh { on: String::from_utf8_lossy(&out.stdout).trim() == "on", home: mac_user().1, editors })
+}
+
+/// `ssh NAME.edock` on or off for every machine: `edock machine ssh on|off`.
+/// On makes eDock's key (`~/.edock/ssh`) and puts one `Include` line first
+/// in `~/.ssh/config`; off takes the line out.
+#[command(can = "edock.manage")]
+pub async fn machine_ssh_set(_ctx: Ctx, on: bool) -> Result<(), String> {
+    let bin = crate::daemon::engine_binary().ok_or("The eDock engine (edock) isn't installed")?;
+    let out = tokio::process::Command::new(bin)
+        .args(["machine", "ssh", if on { "on" } else { "off" }])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        Err(err.lines().map(str::trim).rev().find(|l| !l.is_empty()).unwrap_or("edock machine ssh failed").trim_start_matches("edock: ").to_owned())
+    }
+}
+
 /// A login shell in a machine, as the Mac user, in their home: on
 /// `exec:<id>` like any terminal.
 #[command]

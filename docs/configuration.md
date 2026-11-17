@@ -29,7 +29,7 @@ All of these are in `~/.edock/`:
 | `domains.json` | The engine | `{"http": 8088, "https": 8443}`: the ports for container domains, instead of 80 and 443. The environment variables override it. |
 | `proxy.json` | The engine | The proxy for pulls, pushes and logins (below) |
 | `snapshots/volumes/<context>/` | The app | Volume [snapshots](app/snapshots.md), a `.tar.gz` each, per engine |
-| `desktop.json` | The app | The context it shows, whether the welcome was seen, and `"alerts_off": true` when [notifications](app/engine-and-contexts.md#notifications) are off |
+| `desktop.json` | The app | The context it shows, whether the welcome was seen, `"alerts_off": true` when [notifications](app/engine-and-contexts.md#notifications) are off, and the [Compose projects it remembers](app/containers.md#projects-that-are-down) |
 | `inspector.json` | The engine | `{"on": true}` while [Requests](app/requests.md) records |
 | `stopped` | The engine | There while eDock is stopped with **Stop**, so the engine stays off across restarts until **Start** |
 

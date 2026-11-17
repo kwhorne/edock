@@ -407,6 +407,16 @@ export type ImportSource = {
 	available: boolean,
 };
 
+export type K8sEvent = {
+	/**  Normal or Warning. */
+	kind: string,
+	reason: string,
+	message: string,
+	count: number,
+	/**  RFC 3339: when it last happened. */
+	last: string,
+};
+
 export type K8sItems = {
 	pods: PodRow[],
 	services: ServiceRow[],
@@ -454,6 +464,15 @@ export type MachineRow = {
 	created: number,
 };
 
+export type MachineSsh = {
+	/**  `ssh NAME.edock` works: eDock's block is in `~/.ssh/config`. */
+	on: boolean,
+	/**  Where a remote editor opens: the Mac user's home, shared with the machine. */
+	home: string,
+	/**  Installed editors that open a machine over SSH (VS Code, Cursor). */
+	editors: string[],
+};
+
 export type MountRow = {
 	kind: string,
 	source: string,
@@ -483,6 +502,10 @@ export type PodContainer = {
 	/**  running, waiting or terminated. */
 	state: string,
 	reason: string,
+	/**  What Kubernetes says about it (why it waits, how it ended). */
+	message: string,
+	/**  How it ended last time, when it keeps restarting: "Error, exit code 1". */
+	last: string | null,
 };
 
 export type PodRow = {
@@ -498,6 +521,16 @@ export type PodRow = {
 	/**  Its Deployment, StatefulSet, DaemonSet or Job, as `Kind/name`. */
 	owner: string | null,
 	containers: PodContainer[],
+	/**
+	 *  Why it's stuck, in a line, when it is (it can't be scheduled, an
+	 *  image can't be pulled, a container keeps exiting).
+	 */
+	why: string | null,
+	/**
+	 *  The image it can't pull, when that's why: one built or pulled on
+	 *  eDock can be loaded into the cluster (`k8s_load`).
+	 */
+	pull_failed: string | null,
 };
 
 export type PortBinding = {
@@ -517,6 +550,14 @@ export type PortRow = {
 	proto: string,
 };
 
+export type ProjectRow = {
+	name: string,
+	dir: string,
+	files: string[],
+	/**  Why Up can't run it (its folder or a file is gone), when it can't. */
+	problem: string | null,
+};
+
 export type ProxyInfo = {
 	/**  "system" (macOS's settings), "custom" or "none". */
 	mode: string,
@@ -529,6 +570,15 @@ export type ProxyInfo = {
 	effective_http: string | null,
 	effective_https: string | null,
 	pac: boolean,
+};
+
+export type RecentAlert = {
+	id: string,
+	name: string,
+	/**  "oom" (the kernel stopped it: out of memory) or "unhealthy". */
+	what: string,
+	/**  How long ago, in seconds. */
+	ago: number,
 };
 
 export type RecipeRow = {
@@ -550,12 +600,68 @@ export type Restored = {
 	previous: string | null,
 };
 
+export type RunDefaults = {
+	/**  Whether the image is here; when not, Run pulls it. */
+	local: boolean,
+	/**  The name Run gives the container when none is given. */
+	name: string,
+	/**  The image's exposed ports, each on a free port of the Mac. */
+	ports: RunPort[],
+	/**  Where the image keeps data (its VOLUMEs). */
+	volumes: string[],
+	/**  Its command, for the placeholder. */
+	command: string | null,
+};
+
+export type RunEnv = {
+	key: string,
+	value: string,
+};
+
+export type RunMount = {
+	/**
+	 *  A Mac folder or file (an absolute path), or a volume's name (made
+	 *  when it isn't there).
+	 */
+	source: string,
+	/**  Where it shows in the container: an absolute path. */
+	target: string,
+	read_only: boolean,
+};
+
+export type RunPort = {
+	/**  The port on the Mac; none for one the engine picks. */
+	host: number | null,
+	container: number,
+	udp: boolean,
+};
+
 export type RunResult = {
 	exit_code: number,
 	/**  stdout and stderr, in the order written. */
 	output: string,
 	/**  It ran past its time and was stopped. */
 	timed_out: boolean,
+};
+
+export type RunSpec = {
+	image: string,
+	/**  The image's name when not given (`nginx`, then `nginx-2`…). */
+	name: string | null,
+	ports: RunPort[],
+	/**  Ports open to other devices on the network, not this Mac only. */
+	lan: boolean,
+	mounts: RunMount[],
+	env: RunEnv[],
+	/**  In place of the image's command, as shell words. */
+	command: string | null,
+	/**  Started again with the engine (`--restart unless-stopped`). */
+	restart: boolean,
+};
+
+export type RunStarted = {
+	id: string,
+	name: string,
 };
 
 export type ScanResult = {
@@ -707,6 +813,22 @@ export const api = {
     return invoke("alerts_on");
   },
   /**
+   * What happened to containers in the last hour (out of memory, unhealthy),
+   * newest first.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  alerts_recent(): Promise<RecentAlert[]> {
+    return invoke("alerts_recent");
+  },
+  /**
+   * The popover was opened: the menu bar item loses its dot. With `clear`,
+   * the list is emptied too.
+   */
+  alerts_seen(clear: boolean): Promise<null> {
+    return invoke("alerts_seen", clear);
+  },
+  /**
    * Notes on or off.
    */
   alerts_set(on: boolean): Promise<null> {
@@ -776,6 +898,32 @@ export const api = {
     return invoke("cli_status");
   },
   /**
+   * Forget a remembered project (its containers, if any, stay).
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  compose_project_forget(project: string): Promise<null> {
+    return invoke("compose_project_forget", project);
+  },
+  /**
+   * Remember the Compose project in a folder, for the engine the app shows,
+   * without starting it. Returns its name, as `docker compose` gives it.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  compose_project_open(path: string): Promise<string> {
+    return invoke("compose_project_open", path);
+  },
+  /**
+   * The Compose projects remembered on the engine the app shows, those with
+   * containers now among them (they're remembered as they're listed).
+   *
+   * @remarks Needs `edock.view`.
+   */
+  compose_projects(): Promise<ProjectRow[]> {
+    return invoke("compose_projects");
+  },
+  /**
    * start, stop, restart, pause, unpause, kill or remove one container.
    *
    * @remarks Needs `edock.manage`.
@@ -805,7 +953,9 @@ export const api = {
   },
   /**
    * Remove a file or folder in a container (`rm -rf`). The container must be
-   * running, with `rm` in it.
+   * running, with `rm` in it. Not where something is mounted, or a folder
+   * with a mount under it: `rm -rf` would empty the Mac folder or volume
+   * behind it (a machine's `/Users` is the Mac's).
    */
   container_file_remove(container: string, path: string): Promise<null> {
     return invoke("container_file_remove", container, path);
@@ -1109,6 +1259,25 @@ export const api = {
     return invoke("image_remove", reference, force);
   },
   /**
+   * Make and start a container from an image (pulled when it isn't here),
+   * as `docker run -d` does. A container that doesn't start is removed, so
+   * Run can be tried again with the same name. Returns its ID and name.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  image_run(spec: RunSpec): Promise<RunStarted> {
+    return invoke("image_run", spec);
+  },
+  /**
+   * What Run suggests for an image: a name, its ports on free ports of the
+   * Mac, where it keeps data, and its command.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  image_run_defaults(image: string): Promise<RunDefaults> {
+    return invoke("image_run_defaults", image);
+  },
+  /**
    * Save a scan's SBOM (CycloneDX JSON) where the user chose.
    */
   image_sbom_save(name: string, at: number, file: ChosenFile): Promise<null> {
@@ -1206,6 +1375,15 @@ export const api = {
     return invoke("k8s_items");
   },
   /**
+   * Load an image from eDock (built or pulled here) into the cluster, where
+   * pods find it without a registry: `edock k8s load`. Returns what it said.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  k8s_load(image: string): Promise<string> {
+    return invoke("k8s_load", image);
+  },
+  /**
    * Follow a pod container's log (`kubectl logs -f`), on `logs:<id>` like a
    * container's.
    */
@@ -1217,6 +1395,15 @@ export const api = {
    */
   k8s_pod_delete(namespace: string, pod: string): Promise<null> {
     return invoke("k8s_pod_delete", namespace, pod);
+  },
+  /**
+   * What Kubernetes said about a pod (scheduled, pulling, backing off…),
+   * oldest first, as `kubectl describe pod` lists it.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  k8s_pod_events(namespace: string, pod: string): Promise<K8sEvent[]> {
+    return invoke("k8s_pod_events", namespace, pod);
   },
   /**
    * Restart a Deployment's pods, one by one (`kubectl rollout restart`).
@@ -1269,6 +1456,25 @@ export const api = {
     return invoke("machine_shell", name, cols, rows);
   },
   /**
+   * Whether `ssh NAME.edock` reaches the machines, and the editors that can
+   * open one over it.
+   *
+   * @remarks Needs `edock.view`.
+   */
+  machine_ssh(): Promise<MachineSsh> {
+    return invoke("machine_ssh");
+  },
+  /**
+   * `ssh NAME.edock` on or off for every machine: `edock machine ssh on|off`.
+   * On makes eDock's key (`~/.edock/ssh`) and puts one `Include` line first
+   * in `~/.ssh/config`; off takes the line out.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  machine_ssh_set(on: boolean): Promise<null> {
+    return invoke("machine_ssh_set", on);
+  },
+  /**
    * eDock's Linux machines (`edock machine`): name, distribution, state, and
    * whether systemd runs them.
    *
@@ -1319,7 +1525,8 @@ export const api = {
   },
   /**
    * `docker compose up -d` for a project, from its own files and folder,
-   * with `--build` when `build` (Rebuild & up). On the engine the app shows.
+   * with `--build` when `build` (Rebuild & up). On the engine the app shows;
+   * a project that is down comes up from what eDock remembers of it.
    * Output on `compose:progress`.
    *
    * @remarks Needs `edock.manage`.

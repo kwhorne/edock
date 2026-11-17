@@ -447,6 +447,14 @@ pub fn watch(engine: Arc<Engine>, bus: Arc<EventBus>, on_change: impl Fn(bool) +
                             }
                             let kind = v["Type"].as_str().unwrap_or("").to_owned();
                             let action = v["Action"].as_str().unwrap_or("").to_owned();
+                            // A Compose project's container: the project is remembered,
+                            // so it still shows after `docker compose down`.
+                            if kind == "container" && action == "create" {
+                                if let Some(attrs) = v["Actor"]["Attributes"].as_object().filter(|a| a.contains_key("com.docker.compose.project")) {
+                                    let labels: HashMap<String, String> = attrs.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect();
+                                    crate::compose::remember_labels(&engine.context().0, &labels);
+                                }
+                            }
                             // exec_* (health checks run as execs too) change no list;
                             // health_status does: the badge goes healthy or unhealthy.
                             if action.starts_with("exec_") || action == "top" {

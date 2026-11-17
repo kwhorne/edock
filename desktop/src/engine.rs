@@ -96,9 +96,7 @@ impl Engine {
             cur.host = ctx.host;
         }
         self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let mut s = Settings::load();
-        s.context = Some(ctx.name);
-        s.save();
+        Settings::update(|s| (true, s.context = Some(ctx.name)));
         Ok(())
     }
 
@@ -197,23 +195,50 @@ pub struct Settings {
     /// unhealthy.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub alerts_off: bool,
+    /// Compose projects seen on an engine or opened here, so one that is
+    /// down (`docker compose down`) still shows, with Up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<crate::compose::SavedProject>,
 }
+
+/// One change to the settings at a time: each reads, changes and writes
+/// the whole file.
+static SETTINGS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 impl Settings {
     fn path() -> PathBuf {
+        // Tests keep theirs to themselves, never the user's.
+        if cfg!(test) {
+            return std::env::temp_dir().join(format!("edock-desktop-test-{}.json", std::process::id()));
+        }
         home().join(".edock/desktop.json")
     }
     pub fn load() -> Self {
         std::fs::read_to_string(Self::path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
-    pub fn save(&self) {
+    fn save(&self) {
         let path = Self::path();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        // Written beside it and moved in place: never half a file.
+        let tmp = path.with_extension("json.tmp");
         if let Ok(text) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, text);
+            if std::fs::write(&tmp, text).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
         }
+    }
+    /// Change the settings: `change` says whether it changed anything,
+    /// and only then is the file written.
+    pub fn update<R>(change: impl FnOnce(&mut Self) -> (bool, R)) -> R {
+        let _one = SETTINGS.lock();
+        let mut s = Self::load();
+        let (changed, r) = change(&mut s);
+        if changed {
+            s.save();
+        }
+        r
     }
 }
 

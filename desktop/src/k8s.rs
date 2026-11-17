@@ -171,6 +171,10 @@ pub struct PodContainer {
     /// running, waiting or terminated.
     pub state: String,
     pub reason: String,
+    /// What Kubernetes says about it (why it waits, how it ended).
+    pub message: String,
+    /// How it ended last time, when it keeps restarting: "Error, exit code 1".
+    pub last: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, specta::Type, Clone)]
@@ -187,6 +191,12 @@ pub struct PodRow {
     /// Its Deployment, StatefulSet, DaemonSet or Job, as `Kind/name`.
     pub owner: Option<String>,
     pub containers: Vec<PodContainer>,
+    /// Why it's stuck, in a line, when it is (it can't be scheduled, an
+    /// image can't be pulled, a container keeps exiting).
+    pub why: Option<String>,
+    /// The image it can't pull, when that's why: one built or pulled on
+    /// eDock can be loaded into the cluster (`k8s_load`).
+    pub pull_failed: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, specta::Type, Clone)]
@@ -230,16 +240,23 @@ fn pod(p: &Value) -> PodRow {
         .map(|c| {
             let name = s(&c["name"]);
             let cs = statuses.iter().find(|x| x["name"] == c["name"]).cloned().unwrap_or(Value::Null);
-            let (state, reason) = match cs["state"].as_object().and_then(|o| o.iter().next()) {
-                Some((k, v)) => (k.clone(), s(&v["reason"])),
-                None => ("waiting".into(), String::new()),
+            let (state, reason, message) = match cs["state"].as_object().and_then(|o| o.iter().next()) {
+                Some((k, v)) => (k.clone(), s(&v["reason"]), s(&v["message"])),
+                None => ("waiting".into(), String::new(), String::new()),
             };
+            let ended = &cs["lastState"]["terminated"];
+            let last = ended.is_object().then(|| {
+                let why = ended["reason"].as_str().filter(|r| !r.is_empty()).unwrap_or("Ended");
+                format!("{why}, exit code {}", ended["exitCode"].as_i64().unwrap_or(-1))
+            });
             PodContainer {
                 image: s(&c["image"]),
                 ready: cs["ready"].as_bool().unwrap_or(false),
                 restarts: cs["restartCount"].as_u64().unwrap_or(0) as u32,
                 state,
                 reason,
+                message,
+                last,
                 name,
             }
         })
@@ -265,9 +282,12 @@ fn pod(p: &Value) -> PodRow {
             _ => format!("{kind}/{name}"),
         }
     });
+    let (why, pull_failed) = stuck(st, &containers);
     PodRow {
         namespace: s(&meta["namespace"]),
         name: s(&meta["name"]),
+        why,
+        pull_failed,
         status,
         ready: format!("{ready}/{}", containers.len()),
         restarts: containers.iter().map(|c| c.restarts).sum(),
@@ -275,6 +295,94 @@ fn pod(p: &Value) -> PodRow {
         ip: s(&st["podIP"]),
         owner,
         containers,
+    }
+}
+
+/// Why a pod is stuck, in a line, and the image it can't pull if that's it.
+fn stuck(st: &Value, containers: &[PodContainer]) -> (Option<String>, Option<String>) {
+    const PULL: [&str; 4] = ["ErrImagePull", "ImagePullBackOff", "ErrImageNeverPull", "InvalidImageName"];
+    if let Some(c) = containers.iter().find(|c| c.state == "waiting" && PULL.contains(&c.reason.as_str())) {
+        let said = c.message.lines().next().unwrap_or("").trim();
+        let why = if said.is_empty() { format!("{} can't be pulled", c.image) } else { format!("{} can't be pulled: {said}", c.image) };
+        return (Some(why), Some(c.image.clone()));
+    }
+    if let Some(c) = containers.iter().find(|c| c.state == "waiting" && c.reason == "CrashLoopBackOff") {
+        let how = c.last.as_deref().map(|l| format!(" ({l})")).unwrap_or_default();
+        return (Some(format!("{} keeps exiting{how}: its log says why", c.name)), None);
+    }
+    if let Some(c) = containers.iter().find(|c| c.state == "waiting" && !c.reason.is_empty() && c.reason != "ContainerCreating" && c.reason != "PodInitializing") {
+        let said = c.message.lines().next().unwrap_or("").trim();
+        return (Some(if said.is_empty() { format!("{}: {}", c.name, c.reason) } else { format!("{}: {said}", c.name) }), None);
+    }
+    // Not placed on the node: no room, a missing volume, a taint…
+    let unscheduled = st["conditions"].as_array().into_iter().flatten().find(|c| c["type"] == "PodScheduled" && c["status"] == "False");
+    if let Some(c) = unscheduled {
+        let said = c["message"].as_str().or(c["reason"].as_str()).unwrap_or("it can't be placed");
+        return (Some(format!("Not scheduled: {said}")), None);
+    }
+    (None, None)
+}
+
+#[derive(Serialize, Deserialize, specta::Type)]
+pub struct K8sEvent {
+    /// Normal or Warning.
+    pub kind: String,
+    pub reason: String,
+    pub message: String,
+    pub count: u32,
+    /// RFC 3339: when it last happened.
+    pub last: String,
+}
+
+/// What Kubernetes said about a pod (scheduled, pulling, backing off…),
+/// oldest first, as `kubectl describe pod` lists it.
+#[command(can = "edock.view")]
+pub async fn k8s_pod_events(ctx: Ctx, namespace: String, pod: String) -> Result<Vec<K8sEvent>, String> {
+    check(&[&namespace, &pod])?;
+    let selector = format!("involvedObject.kind=Pod,involvedObject.name={pod}");
+    let (code, out, err) = node_exec(&ctx, &["kubectl", "get", "events", "-n", &namespace, "--field-selector", &selector, "-o", "json", "--request-timeout=20s"], 30).await?;
+    if code != 0 {
+        return Err(complaint(code, &err, &out));
+    }
+    let list: Value = serde_json::from_str(&out).map_err(|e| format!("kubectl's answer: {e}"))?;
+    Ok(events(&list))
+}
+
+fn events(list: &Value) -> Vec<K8sEvent> {
+    let mut out: Vec<K8sEvent> = list["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| K8sEvent {
+            kind: s(&e["type"]),
+            reason: s(&e["reason"]),
+            message: s(&e["message"]),
+            count: e["count"].as_u64().unwrap_or(1) as u32,
+            last: [&e["lastTimestamp"], &e["eventTime"], &e["firstTimestamp"], &e["metadata"]["creationTimestamp"]].into_iter().find_map(|t| t.as_str()).unwrap_or("").to_owned(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.last.cmp(&b.last));
+    out
+}
+
+/// Load an image from eDock (built or pulled here) into the cluster, where
+/// pods find it without a registry: `edock k8s load`. Returns what it said.
+#[command(can = "edock.manage")]
+pub async fn k8s_load(ctx: Ctx, image: String) -> Result<String, String> {
+    if !on_edock(&ctx) {
+        return Err("Kubernetes runs on the eDock engine: switch to it first".into());
+    }
+    let image = image.trim().to_owned();
+    if image.is_empty() || image.starts_with('-') || image.contains(char::is_whitespace) {
+        return Err(format!("{image:?} isn't an image"));
+    }
+    let bin = crate::daemon::engine_binary().ok_or("The eDock engine (edock) isn't installed")?;
+    let out = tokio::process::Command::new(bin).args(["k8s", "load", &image]).stdin(std::process::Stdio::null()).output().await.map_err(|e| e.to_string())?;
+    let last = |b: &[u8]| String::from_utf8_lossy(b).lines().map(str::trim).rev().find(|l| !l.is_empty()).map(str::to_owned);
+    if out.status.success() {
+        Ok(last(&out.stdout).unwrap_or_else(|| format!("{image} is in Kubernetes")))
+    } else {
+        Err(last(&out.stderr).map(|e| e.trim_start_matches("edock: ").to_owned()).unwrap_or_else(|| "edock k8s load failed".into()))
     }
 }
 
@@ -448,7 +556,44 @@ mod tests {
     }
 
     #[test]
-    fn a_pod_reads_as_kubectl_prints_it() {
+    fn a_stuck_pod_says_why() {
+        let waiting = |reason: &str, message: &str| {
+            json!({"metadata": {"name": "web-1", "namespace": "default"}, "spec": {"containers": [{"name": "web", "image": "myapp:dev"}]},
+                   "status": {"phase": "Pending", "containerStatuses": [{"name": "web", "ready": false, "restartCount": 0, "state": {"waiting": {"reason": reason, "message": message}}}]}})
+        };
+        let p = pod(&waiting("ErrImagePull", "failed to pull and unpack image \"docker.io/library/myapp:dev\": not found"));
+        assert_eq!(p.pull_failed.as_deref(), Some("myapp:dev"));
+        assert!(p.why.as_deref().unwrap().starts_with("myapp:dev can't be pulled: failed to pull"), "{:?}", p.why);
+        assert_eq!(pod(&waiting("ImagePullBackOff", "")).why.as_deref(), Some("myapp:dev can't be pulled"));
+        assert!(pod(&waiting("ContainerCreating", "")).why.is_none(), "starting isn't stuck");
+
+        let crash = json!({"metadata": {"name": "api", "namespace": "default"}, "spec": {"containers": [{"name": "api", "image": "api:1"}]},
+            "status": {"phase": "Running", "containerStatuses": [{"name": "api", "ready": false, "restartCount": 4,
+                "state": {"waiting": {"reason": "CrashLoopBackOff"}}, "lastState": {"terminated": {"reason": "Error", "exitCode": 3}}}]}});
+        let p = pod(&crash);
+        assert_eq!(p.why.as_deref(), Some("api keeps exiting (Error, exit code 3): its log says why"));
+        assert_eq!(p.containers[0].last.as_deref(), Some("Error, exit code 3"));
+        assert!(p.pull_failed.is_none());
+
+        let unplaced = json!({"metadata": {"name": "big", "namespace": "default"}, "spec": {"containers": [{"name": "big", "image": "big:1"}]},
+            "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable", "message": "0/1 nodes are available: 1 Insufficient memory."}]}});
+        assert_eq!(pod(&unplaced).why.as_deref(), Some("Not scheduled: 0/1 nodes are available: 1 Insufficient memory."));
+    }
+
+    #[test]
+    fn events_come_oldest_first() {
+        let list = json!({"items": [
+            {"type": "Warning", "reason": "Failed", "message": "pull failed", "count": 3, "lastTimestamp": "2026-11-17T10:00:05Z"},
+            {"type": "Normal", "reason": "Scheduled", "message": "assigned", "eventTime": "2026-11-17T10:00:00.000000Z"},
+        ]});
+        let e = events(&list);
+        assert_eq!(e.iter().map(|e| e.reason.as_str()).collect::<Vec<_>>(), ["Scheduled", "Failed"]);
+        assert_eq!((e[1].kind.as_str(), e[1].count), ("Warning", 3));
+        assert_eq!(e[0].count, 1);
+    }
+
+    #[test]
+        fn a_pod_reads_as_kubectl_prints_it() {
         let p = json!({
             "metadata": {"namespace": "default", "name": "web-5d8f-abcde", "creationTimestamp": "2026-11-14T10:00:00Z",
                          "ownerReferences": [{"kind": "ReplicaSet", "name": "web-5d8f"}]},

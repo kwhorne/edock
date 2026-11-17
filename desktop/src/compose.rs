@@ -1,6 +1,7 @@
 //! Compose projects as a whole: one log for all their services, their
 //! folder opened in Finder, Terminal or an editor, and `docker compose up`
-//! again (with a build) from their own files.
+//! again (with a build) from their own files. Projects are remembered
+//! (in `~/.edock/desktop.json`), so one that is down still shows, with Up.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,10 +16,184 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::engine::Engine;
+use crate::engine::{Engine, Settings};
 use crate::streams::{LogBatch, LogLine, Streams};
 
 const PROJECT: &str = "com.docker.compose.project";
+const DIR: &str = "com.docker.compose.project.working_dir";
+const FILES: &str = "com.docker.compose.project.config_files";
+const ENV_FILES: &str = "com.docker.compose.project.environment_file";
+
+/// A Compose project eDock remembers: its folder and files, and the docker
+/// context it ran on.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct SavedProject {
+    pub name: String,
+    pub context: String,
+    pub dir: String,
+    pub files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_files: Vec<String>,
+}
+
+/// A comma-separated label, as a list.
+fn split(v: Option<&String>) -> Vec<String> {
+    v.map(String::as_str).unwrap_or("").split(',').map(str::trim).filter(|f| !f.is_empty()).map(str::to_owned).collect()
+}
+
+impl SavedProject {
+    /// The project a container's labels name, if Compose said where it is.
+    fn from_labels(context: &str, labels: &HashMap<String, String>) -> Option<Self> {
+        let name = labels.get(PROJECT).filter(|n| !n.is_empty())?;
+        let dir = labels.get(DIR).filter(|d| !d.is_empty())?;
+        Some(Self { name: name.clone(), context: context.to_owned(), dir: dir.clone(), files: split(labels.get(FILES)), env_files: split(labels.get(ENV_FILES)) })
+    }
+
+    /// As its containers' labels would say it.
+    fn labels(&self) -> HashMap<String, String> {
+        let mut l = HashMap::from([(PROJECT.to_string(), self.name.clone()), (DIR.to_string(), self.dir.clone()), (FILES.to_string(), self.files.join(","))]);
+        if !self.env_files.is_empty() {
+            l.insert(ENV_FILES.to_string(), self.env_files.join(","));
+        }
+        l
+    }
+}
+
+/// Remember these projects, or what changed about them.
+fn remember(found: Vec<SavedProject>) {
+    if found.is_empty() {
+        return;
+    }
+    Settings::update(|s| {
+        let mut changed = false;
+        for p in found {
+            match s.projects.iter_mut().find(|q| q.context == p.context && q.name == p.name) {
+                Some(q) if *q == p => {}
+                Some(q) => {
+                    *q = p;
+                    changed = true;
+                }
+                None => {
+                    s.projects.push(p);
+                    changed = true;
+                }
+            }
+        }
+        (changed, ())
+    })
+}
+
+/// A container was made: remember its Compose project, if it has one.
+pub(crate) fn remember_labels(context: &str, labels: &HashMap<String, String>) {
+    if let Some(p) = SavedProject::from_labels(context, labels) {
+        remember(vec![p]);
+    }
+}
+
+fn saved(context: &str, project: &str) -> Option<SavedProject> {
+    Settings::load().projects.into_iter().find(|p| p.context == context && p.name == project)
+}
+
+#[derive(Serialize, Deserialize, specta::Type)]
+pub struct ProjectRow {
+    pub name: String,
+    pub dir: String,
+    pub files: Vec<String>,
+    /// Why Up can't run it (its folder or a file is gone), when it can't.
+    pub problem: Option<String>,
+}
+
+/// The Compose projects remembered on the engine the app shows, those with
+/// containers now among them (they're remembered as they're listed).
+#[command(can = "edock.view")]
+pub async fn compose_projects(ctx: Ctx) -> Vec<ProjectRow> {
+    let engine = ctx.get::<Engine>();
+    let context = engine.context().0;
+    if let Ok(docker) = engine.docker() {
+        let mut filters = HashMap::new();
+        filters.insert("label".to_string(), vec![PROJECT.to_string()]);
+        if let Ok(list) = docker.list_containers(Some(q::ListContainersOptionsBuilder::default().all(true).filters(&filters).build())).await {
+            let mut seen = std::collections::HashSet::new();
+            remember(list.into_iter().filter_map(|c| SavedProject::from_labels(&context, &c.labels.unwrap_or_default())).filter(|p| seen.insert(p.name.clone())).collect());
+        }
+    }
+    let mut rows: Vec<ProjectRow> = Settings::load()
+        .projects
+        .into_iter()
+        .filter(|p| p.context == context)
+        .map(|p| ProjectRow { problem: problem(&p), name: p.name, dir: p.dir, files: p.files })
+        .collect();
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
+/// Why Up can't run a remembered project, short, what's wrong first.
+fn problem(p: &SavedProject) -> Option<String> {
+    if !Path::new(&p.dir).is_dir() {
+        return Some("Its folder isn't there any more".into());
+    }
+    if let Some(f) = p.files.iter().chain(&p.env_files).find(|f| !Path::new(f).is_file()) {
+        let name = Path::new(f).file_name().map_or(f.clone(), |n| n.to_string_lossy().into_owned());
+        return Some(format!("{name} isn't there any more"));
+    }
+    compose_args(&p.name, &p.labels()).err()
+}
+
+/// The Compose files `docker compose` itself would use in `dir`: the first
+/// of its file names there, and the first override.
+fn compose_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let first = |names: &[&str]| names.iter().map(|n| dir.join(n)).find(|p| p.is_file());
+    let main = first(&["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"])
+        .ok_or_else(|| format!("{} has no compose.yaml (or docker-compose.yml)", dir.display()))?;
+    Ok(std::iter::once(main).chain(first(&["compose.override.yml", "compose.override.yaml", "docker-compose.override.yml", "docker-compose.override.yaml"])).collect())
+}
+
+/// Remember the Compose project in a folder, for the engine the app shows,
+/// without starting it. Returns its name, as `docker compose` gives it.
+#[command(can = "edock.manage")]
+pub async fn compose_project_open(ctx: Ctx, path: String) -> Result<String, String> {
+    let dir = real_folder(&path)?;
+    let files = compose_files(&dir)?;
+    let docker = docker_cli().ok_or("The docker command isn't installed: Set up on the Engine page installs it")?;
+    let mut cmd = tokio::process::Command::new(docker);
+    cmd.args(["compose", "--project-directory"]).arg(&dir);
+    for f in &files {
+        cmd.arg("-f").arg(f);
+    }
+    // The name as the folder's own files and .env give it.
+    let out = cmd
+        .args(["config", "--format", "json"])
+        .current_dir(&dir)
+        .env_remove("COMPOSE_PROJECT_NAME")
+        .env_remove("COMPOSE_FILE")
+        .env_remove("DOCKER_CONTEXT")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("Couldn't run docker compose: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let last = err.lines().map(str::trim).rev().find(|l| !l.is_empty()).unwrap_or("it failed");
+        return Err(format!("docker compose can't read {}: {last}", files[0].display()));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| "docker compose said something eDock can't read".to_string())?;
+    let name = v["name"].as_str().filter(|n| !n.is_empty()).ok_or("docker compose gave the project no name")?.to_owned();
+    let context = ctx.get::<Engine>().context().0;
+    let files = files.iter().map(|f| f.display().to_string()).collect();
+    remember(vec![SavedProject { name: name.clone(), context, dir: dir.display().to_string(), files, env_files: Vec::new() }]);
+    Ok(name)
+}
+
+/// Forget a remembered project (its containers, if any, stay).
+#[command(can = "edock.manage")]
+pub async fn compose_project_forget(ctx: Ctx, project: String) {
+    let context = ctx.get::<Engine>().context().0;
+    Settings::update(|s| {
+        let n = s.projects.len();
+        s.projects.retain(|p| !(p.context == context && p.name == project));
+        (s.projects.len() != n, ())
+    })
+}
 
 /// A project's containers: id, service, and its labels.
 async fn members(ctx: &Ctx, project: &str) -> Result<Vec<(String, String, HashMap<String, String>)>, String> {
@@ -208,30 +383,38 @@ pub struct ComposeProgress {
 /// The `docker compose` flags that name a project as Compose made it: its
 /// name, folder and files, from its containers' labels.
 fn compose_args(project: &str, labels: &HashMap<String, String>) -> Result<Vec<String>, String> {
-    let dir = labels.get("com.docker.compose.project.working_dir").ok_or("Compose didn't say where this project's folder is")?;
+    let dir = labels.get(DIR).ok_or("Compose didn't say where this project's folder is")?;
     let dir = real_folder(dir)?;
     let mut args = vec!["compose".to_string(), "--ansi".into(), "never".into(), "--progress".into(), "plain".into(), "-p".into(), project.to_owned(), "--project-directory".into(), dir.display().to_string()];
-    for f in labels.get("com.docker.compose.project.config_files").map(String::as_str).unwrap_or("").split(',').map(str::trim).filter(|f| !f.is_empty()) {
-        // As the folder: absolute, never read against eDock's own folder.
-        if !Path::new(f).is_absolute() || f.contains('\0') {
-            return Err(format!("{f} isn't a Compose file eDock can use"));
+    for (flag, what) in [("-f", FILES), ("--env-file", ENV_FILES)] {
+        for f in split(labels.get(what)) {
+            // As the folder: absolute, never read against eDock's own folder.
+            if !Path::new(&f).is_absolute() || f.contains('\0') {
+                return Err(format!("{f} isn't a file eDock can give docker compose"));
+            }
+            if !Path::new(&f).is_file() {
+                return Err(format!("{f} isn't there any more"));
+            }
+            args.push(flag.into());
+            args.push(f);
         }
-        if !Path::new(f).is_file() {
-            return Err(format!("{f} isn't there any more"));
-        }
-        args.push("-f".into());
-        args.push(f.to_owned());
     }
     Ok(args)
 }
 
 /// `docker compose up -d` for a project, from its own files and folder,
-/// with `--build` when `build` (Rebuild & up). On the engine the app shows.
+/// with `--build` when `build` (Rebuild & up). On the engine the app shows;
+/// a project that is down comes up from what eDock remembers of it.
 /// Output on `compose:progress`.
 #[command(can = "edock.manage")]
 pub async fn project_up(ctx: Ctx, project: String, build: bool) -> Result<(), String> {
-    let members = members(&ctx, &project).await?;
-    let mut args = compose_args(&project, &members[0].2)?;
+    let mut args = match members(&ctx, &project).await {
+        Ok(members) => compose_args(&project, &members[0].2)?,
+        Err(none) => {
+            let context = ctx.get::<Engine>().context().0;
+            compose_args(&project, &saved(&context, &project).ok_or(none)?.labels())?
+        }
+    };
     args.extend(["up".into(), "-d".into(), "--remove-orphans".into()]);
     if build {
         args.push("--build".into());
@@ -304,6 +487,44 @@ mod tests {
         .into();
         assert!(compose_args("shop", &relative).is_err(), "a relative file");
         assert!(real_folder("relative").is_err());
+        let env = dir.join("local.env");
+        std::fs::write(&env, "X=1\n").unwrap();
+        let mut with_env = labels.clone();
+        with_env.insert(ENV_FILES.to_string(), env.display().to_string());
+        let a = compose_args("shop", &with_env).unwrap();
+        assert!(a.windows(2).any(|w| w[0] == "--env-file" && w[1] == env.display().to_string()));
+        with_env.insert(ENV_FILES.to_string(), "/nope/.env".into());
+        assert!(compose_args("shop", &with_env).is_err(), "a missing env file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_is_remembered_as_its_labels_say() {
+        let labels: HashMap<String, String> =
+            [(PROJECT, "shop"), (DIR, "/x"), (FILES, "/x/compose.yaml, /x/o.yaml"), (ENV_FILES, "/x/a.env,/x/b.env")].map(|(k, v)| (k.to_string(), v.to_string())).into();
+        let p = SavedProject::from_labels("edock", &labels).unwrap();
+        assert_eq!((p.name.as_str(), p.context.as_str(), p.dir.as_str()), ("shop", "edock", "/x"));
+        assert_eq!(p.files, ["/x/compose.yaml", "/x/o.yaml"]);
+        assert_eq!(p.env_files, ["/x/a.env", "/x/b.env"]);
+        assert_eq!(SavedProject::from_labels("edock", &p.labels()), Some(p));
+        let no_dir: HashMap<String, String> = [(PROJECT.to_string(), "shop".to_string())].into();
+        assert!(SavedProject::from_labels("edock", &no_dir).is_none());
+        assert_eq!(problem(&SavedProject::from_labels("edock", &labels).unwrap()).as_deref(), Some("Its folder isn't there any more"));
+        let here = std::env::temp_dir().display().to_string();
+        let gone = SavedProject { name: "shop".into(), context: "edock".into(), dir: here.clone(), files: vec![format!("{here}/nope-compose.yaml")], env_files: vec![] };
+        assert_eq!(problem(&gone).as_deref(), Some("nope-compose.yaml isn't there any more"));
+    }
+
+    #[test]
+    fn compose_files_as_compose_finds_them() {
+        let dir = std::env::temp_dir().join(format!("edock-compose-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(compose_files(&dir).is_err(), "none");
+        std::fs::write(dir.join("docker-compose.yml"), "").unwrap();
+        std::fs::write(dir.join("compose.override.yaml"), "").unwrap();
+        assert_eq!(compose_files(&dir).unwrap(), [dir.join("docker-compose.yml"), dir.join("compose.override.yaml")]);
+        std::fs::write(dir.join("compose.yaml"), "").unwrap();
+        assert_eq!(compose_files(&dir).unwrap()[0], dir.join("compose.yaml"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

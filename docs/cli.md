@@ -70,6 +70,7 @@ edock k8s stop
 edock k8s status
 edock k8s delete
 edock k8s set [--lan on|off] [--tls-san NAME,…] [--port N]
+edock k8s load IMAGE…
 ```
 
 A single-node Kubernetes cluster (k3s) in the `edock-k8s` container. See [Kubernetes](app/kubernetes.md).
@@ -83,6 +84,7 @@ A single-node Kubernetes cluster (k3s) in the `edock-k8s` container. See [Kubern
 | `set --lan on` | The API server and LoadBalancer services on every interface |
 | `set --tls-san A,B` | Extra names or addresses in the API server's certificate |
 | `set --port N` | The Mac port for the API server (1024 or higher; default 6443) |
+| `load IMAGE…` | Puts images from eDock (built or pulled) into the cluster's own containerd, where pods find them without a registry. See [Images from eDock](app/kubernetes.md#images-from-edock). |
 
 `set` recreates the node container with the new settings, and keeps the cluster's state. The settings are in `~/.edock/k8s.json`.
 
@@ -139,6 +141,8 @@ edock machine create NAME [--distro D | --image IMAGE] [--systemd] [--ssh-agent]
 edock machine list
 edock machine shell NAME [-- CMD...]
 edock machine start | stop | restart | delete NAME
+edock machine ssh on | off | status
+edock machine stdio NAME
 ```
 
 Long-lived Linux environments on eDock. Each one has your user, `sudo`, and `/Users` at the same path as on the Mac.
@@ -150,6 +154,8 @@ Long-lived Linux environments on eDock. Each one has your user, `sudo`, and `/Us
 | `--systemd` | Boots systemd as the machine's init |
 
 `shell NAME -- CMD…` runs one command instead of a shell.
+
+`ssh on` makes `ssh NAME.edock` reach every machine (VS Code, Cursor and Zed too); `off` undoes it, and `status` says `on` or `off`. `stdio NAME` is the ProxyCommand it uses: the machine's `sshd -i` on its stdin and stdout. See [SSH and editors](app/machines.md#ssh-and-editors).
 
 ## `edock usb` (beta)
 

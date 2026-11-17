@@ -4,7 +4,7 @@
   import { Badge, Button, Callout, Skeleton, Table } from "@elyra/ui";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { changes, engine, attempt, errorText } from "../lib/state.svelte.js";
+  import { changes, engine, attempt, errorText, runImage } from "../lib/state.svelte.js";
   import { ago, bytes, shortId } from "../lib/format.js";
 
   let images = $state(null);
@@ -108,6 +108,7 @@
         {/if}
       {/snippet}
       {#snippet actions(row)}
+        <button class="icon-btn" title="Run…" aria-label="Run a container from it" onclick={() => runImage(row.tag === "<none>" ? row.id : `${row.repository}:${row.tag}`)}><Icon name="play" size={14} /></button>
         {#if engine.status?.context === "edock"}
           <button class="icon-btn" title="Scan for vulnerabilities" onclick={() => navigate(`/images/${encodeURIComponent(row.tag === "<none>" ? row.id : `${row.repository}:${row.tag}`)}?tab=security`)}><Icon name="shield" size={14} /></button>
         {/if}

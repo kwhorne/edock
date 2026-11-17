@@ -5,9 +5,11 @@
   import { NavItem, Select, Sidebar, Toolbar } from "@elyra/ui";
   import Icon from "./lib/Icon.svelte";
   import { checkForUpdates } from "./lib/updates.js";
+  import RunImage from "./lib/RunImage.svelte";
+  import NewService from "./lib/NewService.svelte";
   import { startSearch } from "./lib/search.js";
   import { startRecipe } from "./lib/recipes.js";
-  import { engine, startWatching, useContext, attempt } from "./lib/state.svelte.js";
+  import { runImage, dialogs, engine, startWatching, useContext, attempt } from "./lib/state.svelte.js";
   import { getTheme, applyTheme } from "./theme.js";
   import { api } from "./bindings";
 
@@ -33,8 +35,12 @@
       if (id === "engine:stop") attempt(() => api.daemon_stop(), "eDock engine stopped");
       if (id === "update") appWindow.show().then(checkForUpdates);
     });
+    // Pages, and from the popover the dialogs that live in this window.
     channel("navigate").subscribe((path) => {
-      if (path) navigate(path);
+      if (path === "#new-service") {
+        navigate("/");
+        dialogs.newService = true;
+      } else if (path) navigate(path);
     });
     // An AI agent at work (MCP): said when it changes something; reading is quiet.
     const CHANGES = new Set([
@@ -49,6 +55,7 @@
 
   const COMMANDS = [
     { id: "go.containers", title: "Containers", action: () => navigate("/") },
+    { id: "run.image", title: "Run image…", action: () => runImage() },
     { id: "go.images", title: "Images", action: () => navigate("/images") },
     { id: "go.volumes", title: "Volumes", action: () => navigate("/volumes") },
     { id: "go.networks", title: "Networks", action: () => navigate("/networks") },
@@ -167,6 +174,8 @@
       <main class="content">
         <Router {routes} />
       </main>
+      <RunImage />
+      <NewService bind:open={dialogs.newService} />
     </div>
   </div>
 {/if}

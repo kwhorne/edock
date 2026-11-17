@@ -1,4 +1,5 @@
-<!-- One pod: its containers, and a container's log and shell. -->
+<!-- One pod: why it's stuck when it is, its containers and events, and a
+     container's log and shell. -->
 <script>
   import { confirm, navigate } from "@elyra/runtime";
   import { Badge, Button, Callout, Select, Skeleton, Tabs } from "@elyra/ui";
@@ -8,6 +9,7 @@
   import Terminal from "../lib/Terminal.svelte";
   import { api } from "../bindings";
   import { attempt, errorText } from "../lib/state.svelte.js";
+  import { localImages, loadIntoK8s, shortRef } from "../lib/k8s.js";
   import { ago } from "../lib/format.js";
 
   let { params, query } = $props();
@@ -17,9 +19,20 @@
   let error = $state(null);
   let tab = $state("logs");
   let container = $state(null);
+  let events = $state(null);
+  let local = $state(new Set());
+  let loading = $state(false);
 
   $effect(() => {
     if (query?.tab) tab = query.tab;
+  });
+  // A stuck pod opens on what Kubernetes said about it.
+  let chose = false;
+  $effect(() => {
+    if (!chose && pod) {
+      chose = true;
+      if (pod.why && !query?.tab) tab = "events";
+    }
   });
 
   async function load() {
@@ -30,6 +43,8 @@
       if (p) pod = p;
       if (p && (!container || !p.containers.some((c) => c.name === container))) container = p.containers[0]?.name ?? null;
       error = null;
+      if (p?.pull_failed && !local.size) local = await localImages();
+      if (p && (tab === "events" || events === null)) events = await api.k8s_pod_events(params.namespace, params.pod).catch(() => events);
     } catch (e) {
       error = errorText(e);
     }
@@ -44,6 +59,19 @@
   onDestroy(() => clearInterval(timer));
 
   const current = $derived(pod?.containers.find((c) => c.name === container));
+  const loadable = $derived(pod?.pull_failed && local.has(shortRef(pod.pull_failed)));
+
+  async function loadImage() {
+    loading = true;
+    const ok = await loadIntoK8s(pod.pull_failed);
+    loading = false;
+    // Kubernetes tries the pull again on its own, backing off up to five
+    // minutes; a new pod tries at once.
+    if (ok && pod.owner && (await confirm(`Replace this pod now? ${pod.owner} makes a new one, which finds the image at once; this one would try again by itself within a few minutes.`, { confirmLabel: "Replace pod" }))) {
+      if (await attempt(() => api.k8s_pod_delete(pod.namespace, pod.name).then(() => true))) navigate("/kubernetes");
+    }
+  }
+  const age = (t) => (t ? ago(Date.parse(t) / 1000) : "");
   const tone = (s) => (s === "Running" ? "success" : /BackOff|Error|Failed|Err/.test(s) ? "danger" : "warning");
 
   async function remove() {
@@ -71,6 +99,19 @@
     <Skeleton lines={6} />
   {:else}
     {#if gone}<Callout variant="info" title="This pod is gone">Showing it as it was. <a href="#/kubernetes">Back to the pods</a></Callout>{/if}
+    {#if pod.why && !gone}
+      <Callout variant="warning" title="Why it's stuck">
+        {pod.why}
+        {#if loadable}
+          <div class="callout-action">
+            <Button size="sm" loading={loading} onclick={loadImage}><Icon name="upload" size={14} /> Load {pod.pull_failed} from eDock</Button>
+            <span class="muted small">It's on eDock, not in the cluster: <code>edock k8s load {pod.pull_failed}</code> does the same.</span>
+          </div>
+        {:else if pod.pull_failed}
+          <div class="muted small">Built on eDock? <code>docker build -t {pod.pull_failed} .</code>, then load it here, or <code>edock k8s load {pod.pull_failed}</code>.</div>
+        {/if}
+      </Callout>
+    {/if}
     <div class="facts">
       <div><span class="muted">Ready</span>{pod.ready}</div>
       <div><span class="muted">Restarts</span>{pod.restarts}</div>
@@ -92,6 +133,7 @@
         { id: "logs", label: "Logs" },
         { id: "terminal", label: "Shell", disabled: current?.state !== "running" },
         { id: "containers", label: `Containers (${pod.containers.length})` },
+        { id: "events", label: `Events${events?.length ? ` (${events.length})` : ""}` },
       ]}
       bind:value={tab}
       label="Pod"
@@ -114,12 +156,31 @@
                   <td>
                     <span class="mono">{c.image}</span><br />
                     <Badge variant={c.ready ? "success" : c.state === "running" ? "warning" : "neutral"}>{c.state}{c.reason ? `: ${c.reason}` : ""}</Badge>
-                    <span class="muted">{c.restarts} restart{c.restarts === 1 ? "" : "s"}</span>
+                    <span class="muted">{c.restarts} restart{c.restarts === 1 ? "" : "s"}{c.last ? ` · last ended: ${c.last}` : ""}</span>
+                    {#if c.message}<div class="muted small">{c.message}</div>{/if}
                   </td>
                 </tr>
               {/each}
             </tbody>
           </table>
+        {:else if id === "events"}
+          {#if events === null}
+            <Skeleton lines={3} />
+          {:else if !events.length}
+            <p class="muted">No events: Kubernetes keeps them for an hour.</p>
+          {:else}
+            <table class="kv events">
+              <tbody>
+                {#each events as e, i (i)}
+                  <tr>
+                    <td><Badge variant={e.kind === "Warning" ? "warning" : "neutral"}>{e.reason}</Badge></td>
+                    <td class="msg">{e.message}</td>
+                    <td class="muted nowrap">{e.count > 1 ? `${e.count}× · ` : ""}{age(e.last)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
         {/if}
       {/snippet}
     </Tabs>

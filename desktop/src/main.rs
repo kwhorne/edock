@@ -10,6 +10,7 @@ mod inspector;
 mod snapshots;
 mod files;
 mod recipes;
+mod run;
 mod bench;
 mod compose;
 mod volumes;
@@ -42,46 +43,85 @@ impl Provider for Watcher {
         let engine = ctx.get::<engine::Engine>();
         let bus = ctx.get::<EventBus>();
         let tray = ctx.try_get::<Tray>();
-        let e2 = engine.clone();
         let (alerts, notifier, b2) = (ctx.get::<alerts::Alerts>(), ctx.get::<elyra::notifier::Notifier>(), bus.clone());
         let on_alert = move |a| alerts::show(&alerts, &notifier, &b2, a);
+        let ctx2 = ctx.clone();
         // A burst of events (`compose up` of 20 services) is one look,
         // a moment after the first of them.
         // The last word on whether the engine answers is what's shown.
         let scheduled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let latest = Arc::new(std::sync::atomic::AtomicBool::new(false));
         streams::watch(engine, bus, move |connected| {
-            let Some(tray) = tray.clone() else { return };
+            if tray.is_none() {
+                return;
+            }
             latest.store(connected, std::sync::atomic::Ordering::SeqCst);
             if scheduled.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 return;
             }
-            let engine = e2.clone();
+            let ctx = ctx2.clone();
             let (scheduled, latest) = (scheduled.clone(), latest.clone());
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 scheduled.store(false, std::sync::atomic::Ordering::SeqCst);
                 let connected = latest.load(std::sync::atomic::Ordering::SeqCst);
-                let (context, _) = engine.context();
-                // eDock's engine: one background look at /info, which
-                // doesn't keep its VM awake, says both. Others: Docker's.
-                // The user's running containers (not eDock's own: machines,
-                // Kubernetes, BuildKit), and whether eDock is stopped; both
-                // as background looks on eDock's engine.
-                let stopped = connected
-                    && context == engine::EDOCK
-                    && matches!(daemon::engine_request("GET", "/info").await, Some((200, i)) if i["EdockStopped"] == true);
-                let running = if connected { resources::user_counts(&engine).await.map_or(0, |(r, _)| r) } else { 0 };
-                tray.set_title(if running > 0 { Some(running.to_string()) } else { None }.as_deref());
-                tray.set_tooltip(Some(&if stopped {
-                    "eDock — engine stopped".to_owned()
-                } else if connected {
-                    format!("eDock — {running} running ({context})")
-                } else {
-                    format!("eDock — {context} engine not running")
-                }));
+                refresh_tray(&ctx, Some(connected)).await;
             });
         }, on_alert);
+    }
+}
+
+/// The menu bar item: how many of the user's containers run, a dot when
+/// something happened that the popover hasn't shown (out of memory,
+/// unhealthy), and a tooltip that says it. `connected`: whether the engine
+/// answers, when known.
+pub(crate) async fn refresh_tray(ctx: &Ctx, connected: Option<bool>) {
+    let Some(tray) = ctx.try_get::<Tray>() else { return };
+    let engine = ctx.get::<engine::Engine>();
+    let (context, _) = engine.context();
+    // The user's running containers (not eDock's own: machines,
+    // Kubernetes, BuildKit), and whether eDock is stopped; both as
+    // background looks on eDock's engine, which don't keep its VM awake.
+    let counts = resources::user_counts(&engine).await;
+    let connected = connected.unwrap_or(counts.is_some());
+    let stopped = connected
+        && context == engine::EDOCK
+        && matches!(daemon::engine_request("GET", "/info").await, Some((200, i)) if i["EdockStopped"] == true);
+    let running = if connected { counts.map_or(0, |(r, _)| r) } else { 0 };
+    let unseen = ctx.get::<alerts::Alerts>().unseen();
+    tray.set_title(tray_title(running, unseen).as_deref());
+    let mut tip = if stopped {
+        "eDock — engine stopped".to_owned()
+    } else if connected {
+        format!("eDock — {running} running ({context})")
+    } else {
+        format!("eDock — {context} engine not running")
+    };
+    if unseen {
+        tip.push_str(" · a container needs a look");
+    }
+    tray.set_tooltip(Some(&tip));
+}
+
+#[cfg(test)]
+mod tray_tests {
+    #[test]
+    fn the_title_counts_and_dots() {
+        assert_eq!(super::tray_title(0, false), None);
+        assert_eq!(super::tray_title(3, false).as_deref(), Some("3"));
+        assert_eq!(super::tray_title(0, true).as_deref(), Some("•"));
+        assert_eq!(super::tray_title(3, true).as_deref(), Some("3 •"));
+    }
+}
+
+/// The menu bar item's title: the running count, and a dot after it when
+/// something needs a look.
+fn tray_title(running: u32, unseen: bool) -> Option<String> {
+    match (running, unseen) {
+        (0, false) => None,
+        (0, true) => Some("•".into()),
+        (n, false) => Some(n.to_string()),
+        (n, true) => Some(format!("{n} •")),
     }
 }
 
@@ -149,6 +189,8 @@ fn core(engine: Arc<engine::Engine>) -> App {
             k8s::k8s_status,
             k8s::k8s_cluster,
             k8s::k8s_items,
+            k8s::k8s_pod_events,
+            k8s::k8s_load,
             k8s::k8s_pod_delete,
             k8s::k8s_rollout_restart,
             k8s::k8s_logs_follow,
@@ -164,6 +206,8 @@ fn core(engine: Arc<engine::Engine>) -> App {
             machines::machine_create,
             machines::machine_action,
             machines::machine_shell,
+            machines::machine_ssh,
+            machines::machine_ssh_set,
             images::image_layers,
             images::image_scans,
             images::image_scan_result,
@@ -216,12 +260,19 @@ fn core(engine: Arc<engine::Engine>) -> App {
             files::container_file_reveal,
             recipes::recipes_list,
             recipes::recipe_start,
+            run::image_run_defaults,
+            run::image_run,
             bench::engine_log,
             bench::speed_test,
             compose::project_logs_follow,
             compose::editor_name,
             compose::folder_open,
             compose::project_up,
+            compose::compose_projects,
+            compose::compose_project_open,
+            compose::compose_project_forget,
+            alerts::alerts_recent,
+            alerts::alerts_seen,
             volumes::volume_browse,
             volumes::volume_browse_end,
             volumes::volume_clone,
@@ -260,9 +311,7 @@ async fn welcome_needed(_ctx: Ctx) -> bool {
 /// The welcome was done or skipped.
 #[command]
 async fn welcome_done(_ctx: Ctx) {
-    let mut s = engine::Settings::load();
-    s.onboarded = true;
-    s.save();
+    engine::Settings::update(|s| (true, s.onboarded = true));
 }
 
 fn main() -> elyra::Result<()> {

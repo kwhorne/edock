@@ -205,12 +205,12 @@ async fn kubernetes() {
 
     // A deployment, as `kubectl apply` would make it.
     let docker = app.ctx().get::<Engine>().docker().unwrap();
-    let kubectl = |args: &'static [&'static str]| {
+    let kubectl = |args: &[&str]| {
         let docker = docker.clone();
+        let mut cmd = vec!["kubectl".to_string()];
+        cmd.extend(args.iter().map(|a| a.to_string()));
         async move {
             use bollard::exec::{CreateExecOptions, StartExecResults};
-            let mut cmd = vec!["kubectl".to_string()];
-            cmd.extend(args.iter().map(|a| a.to_string()));
             let e = docker.create_exec("edock-k8s", CreateExecOptions { attach_stdout: Some(true), attach_stderr: Some(true), cmd: Some(cmd), ..Default::default() }).await.unwrap();
             if let StartExecResults::Attached { mut output, .. } = docker.start_exec(&e.id, None).await.unwrap() {
                 use futures_util::StreamExt;
@@ -283,6 +283,42 @@ async fn kubernetes() {
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 
+    // An image only eDock has: the pod can't pull it and says so, with
+    // what Kubernetes said; loaded from eDock, a new pod runs it.
+    ensure_image(&app, "alpine:latest").await;
+    let local = format!("edock-test-local:{}", std::process::id());
+    let (repo, tag) = local.split_once(':').unwrap();
+    docker.tag_image("alpine:latest", Some(bollard::query_parameters::TagImageOptionsBuilder::default().repo(repo).tag(tag).build())).await.unwrap();
+    kubectl(&["create", "deployment", "local", &format!("--image={local}"), "--", "sleep", "600"]).await;
+    let start = Instant::now();
+    let stuck = loop {
+        let items: K8sItems = app.invoke("k8s_items", ()).await.unwrap();
+        if let Some(p) = items.pods.iter().find(|p| p.name.starts_with("local-") && p.pull_failed.is_some()) {
+            break p.clone();
+        }
+        assert!(start.elapsed() < Duration::from_secs(120), "the pod never said it can't pull");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    };
+    assert_eq!(stuck.pull_failed.as_deref(), Some(local.as_str()));
+    assert!(stuck.why.as_deref().unwrap_or("").contains("can't be pulled"), "{:?}", stuck.why);
+    let events: Vec<crate::k8s::K8sEvent> = app.invoke("k8s_pod_events", ("default".to_string(), stuck.name.clone())).await.unwrap();
+    assert!(events.iter().any(|e| e.reason == "Scheduled") && events.iter().any(|e| e.kind == "Warning"), "{:?}", events.iter().map(|e| &e.reason).collect::<Vec<_>>());
+    // Needs the engine's `edock k8s load`: EDOCK_ENGINE=…/engine/target/release/edock.
+    let said: String = app.invoke("k8s_load", (local.clone(),)).await.unwrap();
+    assert!(said.contains("is in Kubernetes"), "{said}");
+    assert!(app.invoke_err("k8s_load", ("edock-test-not-here:1".to_string(),)).await.contains("isn't on eDock"));
+    let _: () = app.invoke("k8s_pod_delete", ("default".to_string(), stuck.name.clone())).await.unwrap();
+    let start = Instant::now();
+    loop {
+        let items: K8sItems = app.invoke("k8s_items", ()).await.unwrap();
+        if items.pods.iter().any(|p| p.name.starts_with("local-") && p.name != stuck.name && p.status == "Running" && p.why.is_none()) {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(120), "the loaded image never ran");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    let _ = docker.remove_image(&local, None::<bollard::query_parameters::RemoveImageOptions>, None).await;
+
     // Delete the cluster, with its state.
     let _: () = app.invoke("k8s_cluster", ("delete".to_string(), false)).await.unwrap();
     let done = wait_long::<K8sProgress>(&app, "k8s:progress", 120, |p| p.iter().any(|p| p.done)).await;
@@ -304,6 +340,37 @@ async fn wait_long<T: serde::de::DeserializeOwned>(app: &TestApp, channel: &str,
     }
 }
 
+/// A running container with a restart policy (`unless-stopped`) or none,
+/// labelled as the tests' own.
+async fn policy_container(docker: &bollard::Docker, name: &str, policy: Option<&str>) {
+    use bollard::query_parameters as q;
+    let body = bollard::models::ContainerCreateBody {
+        image: Some("alpine:latest".into()),
+        cmd: Some(vec!["sleep".into(), "600".into()]),
+        labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
+        host_config: Some(bollard::models::HostConfig {
+            restart_policy: policy.map(|p| bollard::models::RestartPolicy { name: Some(p.parse().unwrap()), maximum_retry_count: None }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let _ = docker.remove_container(name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(name).build()), body).await.unwrap();
+    docker.start_container(name, None::<q::StartContainerOptions>).await.unwrap();
+}
+
+/// Whether `name` runs, within a few seconds (held containers start on
+/// their own thread after Start).
+async fn runs_soon(docker: &bollard::Docker, name: &str) -> bool {
+    for _ in 0..50 {
+        if docker.inspect_container(name, None::<bollard::query_parameters::InspectContainerOptions>).await.ok().and_then(|i| i.state).and_then(|s| s.running) == Some(true) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    false
+}
+
 /// Stop and Start on an engine the app didn't start (as after a restart
 /// of the app, or with the LaunchAgent): `EDOCK_TEST_HOST=unix://$HOME/.edock/run/docker.sock`.
 #[tokio::test(flavor = "multi_thread")]
@@ -319,6 +386,13 @@ async fn stop_and_start_an_engine_the_app_did_not_start() {
     let app = app();
     let before: DaemonInfo = app.invoke("daemon_info", ()).await.unwrap();
     assert!(matches!(before.state, EngineState::Running | EngineState::Asleep), "start eDock's engine first: {:?}", before.state);
+
+    // What runs with a restart policy comes back with Start; what has none doesn't.
+    ensure_image(&app, "alpine:latest").await;
+    let d0 = app.ctx().get::<Engine>().docker().unwrap();
+    let (kept, plain) = (format!("edock-test-policy-{}", std::process::id()), format!("edock-test-nopolicy-{}", std::process::id()));
+    policy_container(&d0, &kept, Some("unless-stopped")).await;
+    policy_container(&d0, &plain, None).await;
 
     let _: () = app.invoke("daemon_stop", ()).await.unwrap();
     let info: DaemonInfo = app.invoke("daemon_info", ()).await.unwrap();
@@ -343,6 +417,14 @@ async fn stop_and_start_an_engine_the_app_did_not_start() {
     let _: () = app.invoke("daemon_start", ()).await.unwrap();
     let info: DaemonInfo = app.invoke("daemon_info", ()).await.unwrap();
     assert_eq!(info.state, EngineState::Running);
+    let d1 = app.ctx().get::<Engine>().docker().unwrap();
+    let came_back = runs_soon(&d1, &kept).await;
+    let plain_runs = d1.inspect_container(&plain, None::<bollard::query_parameters::InspectContainerOptions>).await.ok().and_then(|i| i.state).and_then(|s| s.running);
+    for n in [&kept, &plain] {
+        let _ = d1.remove_container(n, Some(bollard::query_parameters::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    }
+    assert!(came_back, "unless-stopped came back with Start");
+    assert_eq!(plain_runs, Some(false), "no policy: it stays stopped");
     let c = Scratch::new(&app, "edock-desktop-test-restart").await;
     let rows: Vec<ContainerRow> = app.invoke("containers_list", (false,)).await.unwrap();
     assert_eq!(rows.iter().find(|r| r.id == c.id).map(|r| r.state.as_str()), Some("running"));
@@ -611,6 +693,10 @@ async fn resources_builder_import_list_and_diagnostics() {
     let file = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".edock/vm.json");
     let saved = std::fs::read(&file).ok();
     let cpus = if before.cpus > 1 { before.cpus - 1 } else { 2.min(before.max_cpus) };
+    // Restart VM: what runs with a restart policy runs again after it.
+    ensure_image(&app, "alpine:latest").await;
+    let kept = format!("edock-test-vmrestart-{}", std::process::id());
+    policy_container(&app.ctx().get::<Engine>().docker().unwrap(), &kept, Some("unless-stopped")).await;
     let tried = async {
         let after: VmInfo = app.invoke("vm_set_resources", (cpus, 4096u32)).await.map_err(|e| format!("{e:?}"))?;
         let bad = app.invoke_err("vm_set_resources", (0u32, 4096u32)).await;
@@ -630,6 +716,10 @@ async fn resources_builder_import_list_and_diagnostics() {
         }
     }
     let _: () = app.invoke("vm_restart", ()).await.unwrap();
+    let d = app.ctx().get::<Engine>().docker().unwrap();
+    let came_back = runs_soon(&d, &kept).await;
+    let _ = d.remove_container(&kept, Some(bollard::query_parameters::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    assert!(came_back, "unless-stopped runs again after Restart VM");
     let (after, bad, now) = tried.unwrap();
     assert_eq!((after.cpus, after.memory_mib), (cpus, 4096));
     assert!(bad.contains("cpus"));
@@ -1327,8 +1417,33 @@ async fn a_compose_project_as_a_whole() {
     let _: () = app.invoke("stream_stop", (id,)).await.unwrap();
 
     assert!(app.invoke::<String>("folder_open", ("relative/path".to_string(), "finder".to_string())).await.is_err());
+
+    // Remembered, and still there after `docker compose down`, with Up.
+    use crate::compose::ProjectRow;
+    let listed = |rows: Vec<ProjectRow>| rows.into_iter().find(|p| p.name == project);
+    let p = listed(app.invoke("compose_projects", ()).await.unwrap()).expect("remembered while up");
+    assert_eq!((p.dir.as_str(), p.problem.as_deref()), (std::fs::canonicalize(&dir).unwrap().to_str().unwrap(), None));
     let down = compose(&["down", "-t", "1"]);
     assert!(down.status.success());
+    let p = listed(app.invoke("compose_projects", ()).await.unwrap()).expect("remembered when down");
+    assert!(p.problem.is_none(), "{:?}", p.problem);
+    let _: () = app.invoke("project_up", (project.clone(), false)).await.unwrap();
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let mut filters = std::collections::HashMap::new();
+    filters.insert("label".to_string(), vec![format!("com.docker.compose.project={project}")]);
+    let up = docker.list_containers(Some(bollard::query_parameters::ListContainersOptionsBuilder::default().filters(&filters).build())).await.unwrap();
+    assert_eq!(up.len(), 2, "both services up again from what was remembered");
+    let down = compose(&["down", "-t", "1"]);
+    assert!(down.status.success());
+
+    // Forgotten, then opened from its folder: the name Compose gives it.
+    let _: () = app.invoke("compose_project_forget", (project.clone(),)).await.unwrap();
+    assert!(listed(app.invoke("compose_projects", ()).await.unwrap()).is_none());
+    let named: String = app.invoke("compose_project_open", (dir.display().to_string(),)).await.unwrap();
+    assert_eq!(named, project, "the folder's name");
+    assert!(listed(app.invoke("compose_projects", ()).await.unwrap()).is_some());
+    let _: () = app.invoke("compose_project_forget", (project.clone(),)).await.unwrap();
+    assert!(app.invoke::<String>("compose_project_open", (std::env::temp_dir().display().to_string(),)).await.is_err(), "no compose file");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1496,4 +1611,92 @@ async fn alerts_for_out_of_memory_and_unhealthy() {
     for c in [&hungry, &sick] {
         let _ = docker.remove_container(c, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
     }
+}
+
+/// Run image…: suggestions from the image, then a container with a port,
+/// a Mac folder, a volume, a variable and a command, served on the Mac.
+/// One that doesn't start is removed.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine"]
+async fn run_image_as_docker_run() {
+    use crate::run::{RunDefaults, RunEnv, RunMount, RunPort, RunSpec, RunStarted};
+    use bollard::query_parameters as q;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    ensure_image(&app, "nginx:alpine").await;
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let tag = std::process::id();
+    let d: RunDefaults = app.invoke("image_run_defaults", ("nginx:alpine".to_string(),)).await.unwrap();
+    assert!(d.local && d.name.starts_with("nginx"), "{}", d.name);
+    let web = d.ports.iter().find(|p| p.container == 80 && !p.udp).expect("nginx exposes 80");
+    assert!(web.host.unwrap() >= 8080, "80 is suggested high: {:?}", web.host);
+    let gone: RunDefaults = app.invoke("image_run_defaults", ("edock-test/not-here:1".to_string(),)).await.unwrap();
+    assert!(!gone.local && gone.ports.is_empty());
+
+    let dir = std::env::temp_dir().join(format!("edock-test-run-{tag}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.html"), "hello from the Mac\n").unwrap();
+    let (name, vol) = (format!("edock-test-run-{tag}"), format!("edock-test-run-{tag}"));
+    let port = crate::recipes::free_port(18000 + (tag % 1000) as u16, &[]);
+    let spec = RunSpec {
+        image: "nginx:alpine".into(),
+        name: Some(name.clone()),
+        ports: vec![RunPort { host: Some(port), container: 80, udp: false }],
+        lan: false,
+        mounts: vec![
+            RunMount { source: dir.display().to_string(), target: "/usr/share/nginx/html".into(), read_only: true },
+            RunMount { source: vol.clone(), target: "/data".into(), read_only: false },
+        ],
+        env: vec![RunEnv { key: "EDOCK_TEST".into(), value: "a b=c".into() }],
+        command: Some("nginx -g 'daemon off;'".into()),
+        restart: true,
+    };
+    let s: RunStarted = app.invoke("image_run", (spec.clone(),)).await.unwrap();
+    assert_eq!(s.name, name);
+    let info = docker.inspect_container(&s.id, None::<q::InspectContainerOptions>).await.unwrap();
+    let cfg = info.config.unwrap();
+    assert!(cfg.env.unwrap().contains(&"EDOCK_TEST=a b=c".to_string()));
+    assert_eq!(cfg.cmd.unwrap(), ["nginx", "-g", "daemon off;"]);
+    let mounts = info.mounts.unwrap();
+    assert!(mounts.iter().any(|m| m.destination.as_deref() == Some("/data") && m.name.as_deref() == Some(vol.as_str())), "{mounts:?}");
+    assert!(mounts.iter().any(|m| m.destination.as_deref() == Some("/usr/share/nginx/html") && m.rw == Some(false)), "{mounts:?}");
+    // Served from the Mac's folder, on the Mac's port.
+    let mut body = String::new();
+    for _ in 0..50 {
+        if let Ok(mut c) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            use std::io::{Read, Write};
+            let _ = c.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n");
+            body.clear();
+            let _ = c.read_to_string(&mut body);
+            if body.contains("hello from the Mac") {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(body.contains("hello from the Mac"), "{body}");
+    // Files › Remove never empties the Mac folder behind a mount, or a
+    // folder that has one under it.
+    for at in ["/usr/share/nginx/html", "/usr/share/nginx"] {
+        let e = app.invoke_err("container_file_remove", (s.id.clone(), at.to_string())).await;
+        assert!(e.contains("mounted"), "{at}: {e}");
+    }
+    assert!(dir.join("index.html").is_file(), "the Mac's file is still there");
+
+    // The same name again: said, not a second container.
+    let again = app.invoke::<RunStarted>("image_run", (spec.clone(),)).await.unwrap_err();
+    assert!(format!("{again:?}").contains("already"), "{again:?}");
+    let _ = docker.remove_container(&s.id, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    let _ = docker.remove_volume(&vol, None::<q::RemoveVolumeOptions>).await;
+
+    // A command that isn't there: when the engine says so on start (eDock,
+    // Docker), no container is left behind. OrbStack starts it, and it exits.
+    let broken = RunSpec { name: Some(format!("{name}-broken")), ports: vec![], mounts: vec![], command: Some("/nope/not-here".into()), restart: false, ..spec };
+    match app.invoke::<RunStarted>("image_run", (broken,)).await {
+        Err(_) => assert!(docker.inspect_container(&format!("{name}-broken"), None::<q::InspectContainerOptions>).await.is_err(), "removed"),
+        Ok(s) => {
+            let _ = docker.remove_container(&s.id, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

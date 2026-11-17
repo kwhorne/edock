@@ -479,14 +479,42 @@ pub async fn container_files_upload(ctx: Ctx, container: String, dir: String, fi
 }
 
 /// Remove a file or folder in a container (`rm -rf`). The container must be
-/// running, with `rm` in it.
+/// running, with `rm` in it. Not where something is mounted, or a folder
+/// with a mount under it: `rm -rf` would empty the Mac folder or volume
+/// behind it (a machine's `/Users` is the Mac's).
 #[command]
 pub async fn container_file_remove(ctx: Ctx, container: String, path: String) -> Result<(), String> {
     let path = valid_path(&path)?;
     if path.trim_end_matches('/').is_empty() {
         return Err("Not the whole filesystem".into());
     }
+    let info = ctx.get::<Engine>().docker()?.inspect_container(&container, None::<q::InspectContainerOptions>).await.map_err(err)?;
+    let mounts: Vec<(String, String)> = info
+        .mounts
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|m| Some((m.destination?, m.source.or(m.name).unwrap_or_default())))
+        .collect();
+    if let Some(why) = holds_a_mount(path, &mounts) {
+        return Err(why);
+    }
     exec(&ctx, &container, vec!["rm".into(), "-rf".into(), "--".into(), path.into()], "This image has no rm to remove files with").await.map(|_| ())
+}
+
+/// Why `path` mustn't be removed: it is a mount, or has one under it.
+fn holds_a_mount(path: &str, mounts: &[(String, String)]) -> Option<String> {
+    let path = path.trim_end_matches('/');
+    mounts.iter().find_map(|(dest, source)| {
+        let dest = dest.trim_end_matches('/');
+        let from = if source.is_empty() { String::new() } else { format!(" ({source})") };
+        if dest == path {
+            Some(format!("{path} is mounted here{from}: removing it would empty what's behind it. Remove what's in it instead, or the mount itself"))
+        } else if dest.starts_with(&format!("{path}/")) {
+            Some(format!("{dest} is mounted inside {path}{from}: removing {path} would empty it too"))
+        } else {
+            None
+        }
+    })
 }
 
 /// Show a running container's file in Finder, through `~/eDock` (eDock's
@@ -511,6 +539,19 @@ pub async fn container_file_reveal(ctx: Ctx, container: String, path: String) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mounts_and_what_holds_them_stay() {
+        let m = vec![("/Users".to_string(), "/Users".to_string()), ("/data".to_string(), "pgdata".to_string())];
+        assert!(holds_a_mount("/Users", &m).unwrap().contains("(/Users)"));
+        assert!(holds_a_mount("/Users/", &m).is_some());
+        assert!(holds_a_mount("/data", &m).unwrap().contains("pgdata"));
+        let parent = vec![("/srv/app/storage".to_string(), "/Users/kh/app/storage".to_string())];
+        assert!(holds_a_mount("/srv", &parent).unwrap().contains("inside /srv"));
+        assert!(holds_a_mount("/Users/kh/notes.txt", &m).is_none(), "a file in a mount is the user's to remove");
+        assert!(holds_a_mount("/Usersx", &m).is_none());
+        assert!(holds_a_mount("/etc/nginx", &m).is_none());
+    }
 
     #[test]
     fn paths_are_checked() {

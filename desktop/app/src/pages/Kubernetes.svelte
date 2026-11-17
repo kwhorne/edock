@@ -6,6 +6,7 @@
   import { api } from "../bindings";
   import { changes, engine, useContext, attempt, errorText } from "../lib/state.svelte.js";
   import { ago } from "../lib/format.js";
+  import { localImages, loadIntoK8s, shortRef } from "../lib/k8s.js";
 
   let status = $state(null);
   let items = $state(null);
@@ -22,10 +23,14 @@
     status = await api.k8s_status();
   }
 
+  // eDock's images, for "Load from eDock" on a pod that can't pull one.
+  let local = $state(new Set());
+  let loading = $state({});
   async function loadItems() {
     if (!status?.ready) return;
     try {
       items = await api.k8s_items();
+      if (items.pods.some((p) => p.pull_failed)) local = await localImages();
       error = null;
     } catch (e) {
       error = errorText(e);
@@ -63,6 +68,12 @@
     }
   });
   onDestroy(off);
+
+  async function load(row) {
+    loading[row.pull_failed] = true;
+    await loadIntoK8s(row.pull_failed);
+    loading[row.pull_failed] = false;
+  }
 
   async function cluster(action) {
     if (action === "delete" && !(await confirm("Delete the Kubernetes cluster, with everything deployed in it?", { danger: true, confirmLabel: "Delete" }))) return;
@@ -224,11 +235,15 @@
               {:else if column.key === "name"}
                 <span class="mono">{row.name}</span>
                 {#if row.owner}<div class="sub muted">{row.owner}</div>{/if}
+                {#if row.why}<div class="sub why" title={row.why}>{row.why}</div>{/if}
               {:else}
                 {row[column.key]}
               {/if}
             {/snippet}
             {#snippet actions(row)}
+              {#if row.pull_failed && local.has(shortRef(row.pull_failed))}
+                <button class="icon-btn" title="Load {row.pull_failed} from eDock into Kubernetes" disabled={loading[row.pull_failed]} onclick={() => load(row)}><Icon name="upload" size={14} /></button>
+              {/if}
               <button class="icon-btn" title="Logs" onclick={() => navigate(`/kubernetes/${row.namespace}/${row.name}?tab=logs`)}><Icon name="logs" size={14} /></button>
               <button class="icon-btn" title="Shell" disabled={row.status !== "Running"} onclick={() => navigate(`/kubernetes/${row.namespace}/${row.name}?tab=terminal`)}><Icon name="terminal" size={14} /></button>
               {#if row.owner?.startsWith("Deployment/")}

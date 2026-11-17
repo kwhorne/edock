@@ -1,28 +1,30 @@
 <script>
-  import { channel, contextMenu, navigate, shell, clipboard, confirm, toast } from "@elyra/runtime";
+  import { channel, contextMenu, dialog, navigate, shell, clipboard, confirm, toast } from "@elyra/runtime";
   import { Badge, Button, Callout, Empty, Input, Modal, Skeleton, Switch } from "@elyra/ui";
   import { onDestroy } from "svelte";
   import Logs from "../lib/Logs.svelte";
   import Icon from "../lib/Icon.svelte";
-  import NewService from "../lib/NewService.svelte";
   import { api } from "../bindings";
-  import { changes, engine, attempt, domainUrl, errorText } from "../lib/state.svelte.js";
+  import { changes, engine, attempt, domainUrl, errorText, runImage, dialogs } from "../lib/state.svelte.js";
   import { ago, shortId, stateTone } from "../lib/format.js";
 
   let containers = $state(null);
   let error = $state(null);
   let search = $state("");
-  let newService = $state(false);
   // eDock's own (Linux machines, the Kubernetes node, BuildKit) have their
   // own pages; here only when asked for.
   let showSystem = $state(false);
   const systemCount = $derived(containers?.filter((c) => c.system).length ?? 0);
   // The user's own: what the header counts and the empty page speaks of.
   const mine = $derived(containers?.filter((c) => !c.system) ?? []);
+  // Compose projects eDock remembers on this engine: those that are down
+  // show too, with Up.
+  let projects = $state([]);
   let collapsed = $state({});
   let busy = $state({});
 
   async function load() {
+    api.compose_projects().then((p) => (projects = p), () => {});
     try {
       containers = await api.containers_list(false);
       error = null;
@@ -35,6 +37,14 @@
     changes.container;
     load();
   });
+
+  const emptyText = $derived(
+    "Run one with `docker run`, or `docker compose up` in a project, or start a database or other service here. It shows up at once." +
+      (systemCount ? ` (eDock's own ${systemCount === 1 ? "one is" : `${systemCount} are`} hidden: “eDock's own” above shows ${systemCount === 1 ? "it" : "them"}.)` : ""),
+  );
+
+  // Remembered projects with no containers: `docker compose down` ran.
+  const down = $derived(containers ? projects.filter((p) => !containers.some((c) => c.project === p.name)) : []);
 
   // Compose projects first (by name), then the containers on their own.
   const groups = $derived.by(() => {
@@ -53,14 +63,16 @@
         byProject.get(c.project).push(c);
       } else single.push(c);
     }
-    const out = [...byProject.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([project, items]) => ({
-        project,
-        items: items.sort((a, b) => (a.service ?? a.name).localeCompare(b.service ?? b.name)),
-        running: items.filter((c) => c.state === "running").length,
-        dir: items[0].working_dir,
-      }));
+    const out = [...byProject.entries()].map(([project, items]) => ({
+      project,
+      items: items.sort((a, b) => (a.service ?? a.name).localeCompare(b.service ?? b.name)),
+      running: items.filter((c) => c.state === "running").length,
+      dir: items[0].working_dir,
+    }));
+    for (const p of down) {
+      if (!q || p.name.toLowerCase().includes(q)) out.push({ project: p.name, items: [], running: 0, dir: p.dir, down: true, problem: p.problem });
+    }
+    out.sort((a, b) => a.project.localeCompare(b.project));
     single.sort((a, b) => (a.state === "running") === (b.state === "running") ? a.name.localeCompare(b.name) : a.state === "running" ? -1 : 1);
     if (single.length) out.push({ project: null, items: single });
     return out;
@@ -104,17 +116,33 @@
     else up = { ...up, lines: [...up.lines, p.line].slice(-400) };
   });
   onDestroy(offUp);
-  async function rebuild(g) {
-    up = { project: g.project, lines: [], done: false, error: null };
+  async function projectUp(g, build) {
+    up = { project: g.project, build, lines: [], done: false, error: null };
     upOpen = true;
     busy[g.project] = "up";
     try {
-      await api.project_up(g.project, true);
-      toast(`${g.project} rebuilt and up`, { variant: "success" });
+      await api.project_up(g.project, build);
+      toast(build ? `${g.project} rebuilt and up` : `${g.project} is up`, { variant: "success" });
     } catch (e) {
       up = { ...up, done: true, error: errorText(e) };
     }
     busy[g.project] = null;
+  }
+
+  async function openProject() {
+    const [dir] = await dialog.open({ title: "A folder with a compose.yaml", directory: true });
+    if (!dir) return;
+    const name = await attempt(() => api.compose_project_open(dir.path));
+    if (name == null) return;
+    await load();
+    const known = containers?.some((c) => c.project === name);
+    toast(known ? `${name} is here already` : `${name} added: Up starts it`, { variant: "success" });
+  }
+
+  async function forget(g) {
+    if (!(await confirm(`Forget ${g.project}? Its folder, files and volumes stay; Open Compose project… adds it again.`, { confirmLabel: "Forget" }))) return;
+    await attempt(() => api.compose_project_forget(g.project));
+    await load();
   }
 
   async function remove(c) {
@@ -123,7 +151,7 @@
   }
 
   async function removeProject(g) {
-    if (!(await confirm(`Remove the ${g.items.length} containers of ${g.project}? Volumes are kept.`, { danger: true, confirmLabel: "Remove" }))) return;
+    if (!(await confirm(`Remove the ${g.items.length} containers of ${g.project}? Volumes are kept, and so is the project: Up brings it back.`, { danger: true, confirmLabel: "Remove" }))) return;
     await projectAct(g, "remove");
   }
 
@@ -167,9 +195,10 @@
       <label class="toggle" title="Linux machines, the Kubernetes node and BuildKit"><Switch bind:checked={showSystem} /> eDock's own ({systemCount})</label>
     {/if}
     <Button size="sm" variant="ghost" onclick={prune} title="Remove stopped containers (Linux machines and Kubernetes are kept)"><Icon name="broom" size={14} /> Prune</Button>
-    <Button size="sm" variant="primary" onclick={() => (newService = true)}><Icon name="plus" size={14} /> New service</Button>
+    <Button size="sm" variant="ghost" onclick={() => runImage()} title="A container from any image, as docker run does"><Icon name="play" size={14} /> Run image…</Button>
+    <Button size="sm" variant="ghost" onclick={openProject} title="Add a folder with a compose.yaml, to start it from here"><Icon name="folder" size={14} /> Open Compose project…</Button>
+    <Button size="sm" variant="primary" onclick={() => (dialogs.newService = true)}><Icon name="plus" size={14} /> New service</Button>
   </header>
-  <NewService bind:open={newService} />
   <Modal bind:open={projectLogsOpen} title={projectLogs ? `${projectLogs}: all logs` : "Logs"} description="Every service's log, as one, in time order. Click a service to hide it." size="lg">
     {#if projectLogsOpen && projectLogs}
       {#key projectLogs}
@@ -177,7 +206,7 @@
       {/key}
     {/if}
   </Modal>
-  <Modal bind:open={upOpen} title={up ? `Rebuild & up: ${up.project}` : ""} description="docker compose up -d --build, from the project's own files and folder." size="lg">
+  <Modal bind:open={upOpen} title={up ? `${up.build ? "Rebuild & up" : "Up"}: ${up.project}` : ""} description={up?.build ? "docker compose up -d --build, from the project's own files and folder." : "docker compose up -d, from the project's own files and folder."} size="lg">
     {#if up}
       {#if up.error}<Callout variant="danger" title="It didn't go up">{up.error}</Callout>{:else if up.done}<Callout variant="success">Up.</Callout>{/if}
       <pre class="progress compose-out">{up.lines.join("\n") || "Starting…"}</pre>
@@ -191,30 +220,46 @@
     </Callout>
   {:else if containers === null}
     <Skeleton lines={6} />
-  {:else if mine.length === 0 && !showSystem}
+  {:else if mine.length === 0 && !showSystem && !down.length}
     <Empty
       title="No containers yet"
-      description="Run one with `docker run`, or `docker compose up` in a project, or start a database or other service here. It shows up at once.{systemCount ? ` (eDock's own ${systemCount === 1 ? "one is" : `${systemCount} are`} hidden: “eDock's own” above shows ${systemCount === 1 ? "it" : "them"}.)` : ""}"
+      description={emptyText}
     >
-      {#snippet action()}<Button onclick={() => (newService = true)}><Icon name="plus" size={14} /> New service</Button>{/snippet}
+      {#snippet action()}<Button onclick={() => (dialogs.newService = true)}><Icon name="plus" size={14} /> New service</Button>{/snippet}
     </Empty>
   {:else}
     {#each groups as g (g.project ?? "\u0000")}
       <section class="group">
         {#if g.project}
           <div class="group-head">
-            <button class="twisty" class:open={!collapsed[g.project]} onclick={() => (collapsed[g.project] = !collapsed[g.project])} aria-label="Show or hide {g.project}">
-              <Icon name="chevron" size={14} />
-            </button>
+            {#if g.down}
+              <span class="twisty-space"></span>
+            {:else}
+              <button class="twisty" class:open={!collapsed[g.project]} onclick={() => (collapsed[g.project] = !collapsed[g.project])} aria-label="Show or hide {g.project}">
+                <Icon name="chevron" size={14} />
+              </button>
+            {/if}
             <span class="dot" class:on={g.running > 0} class:partial={g.running > 0 && g.running < g.items.length}></span>
             <strong>{g.project}</strong>
-            <span class="muted">{g.running}/{g.items.length} running</span>
-            {#if g.dir}<button class="muted path link-path" title="Open {g.dir}" onclick={(e) => folderMenu(e, g)}>{g.dir.replace(/^\/(?:Users|home)\/[^/]+/, "~")}</button>{/if}
+            {#if g.down}
+              <span class="muted" title="No containers: docker compose down, or they were removed">down</span>
+              {#if g.problem}<span class="problem" title={g.dir}>{g.problem}</span>{/if}
+            {:else}
+              <span class="muted">{g.running}/{g.items.length} running</span>
+            {/if}
+            {#if g.dir && !g.problem}<button class="muted path link-path" title="Open {g.dir}" onclick={(e) => folderMenu(e, g)}>{g.dir.replace(/^\/(?:Users|home)\/[^/]+/, "~")}</button>{/if}
             <span class="spacer"></span>
+            {#if g.down}
+            <div class="row-actions">
+              <button class="icon-btn" title="Up (docker compose up -d)" disabled={!!busy[g.project] || !!g.problem} onclick={() => projectUp(g, false)}><Icon name="play" size={14} /></button>
+              <button class="icon-btn" title="Rebuild & up (docker compose up -d --build)" disabled={!!busy[g.project] || !!g.problem} onclick={() => projectUp(g, true)}><Icon name="hammer" size={14} /></button>
+              <button class="icon-btn" title="Forget it (its files and volumes stay)" disabled={!!busy[g.project]} onclick={() => forget(g)}><Icon name="close" size={14} /></button>
+            </div>
+            {:else}
             <div class="row-actions">
               <button class="icon-btn" title="All its logs" onclick={() => showLogs(g)}><Icon name="logs" size={14} /></button>
               {#if g.dir}
-                <button class="icon-btn" title="Rebuild & up (docker compose up -d --build)" disabled={!!busy[g.project]} onclick={() => rebuild(g)}><Icon name="hammer" size={14} /></button>
+                <button class="icon-btn" title="Rebuild & up (docker compose up -d --build)" disabled={!!busy[g.project]} onclick={() => projectUp(g, true)}><Icon name="hammer" size={14} /></button>
               {/if}
               {#if g.running < g.items.length}
                 <button class="icon-btn" title="Start all" disabled={!!busy[g.project]} onclick={() => projectAct(g, "start")}><Icon name="play" size={14} /></button>
@@ -225,12 +270,13 @@
               <button class="icon-btn" title="Restart all" disabled={!!busy[g.project]} onclick={() => projectAct(g, "restart")}><Icon name="restart" size={14} /></button>
               <button class="icon-btn danger" title="Remove all" disabled={!!busy[g.project]} onclick={() => removeProject(g)}><Icon name="trash" size={14} /></button>
             </div>
+            {/if}
           </div>
         {:else if groups.length > 1}
           <div class="group-head plain"><strong>Containers</strong></div>
         {/if}
 
-        {#if !g.project || !collapsed[g.project]}
+        {#if g.items.length && (!g.project || !collapsed[g.project])}
           <ul class="rows" class:nested={!!g.project}>
             {#each g.items as c (c.id)}
               {@const running = c.state === "running"}

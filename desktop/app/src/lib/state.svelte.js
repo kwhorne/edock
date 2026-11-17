@@ -6,6 +6,17 @@ import { api } from "../bindings";
 export const engine = $state({ status: null, contexts: [], domains: null });
 
 // One counter per kind; a page reads the one it lists in an $effect.
+// New service: open (from Containers, ⌘K's recipes have their own way, or
+// the menu bar's popover).
+export const dialogs = $state({ newService: false });
+
+// Run image…: open, and for which image (empty: the user types it).
+export const runner = $state({ open: false, image: "" });
+export function runImage(image = "") {
+  runner.image = image;
+  runner.open = true;
+}
+
 export const changes = $state({ container: 0, image: 0, volume: 0, network: 0, engine: 0, k8s: 0 });
 
 export async function refreshEngine() {

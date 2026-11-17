@@ -6,12 +6,24 @@
   import { onDestroy } from "svelte";
   import Icon from "../lib/Icon.svelte";
   import { api } from "../bindings";
-  import { engine, useContext, attempt, errorText } from "../lib/state.svelte.js";
+  import { engine, useContext, attempt, errorText, runImage } from "../lib/state.svelte.js";
   import { bytes, ago } from "../lib/format.js";
+  import { loadIntoK8s } from "../lib/k8s.js";
 
   let { params, query } = $props();
   const name = $derived(decodeURIComponent(params.ref));
   const onEdock = $derived(engine.status?.context === "edock");
+  // Into the cluster, while there is one running.
+  let k8sReady = $state(false);
+  let loading = $state(false);
+  $effect(() => {
+    if (onEdock) api.k8s_status().then((s) => (k8sReady = s.ready), () => (k8sReady = false));
+  });
+  async function toK8s() {
+    loading = true;
+    await loadIntoK8s(name);
+    loading = false;
+  }
 
   let tab = $state("layers");
   $effect(() => {
@@ -99,6 +111,11 @@
     <button class="icon-btn" title="Back" onclick={() => navigate("/images")}><Icon name="back" /></button>
     <h1 class="mono">{name}</h1>
     {#if layers}<span class="muted">{layers.platform} · {bytes(layers.size)}</span>{/if}
+    <span class="spacer"></span>
+    {#if k8sReady && !name.startsWith("sha256:")}
+      <Button size="sm" loading={loading} onclick={toK8s} title="Into the Kubernetes cluster, where pods use it without a registry"><Icon name="upload" size={14} /> Load into Kubernetes</Button>
+    {/if}
+    <Button size="sm" variant="primary" onclick={() => runImage(name)}><Icon name="play" size={14} /> Run…</Button>
   </header>
 
   {#if !onEdock}

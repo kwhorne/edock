@@ -564,8 +564,13 @@ pub struct PullProgress {
 /// pulled. A missing tag means `latest`.
 #[command(can = "edock.manage")]
 pub async fn image_pull(ctx: Ctx, reference: String) -> Result<(), String> {
+    pull(&ctx, reference).await
+}
+
+/// `image_pull`, for other commands: progress on `pull` as it goes.
+pub(crate) async fn pull(ctx: &Ctx, reference: String) -> Result<(), String> {
     use futures_util::StreamExt;
-    let docker = docker(&ctx)?;
+    let docker = docker(ctx)?;
     let bus = ctx.get::<elyra::EventBus>();
     let (image, tag) = match reference.rsplit_once(':') {
         Some((i, t)) if !t.contains('/') => (i.to_owned(), t.to_owned()),

@@ -32,7 +32,7 @@ The **Pods** tab lists pods across the namespaces. Use the namespace picker to s
 
 | Column | |
 |---|---|
-| Name | With its owner under it, for example `Deployment/web`. A ReplicaSet's pod shows its Deployment. |
+| Name | With its owner under it, for example `Deployment/web`. A ReplicaSet's pod shows its Deployment. A pod that's stuck says why under that, in a line (see below). |
 | Namespace | |
 | Status | As `kubectl get pods` prints it: Running, Pending, ContainerCreating, CrashLoopBackOff, ImagePullBackOff, Error, Completed, Terminating… |
 | Ready | Ready containers out of all, `1/1` |
@@ -41,6 +41,7 @@ The **Pods** tab lists pods across the namespaces. Use the namespace picker to s
 
 Each row has:
 
+- **Load from eDock**, on a pod that can't pull an image eDock has (see [Images from eDock](#images-from-edock)).
 - **Logs** and **Shell**, which open the pod on that tab. The shell needs the pod to be running.
 - **Restart** (on a Deployment's pods), which runs `kubectl rollout restart`. The Deployment's pods are replaced one by one.
 - **Delete**, which deletes the pod. A Deployment, ReplicaSet or StatefulSet then makes a new one.
@@ -51,15 +52,37 @@ Pods change without the engine saying so, because they run in the node's own con
 
 ## A pod
 
-The pod's page shows its ready count, restarts, pod IP, age and owner, and has three tabs:
+The pod's page shows its ready count, restarts, pod IP, age and owner.
+
+A pod that's stuck says **why** at the top, in Kubernetes' own words:
+
+- an image it can't pull (`ErrImagePull`, `ImagePullBackOff`), with what the registry said;
+- a container that keeps exiting (`CrashLoopBackOff`), with how it ended last (`Error, exit code 1`): its log says why;
+- a pod that can't be placed on the node (`0/1 nodes are available: 1 Insufficient memory`);
+- any other reason a container waits.
+
+A stuck pod opens on its **Events** tab. The tabs:
 
 - **Logs:** the container's log, live, from its last 500 lines (`kubectl logs -f`). Filter, timestamps, wrap and copy work as for a [container's log](containers.md#logs). Kubernetes merges a pod's stdout and stderr, so lines aren't marked by stream.
 - **Shell:** a terminal in the container (`kubectl exec -it`), with `bash` when the image has it, otherwise `sh`.
-- **Containers:** each container's image, its state and reason, and its restarts.
+- **Containers:** each container's image, its state and reason with Kubernetes' message, its restarts, and how it last ended.
+- **Events:** what Kubernetes said about the pod, oldest first, as `kubectl describe pod` lists them: scheduled, pulling, pulled, started, backing off… A warning is marked, and an event that repeated says how often. Kubernetes keeps events for an hour.
 
 A pod with several containers has a **Container** picker, and the logs and shell follow it.
 
 If the pod is deleted while you look at it, the page says so and keeps showing it as it was.
+
+## Images from eDock
+
+The cluster keeps its images in its own containerd, inside the node, not in eDock's image store. So an image you build or pull on eDock (`docker build -t myapp:dev .`) isn't in the cluster, and a pod that uses it can't pull it: `ErrImagePull`, since no registry has it.
+
+**Load from eDock** puts it in the cluster, with no registry in between: on the pod's page (and its row) when eDock has the image, and as **Load into Kubernetes** on an [image's page](images-volumes-networks.md#an-image) while the cluster runs. From a terminal: `edock k8s load myapp:dev`.
+
+Kubernetes tries the pull again by itself, waiting longer each time (up to five minutes). On a Deployment's pod, eDock offers to replace the pod right away, and the new one finds the image at once.
+
+A pod uses a loaded image when its `imagePullPolicy` is `IfNotPresent` or `Never`. `IfNotPresent` is the default, except for an image tagged `:latest` (or with no tag), where it's `Always`: give your image another tag, such as `:dev`, or set `imagePullPolicy: IfNotPresent`.
+
+Load it again after each build: the cluster keeps the copy it was given.
 
 ## Services
 

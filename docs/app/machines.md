@@ -29,7 +29,12 @@ The first machine of a distribution pulls its image; after that, a new one is re
 
 ## Use one
 
-A machine's page has a **login shell** as your user, in your home: `bash` when the distribution has it, otherwise `sh`. It's the same terminal as a container's, with colours, cursor keys and full-screen programs.
+A machine's page has four tabs:
+
+- **Terminal:** a login shell as your user, in your home: `bash` when the distribution has it, otherwise `sh`. It's the same terminal as a container's, with colours, cursor keys and full-screen programs.
+- **Files:** its files, as a [container's Files tab](containers.md#files). `/Users` is your Mac's: the Files tab never removes it, or a folder a mount is under.
+- **Ports:** what it listens on, and ports to publish on the Mac, as a [container's Ports tab](containers.md#ports).
+- **Stats:** its CPU, memory, network and disk, live.
 
 From a terminal, the same shell:
 
@@ -41,6 +46,24 @@ edock machine shell dev -- uname -a     # one command
 On the **Machines** list, each machine has **Shell**, **Start** or **Stop**, **Restart** and **Delete**. Machines start again with the engine, unless you stopped them.
 
 A machine made before eDock 0.6.0, or without the SSH agent, doesn't get it later: make it again with it ticked.
+
+## SSH and editors
+
+`ssh dev.edock` reaches the machine `dev`, and so does any tool that works over SSH: VS Code and Cursor with **Remote - SSH**, Zed, `scp`, `rsync`, `ssh -L`. Nothing listens on a port, and there's no password: the way in is the engine.
+
+Turn it on once, for every machine: **Set up SSH…** on a machine's page, or `edock machine ssh on`. It:
+
+- makes an SSH key of eDock's own, in `~/.edock/ssh`;
+- writes a `Host *.edock` block to `~/.edock/ssh/config`: your user, that key, and `edock machine stdio %n` as the ProxyCommand;
+- puts one line first in `~/.ssh/config`: `Include ~/.edock/ssh/config`. Nothing else in the file changes.
+
+The first `ssh` to a machine installs `openssh-server` in it (with its own package manager), which takes a few seconds. After that, connecting takes a fraction of a second. sshd doesn't run in the background: each connection starts its own `sshd -i` through the engine, and it ends with the connection. A stopped machine is started.
+
+With SSH on, a machine's page shows `ssh dev.edock` (click to copy) and **Open in VS Code** or **Open in Cursor** when they're installed, which open your home in the machine over SSH (the **Remote - SSH** extension does it). In Zed: **Open Remote Project**, with `dev.edock`.
+
+Host keys aren't checked for `*.edock`: the way in is the engine's socket, which only you can open, and a machine made again has new ones.
+
+**Turn off** on the page, or `edock machine ssh off`, takes the line out of `~/.ssh/config` again.
 
 ## Delete one
 

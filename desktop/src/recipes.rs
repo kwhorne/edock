@@ -214,7 +214,7 @@ pub async fn recipes_list(_ctx: Ctx) -> Vec<RecipeRow> {
 }
 
 /// A port on the Mac nothing listens on, from `want` up.
-fn free_port(want: u16, taken: &[u16]) -> u16 {
+pub(crate) fn free_port(want: u16, taken: &[u16]) -> u16 {
     (want..want.saturating_add(200))
         .find(|p| !taken.contains(p) && std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok() && std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok())
         .unwrap_or(want)
@@ -232,7 +232,7 @@ fn free_name(want: &str, containers: &[String], volumes: &[String]) -> String {
 /// Folders the engines share from the Mac (eDock's, Docker Desktop's).
 /// Not all of /private: /etc and /var are links into it. Its temporary
 /// folders only (/tmp and $TMPDIR are links to these).
-const SHARED: [&str; 4] = ["/Users/", "/Volumes/", "/private/tmp/", "/private/var/folders/"];
+pub(crate) const SHARED: [&str; 4] = ["/Users/", "/Volumes/", "/private/tmp/", "/private/var/folders/"];
 
 /// A folder from the Mac to serve: there, a folder, and shared with the
 /// engine. Its real path.

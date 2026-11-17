@@ -21,7 +21,7 @@ Click a row, or press Enter on it, to open the container. Right-click a row for 
 - Copy ID and Copy name
 - Remove
 
-The header shows how many containers are running, and how many there are in all. **Filter** narrows the list by container name, image or Compose project.
+The header shows how many containers are running, and how many there are in all. **Filter** narrows the list by container name, image or Compose project (projects that are down too).
 
 **Prune** removes every stopped container, after asking. It never removes a Linux machine or the Kubernetes node, even stopped: they hold a whole system, and go only by their own **Delete**.
 
@@ -55,6 +55,20 @@ Pick one, give it a name if you like (the recipe's short name otherwise, such as
 
 The passwords are well known, so the ports are open to this Mac only, not to your network. Other containers reach the service by its name on a shared network, or at `host.docker.internal:<port>`.
 
+## Run image
+
+**Run image…**, at the top of the list (also **Run…** on an image, and **Run image…** in ⌘K), starts a container from any image, as `docker run -d` does:
+
+- **Image**: pulled first when it isn't here.
+- **Name**: the image's name when left empty (`nginx`, then `nginx-2`…). A name that's taken is said, not changed.
+- **Ports**: a port on your Mac → a port in the container. The ports the image exposes are filled in, each on a free port of your Mac (a port under 1024 goes from 8000 up: 80 → 8080). Leave the Mac's empty for any free one. They're open to this Mac only, unless **Open to other devices on the network** is on.
+- **Folders and volumes**: a folder from your Mac (**Mac folder…**, under `/Users` or `/Volumes`) or a volume by name (made when it isn't there) → a path in the container, read-only if you like. Where the image keeps data (its `VOLUME`s), a **+ volume at …** button puts a volume there.
+- **Environment**: a variable per row. Typing `KEY=value` splits it; pasting a `.env` adds a row for each line.
+- **Command**: in place of the image's own (shown greyed out), split as a shell splits it (quotes work, nothing is expanded).
+- **Start it again when the engine starts**: `--restart unless-stopped`.
+
+When it runs, its page opens. A container that doesn't start is removed again and the error is shown, so you can change something and press **Run** again.
+
 ## Compose projects
 
 Containers that Docker Compose made are grouped under their project, sorted by name. Within a project, each container shows its **service name**.
@@ -70,9 +84,23 @@ A project's header shows:
   - **Start all**, which skips the containers already running.
   - **Stop all**, which skips the stopped ones.
   - **Restart all**.
-  - **Remove all**, which keeps the volumes.
+  - **Remove all**, which keeps the volumes, and the project (see below).
 
 The arrow folds a project away.
+
+### Projects that are down
+
+eDock remembers each Compose project it sees on an engine: its folder, its Compose files and any `--env-file`, from the containers' labels. A project whose containers are gone (`docker compose down` in a terminal, or **Remove all**) stays in the list, marked **down**, with:
+
+- **Up**: `docker compose up -d --remove-orphans` from its own files and folder, on the engine the app shows. Its output shows as it runs.
+- **Rebuild & up**, as above.
+- **Forget**, which takes it off the list. Its folder, files and volumes stay.
+
+When its folder or one of its files is gone, it says so, and Up waits until it's back.
+
+**Open Compose project…** at the top adds a project that hasn't run on this engine yet: pick its folder. eDock finds the Compose file there as `docker compose` does (`compose.yaml`, `compose.yml`, `docker-compose.yml` or `docker-compose.yaml`, with an override file beside it) and asks `docker compose` for the project's name. The project shows as down until you press **Up**.
+
+Projects are remembered for each docker context, in `~/.edock/desktop.json`.
 
 Containers outside Compose come after the projects, the running ones first.
 
@@ -128,7 +156,7 @@ Click a file to preview it beside the list: text shows (its first 256 KB), and a
 |---|---|
 | **Save to the Mac** | Saves the file where you choose. A folder is saved as a `.tar`. |
 | **Put files here** | Copies files or folders from the Mac into the folder you're in. You can also drop them on the window. They're owned by root. |
-| **Remove** (bin) | Removes the file or folder, after asking |
+| **Remove** (bin) | Removes the file or folder, after asking. Not where a Mac folder or volume is mounted, nor a folder with a mount under it: that would empty what's behind it. |
 | **Show in Finder** | On eDock's engine: the file in `~/eDock`, eDock's read-only Finder view of running containers |
 
 The tab needs the container to be running; when it stops, the tab says so. On eDock's engine browsing works with any image, even one without a shell. On other engines it runs `find` and `stat` in the container, so an image without them can't be browsed, and the tab says so. Removing runs `rm` in the container on every engine, so it needs an image with `rm`.
@@ -157,6 +185,6 @@ Ports the container binds only on its own loopback are listed at the bottom: not
 
 ## Keyboard
 
-- **⌘K** opens the command palette. Type `Containers`, `Images`, `Kubernetes` and so on to go there. It also finds things by name: containers (by name, image, Compose project or short ID), images, Linux machines and Kubernetes pods. Pick one to open it. It has **Check for updates**, and **Start eDock engine** while eDock's engine isn't running.
+- **⌘K** opens the command palette. Type `Containers`, `Images`, `Kubernetes` and so on to go there. It also finds things by name: containers (by name, image, Compose project or short ID), images, Linux machines and Kubernetes pods. Pick one to open it. It has **Run image…**, **Check for updates**, and **Start eDock engine** while eDock's engine isn't running.
 - In ⌘K, **New service: …** (after the containers it finds) starts a service from a [recipe](#new-service).
 - **Tab** moves through the list; **Enter** opens a container.

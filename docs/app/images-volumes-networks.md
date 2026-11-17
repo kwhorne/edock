@@ -24,6 +24,7 @@ The header shows the number of images and the total size, counting an image tagg
 | Action | What it does |
 |---|---|
 | **Pull** | Asks for a reference (`nginx:latest`, `ghcr.io/org/app:1.2`) and pulls it, showing progress. A missing tag means `latest`. Credentials from `docker login` are used. |
+| **Run…** (per row) | Starts a container from the image: see [Run image](containers.md#run-image) |
 | **Remove** (per row) | Removes that tag, or the image when it's untagged. An image a container uses can't be removed. |
 | **Prune dangling** | Removes untagged images |
 | **Prune unused** | Removes every image no container uses |
@@ -32,7 +33,7 @@ The prune actions say how much space they freed.
 
 ### An image
 
-On eDock's engine, click an image to open it. The shield on a row opens its security scan straight away.
+On eDock's engine, click an image to open it. The shield on a row opens its security scan straight away. **Run…** at the top starts a container from it, and while the [Kubernetes cluster](kubernetes.md#images-from-edock) runs, **Load into Kubernetes** puts it in the cluster.
 
 **Layers** shows each line of the Dockerfile that made the image:
 

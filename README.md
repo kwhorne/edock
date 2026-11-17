@@ -36,17 +36,17 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 | **Containers** | Grouped by Compose project, with start, stop, restart and remove for one container or a whole project. Ports open with a click. Health checks show in the list. |
 | **Ports that just work** | eDock sees which ports a container really listens on, even without `-p`. It publishes or changes them while the container runs, and edits its environment in place. |
 | **Each container** | A live log with filter and timestamps, CPU, memory, network and disk graphs, a full terminal (xterm), its files (browse, preview, save, upload), and `docker inspect` |
-| **Images, volumes, networks** | Pull with progress, prune, create and remove, and see what each is used by |
+| **Images, volumes, networks** | Pull with progress, run an image with ports, folders and variables, prune, create and remove, and see what each is used by |
 | **Image security** | Each Dockerfile line's size, a vulnerability scan with Grype (without waking the VM), fixable filters and a CycloneDX SBOM |
-| **Linux machines** | Ubuntu, Debian, Fedora, Arch and more, with your user, `sudo`, `/Users` in place and your Mac's SSH agent, and a shell a click away |
-| **Kubernetes** | Start, stop and delete a k3s cluster. Pods with kubectl's statuses, their logs and shells, restarts and deletes. Services, with LoadBalancer ports on `localhost`. |
+| **Linux machines** | Ubuntu, Debian, Fedora, Arch and more, with your user, `sudo`, `/Users` in place and your Mac's SSH agent, a shell a click away, and `ssh NAME.edock` for VS Code, Cursor and Zed |
+| **Kubernetes** | Start, stop and delete a k3s cluster. Pods with kubectl's statuses, why one is stuck, its events, logs and shells. Images you build loaded into it without a registry. Services, with LoadBalancer ports on `localhost`. |
 | **Any engine** | Switch to OrbStack, Docker Desktop, Colima or Podman from the toolbar. eDock manages any Docker Engine API. |
-| **Menu bar** | What's running, start and stop, and ports, a click away |
+| **Menu bar** | Compose projects, containers and machines, started and stopped a click away; what ran out of memory or turned unhealthy |
 | **Command line** | `docker`, Compose and buildx set up for you, without a package manager |
 | **Container domains** | `http://<name>.edock.localhost` on every running container, and trusted HTTPS in one click |
 | **New service** | PostgreSQL, MySQL, MariaDB, ElyraSQL, SQL Anywhere, Redis, MongoDB, RabbitMQ, Mailpit or MinIO in one click, with its data in a volume and the connection string copied; or Askr, serving a PHP or Laravel project from a folder on your Mac |
 | **⌘K everywhere** | Find any container, image, machine or pod by name |
-| **Compose projects** | All of a project's logs as one, colour by service; its folder in Finder, Terminal or your editor; Rebuild & up |
+| **Compose projects** | All of a project's logs as one, colour by service; its folder in Finder, Terminal or your editor; Rebuild & up; still there after `docker compose down`, with Up |
 | **Volumes** | Browse a volume's files without a container; clone it; export and import it as one file |
 | **Notifications** | A macOS note when a container runs out of memory or turns unhealthy |
 | **Snapshots** | A container's or a volume's files as they are now, and back to them later, on any engine |
