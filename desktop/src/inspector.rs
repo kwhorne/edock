@@ -55,6 +55,9 @@ pub struct HttpRow {
     pub done: bool,
     /// Why it ended without a whole response.
     pub error: Option<String>,
+    /// Milliseconds it waited for its project to wake (On demand) before
+    /// it reached the container.
+    pub woke_ms: Option<f64>,
 }
 
 fn row(v: &Value) -> HttpRow {
@@ -75,6 +78,7 @@ fn row(v: &Value) -> HttpRow {
         ms: v["ms"].as_f64(),
         done: v["done"].as_bool().unwrap_or(false),
         error: v["error"].as_str().map(str::to_owned),
+        woke_ms: v["woke_ms"].as_f64(),
     }
 }
 

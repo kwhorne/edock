@@ -73,6 +73,8 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: v
 .icon-btn:hover:not(:disabled) { background: var(--elyra-inset); color: var(--elyra-text); }
 .icon-btn.danger:hover:not(:disabled) { color: var(--elyra-danger); }
 .icon-btn:disabled { opacity: 0.4; cursor: default; }
+/* A toggle that's on (On demand). */
+.icon-btn.on { color: var(--elyra-accent); }
 
 /* ── Containers ─────────────────────────────────────────────────────── */
 .group { border: 1px solid var(--elyra-border); border-radius: var(--elyra-radius-lg); background: var(--elyra-surface); overflow: hidden; }
@@ -83,6 +85,8 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: v
 .twisty.open { transform: rotate(90deg); }
 .twisty-space { width: 18px; flex: none; }
 .group-head strong { white-space: nowrap; }
+/* On demand, and after how long unused it's parked. */
+.od-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--elyra-accent); white-space: nowrap; }
 .group-head .problem { color: var(--elyra-warning); font-size: 12px; min-width: 0; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rows { list-style: none; margin: 0; padding: 0; }
 .rows li + li { border-top: 1px solid var(--elyra-border); }

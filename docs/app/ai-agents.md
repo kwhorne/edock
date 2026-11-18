@@ -41,6 +41,7 @@ The agent starts eDock with `--mcp` and talks to it over stdio. When the app is 
 | `alerts_recent` | Containers that ran out of memory or turned unhealthy in the last hour | |
 | `compose_projects` | Compose projects eDock remembers, those that are down too | |
 | `compose_view` | What a Compose project is made of: each service's image or build, ports, volumes, dependencies, and its variables' names (never their values) | |
+| `on_demand_list` | Which Compose projects and containers are [on demand](containers.md#on-demand), after how long, and which are parked | |
 | `images_list`, `image_layers` | Images, and each Dockerfile line's size | |
 | `image_run_defaults` | What Run image… suggests for an image: a name, its ports, where it keeps data | |
 | `image_scans`, `image_scan_result` | Vulnerability scans | |
@@ -56,6 +57,7 @@ The agent starts eDock with `--mcp` and talks to it over stdio. When the app is 
 | `project_up` | `docker compose up -d` (with `--build`) for a Compose project, one that is down too | Yes |
 | `service_up` | Make one service of a Compose project again (`up -d --no-deps --force-recreate`, with `--build` if asked), the rest left as they are | Yes |
 | `compose_project_open`, `compose_project_forget` | Remember a Compose project from its folder, or forget one | Yes |
+| `project_on_demand`, `on_demand_park` | Turn On demand on (`15m`), off, or back to the label for a project or container; park one now | Yes |
 | `image_run` | A container from an image, as `docker run -d`: name, ports, Mac folders and volumes, variables, command | Yes |
 | `k8s_load` | Load an image from eDock into the Kubernetes cluster | Yes |
 | `volume_clone` | Copy a volume into a new one | Yes |

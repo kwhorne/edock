@@ -47,7 +47,7 @@
     const CHANGES = new Set([
       "container_action", "project_action", "project_up", "image_pull", "container_run", "container_exec", "recipe_start",
       "volume_clone", "container_snapshot", "volume_snapshot", "container_snapshot_restore", "volume_snapshot_restore",
-      "image_run", "k8s_load", "compose_project_open", "compose_project_forget", "service_up",
+      "image_run", "k8s_load", "compose_project_open", "compose_project_forget", "service_up", "project_on_demand", "on_demand_park",
     ]);
     onAgent((a) => {
       if (a.phase === "started" && CHANGES.has(a.tool)) toast(`${a.client} runs ${a.tool.replace(/_/g, " ")}…`);

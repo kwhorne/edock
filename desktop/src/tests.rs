@@ -1751,3 +1751,73 @@ async fn run_image_as_docker_run() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// On demand through the app: a Compose project turned on, off and back to
+/// its label, parked now, and woken by a request to its port. Needs an
+/// eDock engine with On demand (skipped on others).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a Docker engine"]
+async fn on_demand_park_and_wake() {
+    use crate::edock::OnDemand;
+    let _alone = ENGINE.read().await;
+    let app = app();
+    if app.ctx().get::<Engine>().context().0 != crate::engine::EDOCK || !matches!(crate::daemon::engine_request("GET", "/edock/on-demand").await, Some((200, _))) {
+        eprintln!("skipped: needs eDock's engine with On demand");
+        return;
+    }
+    let host = app.ctx().get::<Engine>().context().1;
+    ensure_image(&app, "nginx:alpine").await;
+    ensure_image(&app, "alpine:latest").await;
+    let project = format!("edock-test-od-{}", std::process::id());
+    let port = 20000 + (std::process::id() % 20000) as u16;
+    let dir = std::env::temp_dir().join(&project);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("compose.yaml"),
+        format!("services:\n  web:\n    image: nginx:alpine\n    ports: [\"{port}:80\"]\n    labels: [app.edock.test=1, app.edock.on-demand=1h]\n  worker:\n    image: alpine:latest\n    command: sh -c 'trap exit TERM; sleep 300 & wait'\n    labels: [app.edock.test=1]\n"),
+    )
+    .unwrap();
+    let compose = |args: &[&str]| std::process::Command::new("docker").args(["compose", "-p", &project]).args(args).current_dir(&dir).env("DOCKER_HOST", &host).env_remove("DOCKER_CONTEXT").output().unwrap();
+    assert!(compose(&["up", "-d"]).status.success());
+    let mine = |all: Vec<OnDemand>| all.into_iter().find(|u| u.name == project).expect("the project is listed");
+
+    // On from its label; off, and back to the label.
+    let u = mine(app.invoke("on_demand_list", ()).await.unwrap());
+    assert_eq!((u.on, u.after.as_deref(), u.from.as_deref(), u.state.as_str()), (true, Some("1h"), Some("label"), "running"));
+    let u: OnDemand = app.invoke("project_on_demand", (project.clone(), Some("off".to_string()))).await.unwrap();
+    assert_eq!((u.on, u.setting.as_deref()), (false, Some("off")));
+    let u: OnDemand = app.invoke("project_on_demand", (project.clone(), Some("5m".to_string()))).await.unwrap();
+    assert_eq!((u.on, u.after.as_deref(), u.from.as_deref()), (true, Some("5m"), Some("setting")));
+    assert!(app.invoke_err("project_on_demand", (project.clone(), Some("soon".to_string()))).await.contains("isn't a time"));
+    let u: OnDemand = app.invoke("project_on_demand", (project.clone(), None::<String>)).await.unwrap();
+    assert_eq!((u.after.as_deref(), u.setting), (Some("1h"), None), "back to its label");
+
+    // Parked now: both services, its port still held.
+    let u: OnDemand = app.invoke("on_demand_park", (project.clone(),)).await.unwrap();
+    assert_eq!(u.state, "parked");
+    let rows: Vec<crate::resources::ContainerRow> = app.invoke("containers_list", (false,)).await.unwrap();
+    let ours: Vec<_> = rows.iter().filter(|c| c.project.as_deref() == Some(project.as_str())).collect();
+    assert_eq!(ours.len(), 2);
+    assert!(ours.iter().all(|c| c.state == "exited" && c.status.ends_with("(parked)")), "{:?}", ours.iter().map(|c| &c.status).collect::<Vec<_>>());
+    assert!(std::net::TcpListener::bind(("0.0.0.0", port)).is_err(), "its port stays held");
+
+    // A request wakes it, and gets its answer.
+    let answer = tokio::task::spawn_blocking(move || {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(30))).unwrap();
+        s.write_all(b"GET / HTTP/1.0\r\n\r\n").unwrap();
+        let mut d = String::new();
+        let _ = s.read_to_string(&mut d);
+        d
+    })
+    .await
+    .unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer:.80}");
+    let u = mine(app.invoke("on_demand_list", ()).await.unwrap());
+    assert_eq!(u.state, "running", "woken, worker too");
+
+    assert!(compose(&["down", "-t", "1"]).status.success());
+    let _: () = app.invoke("compose_project_forget", (project.clone(),)).await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -69,6 +69,8 @@
       total: items.length,
       running: items.filter((c) => c.state === "running").length,
       sick: items.some(unhealthy),
+      // On demand, stopped while unused: the next connection wakes it.
+      parked: items.some((c) => c.status?.endsWith("(parked)")) && items.every((c) => c.state !== "running"),
     }));
     for (const p of projects) if (!by.has(p.name)) out.push({ name: p.name, total: 0, running: 0, down: true, problem: p.problem });
     // Running first, then by name.
@@ -146,13 +148,13 @@
       {#each groups as g (g.name)}
         <li class:off={g.running === 0}>
           <span class="dot" class:on={g.running > 0} class:partial={g.running > 0 && g.running < g.total} class:warn={g.sick}></span>
-          <button class="name link" title={g.problem ?? (g.down ? `${g.name} is down` : `${g.running} of ${g.total} running`)} onclick={() => open("/")}>{g.name}</button>
-          <span class="muted small">{g.down ? "down" : `${g.running}/${g.total}`}</span>
+          <button class="name link" title={g.problem ?? (g.down ? `${g.name} is down` : g.parked ? `${g.name} is parked: the next connection wakes it` : `${g.running} of ${g.total} running`)} onclick={() => open("/")}>{g.name}</button>
+          <span class="muted small">{g.down ? "down" : g.parked ? "parked" : `${g.running}/${g.total}`}</span>
           {#if g.down}
             <button class="icon-btn" title="Up (docker compose up -d)" disabled={busy[g.name] || !!g.problem} onclick={() => projectDo(g, "up")}><Icon name="play" size={13} /></button>
           {:else}
             {#if g.running < g.total}
-              <button class="icon-btn" title="Start all" disabled={busy[g.name]} onclick={() => projectDo(g, "start")}><Icon name="play" size={13} /></button>
+              <button class="icon-btn" title={g.parked ? "Wake" : "Start all"} disabled={busy[g.name]} onclick={() => projectDo(g, "start")}><Icon name="play" size={13} /></button>
             {/if}
             {#if g.running > 0}
               <button class="icon-btn" title="Stop all" disabled={busy[g.name]} onclick={() => projectDo(g, "stop")}><Icon name="stop" size={13} /></button>

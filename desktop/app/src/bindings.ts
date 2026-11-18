@@ -412,6 +412,11 @@ export type HttpRow = {
 	done: boolean,
 	/**  Why it ended without a whole response. */
 	error: string | null,
+	/**
+	 *  Milliseconds it waited for its project to wake (On demand) before
+	 *  it reached the container.
+	 */
+	woke_ms: number | null,
 };
 
 export type ImageLayers = {
@@ -535,6 +540,31 @@ export type NetworkRow = {
 	/**  Docker's own: bridge, host, none. */
 	builtin: boolean,
 	containers: string[],
+};
+
+/**
+ *  On demand for one Compose project, or a container in none: parked
+ *  (stopped) while nothing uses it, and started on the next connection to
+ *  its ports or `NAME.edock.localhost`.
+ */
+export type OnDemand = {
+	name: string,
+	/**  "project" or "container". */
+	kind: string,
+	/**  On demand now. */
+	on: boolean,
+	/**  How long it may be quiet before it's parked (`15m`), when on. */
+	after: string | null,
+	/**  Where that comes from: "setting" (eDock's, over the label) or "label". */
+	from: string | null,
+	/**  eDock's setting: a time, or "off". */
+	setting: string | null,
+	/**  What its `app.edock.on-demand` label asks for. */
+	label: string | null,
+	/**  Something can wake it: a published port, or its name. */
+	wakeable: boolean,
+	/**  "running", "parked", "stopped" or "partly running". */
+	state: string,
 };
 
 export type PodContainer = {
@@ -1594,6 +1624,24 @@ export const api = {
     return invoke("networks_prune");
   },
   /**
+   * On demand for every Compose project and lone container on eDock's
+   * engine (none on another engine).
+   *
+   * @remarks Needs `edock.view`.
+   */
+  on_demand_list(): Promise<OnDemand[]> {
+    return invoke("on_demand_list");
+  },
+  /**
+   * Parks an on-demand Compose project (or a container in none) now, as if
+   * nothing had used it for its time.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  on_demand_park(name: string): Promise<OnDemand> {
+    return invoke("on_demand_park", name);
+  },
+  /**
    * The same action on every container of a Compose project.
    *
    * @remarks Needs `edock.manage`.
@@ -1608,6 +1656,17 @@ export const api = {
    */
   project_logs_follow(project: string, tail: number, timestamps: boolean): Promise<number> {
     return invoke("project_logs_follow", project, tail, timestamps);
+  },
+  /**
+   * Turns On demand on for a Compose project (or a container in none) with
+   * how long it may be quiet (`5m`, `15m`, `1h`), off with "off", or back
+   * to its `app.edock.on-demand` label with no value. Turned off while
+   * parked, it starts.
+   *
+   * @remarks Needs `edock.manage`.
+   */
+  project_on_demand(name: string, value: string | null): Promise<OnDemand> {
+    return invoke("project_on_demand", name, value);
   },
   /**
    * `docker compose up -d` for a project, from its own files and folder,

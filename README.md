@@ -34,6 +34,7 @@ eDock runs containers in one small Linux VM with an engine of its own, and speak
 | | |
 |---|---|
 | **Containers** | Grouped by Compose project, with start, stop, restart and remove for one container or a whole project. Ports open with a click. Health checks show in the list. |
+| **On demand** | A Compose project stops while nobody uses it and starts again on the next request to its ports or `NAME.edock.localhost`, in a few hundred milliseconds. Turn it on with a click, a label or `edock on-demand`. |
 | **Ports that just work** | eDock sees which ports a container really listens on, even without `-p`. It publishes or changes them while the container runs, and edits its environment in place. |
 | **Each container** | A live log with filter and timestamps, CPU, memory, network and disk graphs, a full terminal (xterm, with links and ⌘F), its files (browse, preview, save, upload), and `docker inspect` |
 | **Images, volumes, networks** | Pull with progress, run an image with ports, folders and variables, prune, create and remove, and see what each is used by |

@@ -104,6 +104,19 @@ When its folder or one of its files is gone, it says so, and Up waits until it's
 
 Projects are remembered for each docker context, in `~/.edock/desktop.json`.
 
+### On demand
+
+On eDock's engine, a Compose project (or a container outside Compose) can be **on demand**: it stops when nothing has used it for a while, and starts again on the next connection to one of its ports or its name (`NAME.edock.localhost`). That connection waits for it, usually a few hundred milliseconds, a little more when the VM was asleep too. While it's stopped, it's **parked**: it uses no memory, nothing else can take its ports, and when everything is parked the VM sleeps.
+
+The moon button on a project's row (or a container's right-click menu) turns it on: **Park after 5 minutes unused**, **15 minutes** or **an hour**, or **Keep running**. A project with the label `app.edock.on-demand` on one of its services (`"15m"`) is on demand without this; **As its label says** goes back to it after you chose otherwise. **Park now** parks it at once.
+
+- An on-demand project shows the moon and its time beside its name, and **parked** while it's parked, on its row and on each of its containers. **Wake** (the play button) starts it.
+- All of a project parks and wakes as one, its services in their `depends_on` order, waiting for `service_healthy` where it says so.
+- Unused means no connection open through its ports or name, nothing sent by its containers (to each other too), and no terminal or `docker exec -it` in one. A database client that keeps a connection open keeps it awake.
+- A service without a published port, such as a queue worker or a scheduled job, doesn't run while its project is parked. What a container keeps only in memory is lost when it parks, as with `docker stop`. eDock says so when you turn it on.
+- A container that exits as it wakes stays parked; a page at its name says why, and the next connection tries again. **Stop** makes a parked one plainly stopped.
+- [Requests](requests.md) marks the request that woke one, and how long it waited. The same settings are on the command line as [`edock on-demand`](../cli.md#edock-on-demand), and kept in `~/.edock/on-demand.json`.
+
 Containers outside Compose come after the projects, the running ones first.
 
 ## One container

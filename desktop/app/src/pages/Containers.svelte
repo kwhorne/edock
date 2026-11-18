@@ -25,9 +25,15 @@
   let projects = $state([]);
   let collapsed = $state({});
   let busy = $state({});
+  // On demand (eDock's engine): each Compose project's and lone
+  // container's. Parked ones say so in their status.
+  let onDemand = $state([]);
+  const od = (kind, name) => onDemand.find((u) => u.kind === kind && u.name === name);
+  const parked = (c) => !!c.status?.endsWith("(parked)");
 
   async function load() {
     api.compose_projects().then((p) => (projects = p), () => {});
+    api.on_demand_list().then((u) => (onDemand = u), () => {});
     try {
       containers = await api.containers_list(false);
       error = null;
@@ -70,6 +76,7 @@
       project,
       items: items.sort((a, b) => (a.service ?? a.name).localeCompare(b.service ?? b.name)),
       running: items.filter((c) => c.state === "running").length,
+      parked: items.some(parked) && items.every((c) => c.state !== "running"),
       dir: items[0].working_dir,
     }));
     for (const p of down) {
@@ -213,11 +220,52 @@
       running && c.state !== "paused" ? { label: "Pause", action: () => act(c, "pause") } : null,
       c.state === "paused" ? { label: "Resume", action: () => act(c, "unpause") } : null,
       { separator: true },
+      ...(!c.project && !c.system && od("container", c.name) ? [{ separator: true }, ...onDemandItems("container", c.name, [c])] : []),
+      { separator: true },
       { label: "Copy ID", action: () => clipboard.writeText(c.id).then(() => toast("Copied")) },
       { label: "Copy name", action: () => clipboard.writeText(c.name).then(() => toast("Copied")) },
       { separator: true },
       { label: "Remove…", action: () => remove(c) },
     ].filter(Boolean));
+  }
+
+  // On demand: parked (stopped) while nothing uses it, started again on
+  // the next connection.
+  const OD_TIMES = [["5m", "5 minutes"], ["15m", "15 minutes"], ["1h", "an hour"]];
+  function onDemandItems(kind, name, items) {
+    const u = od(kind, name);
+    if (!u) return [];
+    const mark = (on) => (on ? "✓ " : "");
+    return [
+      ...OD_TIMES.map(([v, l]) => ({ label: `${mark(u.on && u.after === v)}Park after ${l} unused`, disabled: !u.wakeable, action: () => setOnDemand(u, v, items) })),
+      u.on && !OD_TIMES.some(([v]) => v === u.after) ? { label: `✓ Park after ${u.after} unused`, disabled: true } : null,
+      { label: `${mark(!u.on)}Keep running`, action: () => setOnDemand(u, "off", items) },
+      u.setting ? { label: `As its label says (${u.label ? `after ${u.label}` : "keep running"})`, action: () => setOnDemand(u, null, items) } : null,
+      u.wakeable ? null : { label: "Nothing can wake it: publish a port", disabled: true },
+      u.on && u.state !== "parked" ? { separator: true } : null,
+      u.on && u.state !== "parked" ? { label: "Park now", action: () => parkNow(u) } : null,
+    ].filter(Boolean);
+  }
+  async function setOnDemand(u, value, items) {
+    // Turning it on: what stops with it.
+    if (!u.on && value && value !== "off") {
+      const quiet = items.filter((c) => !c.ports.some((p) => p.public)).map((c) => c.service ?? c.name);
+      const what = u.kind === "project" ? `${u.name} and all its services stop` : `${u.name} stops`;
+      const ok = await confirm(
+        `${what} when nothing has used them for ${OD_TIMES.find(([v]) => v === value)?.[1] ?? value}, and start again on the next connection to their ports or their .edock.localhost names, which waits a moment for them.` +
+          (quiet.length && u.kind === "project" ? ` ${quiet.join(", ")} ${quiet.length === 1 ? "has" : "have"} no published port: while ${u.name} is parked, ${quiet.length === 1 ? "it doesn't" : "they don't"} run (a queue worker or a scheduled job waits too).` : "") +
+          " What a container keeps only in memory is lost when it's parked, as with docker stop.",
+        { confirmLabel: "Turn on" },
+      );
+      if (!ok) return;
+    }
+    const r = await attempt(() => api.project_on_demand(u.name, value));
+    if (r) toast(r.on ? `${r.name} is on demand: parked after ${r.after} unused` : `${r.name} keeps running`, { variant: "success" });
+    load();
+  }
+  async function parkNow(u) {
+    if ((await attempt(() => api.on_demand_park(u.name))) != null) toast(`${u.name} is parked: the next connection wakes it`, { variant: "success" });
+    load();
   }
 
   async function prune() {
@@ -318,9 +366,14 @@
             {/if}
             <span class="dot" class:on={g.running > 0} class:partial={g.running > 0 && g.running < g.items.length}></span>
             <strong>{g.project}</strong>
+            {#if od("project", g.project)?.on}
+              <span class="od-badge" title="On demand: parked after {od('project', g.project).after} unused, started again on the next connection"><Icon name="moon" size={12} />{od("project", g.project).after}</span>
+            {/if}
             {#if g.down}
               <span class="muted" title="No containers: docker compose down, or they were removed">down</span>
               {#if g.problem}<span class="problem" title={g.dir}>{g.problem}</span>{/if}
+            {:else if g.parked}
+              <span class="muted" title="Stopped while unused: the next connection to its ports or names starts it again">parked</span>
             {:else}
               <span class="muted">{g.running}/{g.items.length} running</span>
             {/if}
@@ -341,8 +394,11 @@
               {#if g.dir}
                 <button class="icon-btn" title="Rebuild & up (docker compose up -d --build)" disabled={!!busy[g.project]} onclick={() => projectUp(g, true)}><Icon name="hammer" size={14} /></button>
               {/if}
+              {#if od("project", g.project)}
+                <button class="icon-btn" class:on={od("project", g.project).on} title="On demand: stop it while unused, start it on the next connection" onclick={(e) => contextMenu(e, onDemandItems("project", g.project, g.items))}><Icon name="moon" size={14} /></button>
+              {/if}
               {#if g.running < g.items.length}
-                <button class="icon-btn" title="Start all" disabled={!!busy[g.project]} onclick={() => projectAct(g, "start")}><Icon name="play" size={14} /></button>
+                <button class="icon-btn" title={g.parked ? "Wake (start all)" : "Start all"} disabled={!!busy[g.project]} onclick={() => projectAct(g, "start")}><Icon name="play" size={14} /></button>
               {/if}
               {#if g.running > 0}
                 <button class="icon-btn" title="Stop all" disabled={!!busy[g.project]} onclick={() => projectAct(g, "stop")}><Icon name="stop" size={14} /></button>
@@ -387,9 +443,13 @@
                     {/each}
                   </div>
                   <div class="state">
-                    <Badge variant={stateTone(c.state)}>{c.state}</Badge>
+                    {#if parked(c)}
+                      <span title="Stopped while unused: the next connection starts it again"><Badge>parked</Badge></span>
+                    {:else}
+                      <Badge variant={stateTone(c.state)}>{c.state}</Badge>
+                    {/if}
                     {#if c.health}<Badge variant={c.health === "healthy" ? "success" : c.health === "unhealthy" ? "danger" : "warning"}>{c.health}</Badge>{/if}
-                    <div class="sub muted">{running || c.status ? c.status : ago(c.created)}</div>
+                    <div class="sub muted">{running || c.status ? c.status.replace(/ \(parked\)$/, "") : ago(c.created)}</div>
                   </div>
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                   <div class="row-actions" onclick={(e) => e.stopPropagation()}>

@@ -16,7 +16,7 @@ A **left click** opens a small window under the icon. It shows:
 - on eDock's engine, **the VM**: awake, with the memory its containers use and the most it may take, or asleep (it wakes on the next command). When containers wait on memory, it says so in amber (*memory is tight*) or red (*containers wait on memory*); click it for the Engine page;
 - **Start engine**, when the app is on eDock's engine and it isn't running or is stopped;
 - **Needs a look**: containers that ran out of memory or turned unhealthy in the last hour, and times the containers kept waiting on memory, newest first. Click one for its log (or the Engine page); **Clear** empties the list. They're listed whether or not [notifications](engine-and-contexts.md#notifications) are on.
-- **Projects**: each Compose project as one row, with how many of its containers run (`2/3`), **Start all** and **Stop all**. A project that is [down](containers.md#projects-that-are-down) has **Up**. The running ones come first.
+- **Projects**: each Compose project as one row, with how many of its containers run (`2/3`), **Start all** and **Stop all**. A project that is [down](containers.md#projects-that-are-down) has **Up**, and one that is [parked](containers.md#on-demand) has **Wake**. The running ones come first.
 - **Containers** outside Compose: the running ones, with up to two published ports and their address as links and a **Stop** button, then up to four stopped ones with **Start**. An unhealthy one has an amber dot.
 - On eDock's engine, **Linux machines**: a running one has **Terminal**, a stopped one **Start**.
 - **Open eDock**, **New service** (in the main window) and **Quit**.

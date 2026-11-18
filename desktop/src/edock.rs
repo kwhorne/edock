@@ -198,6 +198,78 @@ pub async fn container_set_env(ctx: Ctx, id: String, env: Vec<String>) -> Result
     Ok(())
 }
 
+/// On demand for one Compose project, or a container in none: parked
+/// (stopped) while nothing uses it, and started on the next connection to
+/// its ports or `NAME.edock.localhost`.
+#[derive(Serialize, Deserialize, specta::Type, Clone, Debug, PartialEq)]
+pub struct OnDemand {
+    pub name: String,
+    /// "project" or "container".
+    pub kind: String,
+    /// On demand now.
+    pub on: bool,
+    /// How long it may be quiet before it's parked (`15m`), when on.
+    pub after: Option<String>,
+    /// Where that comes from: "setting" (eDock's, over the label) or "label".
+    pub from: Option<String>,
+    /// eDock's setting: a time, or "off".
+    pub setting: Option<String>,
+    /// What its `app.edock.on-demand` label asks for.
+    pub label: Option<String>,
+    /// Something can wake it: a published port, or its name.
+    pub wakeable: bool,
+    /// "running", "parked", "stopped" or "partly running".
+    pub state: String,
+}
+
+fn on_demand_of(v: &Value) -> OnDemand {
+    let s = |k: &str| v[k].as_str().map(str::to_owned);
+    OnDemand {
+        name: s("name").unwrap_or_default(),
+        kind: s("kind").unwrap_or_default(),
+        on: v["on"] == true,
+        after: s("after"),
+        from: s("from"),
+        setting: s("setting"),
+        label: s("label"),
+        wakeable: v["wakeable"] == true,
+        state: s("state").unwrap_or_default(),
+    }
+}
+
+/// On demand for every Compose project and lone container on eDock's
+/// engine (none on another engine).
+#[command(can = "edock.view")]
+pub async fn on_demand_list(ctx: Ctx) -> Vec<OnDemand> {
+    if on_edock(&ctx).is_err() {
+        return Vec::new();
+    }
+    match engine_request("GET", "/edock/on-demand").await {
+        Some((200, Value::Array(units))) => units.iter().map(on_demand_of).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Turns On demand on for a Compose project (or a container in none) with
+/// how long it may be quiet (`5m`, `15m`, `1h`), off with "off", or back
+/// to its `app.edock.on-demand` label with no value. Turned off while
+/// parked, it starts.
+#[command(can = "edock.manage")]
+pub async fn project_on_demand(ctx: Ctx, name: String, value: Option<String>) -> Result<OnDemand, String> {
+    on_edock(&ctx)?;
+    let v = answer(engine_call("POST", "/edock/on-demand", Some(&json!({"name": name, "value": value}))).await)?;
+    Ok(on_demand_of(&v))
+}
+
+/// Parks an on-demand Compose project (or a container in none) now, as if
+/// nothing had used it for its time.
+#[command(can = "edock.manage")]
+pub async fn on_demand_park(ctx: Ctx, name: String) -> Result<OnDemand, String> {
+    on_edock(&ctx)?;
+    let v = answer(engine_call("POST", "/edock/on-demand/park", Some(&json!({"name": name}))).await)?;
+    Ok(on_demand_of(&v))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

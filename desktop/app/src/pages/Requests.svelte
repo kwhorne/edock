@@ -130,7 +130,7 @@
     const fence = "```";
     const cap = (t) => (t && t.length > 4000 ? `${t.slice(0, 4000)}\n… (cut)` : t || "");
     const hs = (h) => h.map(([k, v]) => `${k}: ${SECRET.test(k) ? "[hidden]" : URL_HEADER.test(k) ? hideQuery(v) : v}`).join("\n");
-    const out = [`## ${d.row.method} ${hideQuery(url(d.row))} → ${d.row.error ? `failed: ${d.row.error}` : `${d.row.status ?? "no answer"} ${d.row.reason}`} (${took(d.row.ms)})`, "", `Answered by the container \`${d.row.container}\`.`];
+    const out = [`## ${d.row.method} ${hideQuery(url(d.row))} → ${d.row.error ? `failed: ${d.row.error}` : `${d.row.status ?? "no answer"} ${d.row.reason}`} (${took(d.row.ms)})`, "", `Answered by the container \`${d.row.container}\`.` + (d.row.woke_ms != null ? ` It was parked (On demand): the request waited ${took(d.row.woke_ms)} for it to wake.` : "")];
     out.push("", "### Request headers", fence, hs(d.req_headers), fence);
     if (d.req_body?.text) out.push("", "### Request body", fence, cap(d.req_body.text), fence);
     if (d.res_headers.length) out.push("", "### Response headers", fence, hs(d.res_headers), fence);
@@ -249,7 +249,7 @@
             <span class="mono method">{r.method}</span>
             <span class="target">
               <span class="mono path">{r.url}</span>
-              <span class="sub muted">{r.container}{r.scheme === "https" ? " · https" : ""}</span>
+              <span class="sub muted">{r.container}{r.scheme === "https" ? " · https" : ""}{r.woke_ms != null ? ` · woke it in ${took(r.woke_ms)}` : ""}</span>
             </span>
             <Badge variant={tone(r)}>{r.error ? "failed" : (r.status ?? "…")}</Badge>
             <span class="muted kind">{kind(r.content_type)}</span>
@@ -275,7 +275,13 @@
             <p class="mono detail-url">{url(detail.row)}</p>
             {#if detail.row.error}<Callout variant="warning">{detail.row.error}</Callout>{/if}
             <p class="muted">
-              {detail.row.container}{#if detail.row.wait_ms != null} · waited {took(detail.row.wait_ms)}{/if}{#if detail.row.ms != null || !detail.row.done} · took {took(detail.row.ms)}{/if} · sent {bytes(detail.row.req_size)}, got {bytes(detail.row.res_size)}
+              {[
+                detail.row.container,
+                detail.row.woke_ms != null ? `it was parked: woke in ${took(detail.row.woke_ms)}` : null,
+                detail.row.wait_ms != null ? `waited ${took(detail.row.wait_ms)}` : null,
+                detail.row.ms != null || !detail.row.done ? `took ${took(detail.row.ms)}` : null,
+                `sent ${bytes(detail.row.req_size)}, got ${bytes(detail.row.res_size)}`,
+              ].filter(Boolean).join(" · ")}
             </p>
             <div class="chips">
               <Button size="sm" onclick={() => clipboard.writeText(curl(detail)).then(() => toast("Copied as curl"))}>Copy as curl</Button>
