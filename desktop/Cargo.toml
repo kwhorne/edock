@@ -3,7 +3,7 @@
 
 [package]
 name = "edock-desktop"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 description = "eDock — a tiny, fast container runtime for the desktop"
 license = "MIT"
