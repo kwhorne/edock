@@ -62,8 +62,14 @@
     rows = new Map();
     selected = null;
     detail = null;
+    during = null;
+    duringError = null;
     load();
   }
+  // A request or response without a body has no tab for it: its headers.
+  $effect(() => {
+    if (detail && ((tab === "request" && !detail.req_body) || (tab === "response" && !detail.res_body))) tab = "headers";
+  });
 
   async function openRow(seq, quiet = false) {
     if (!quiet) {
@@ -106,13 +112,25 @@
   const who = (l) => l.service ?? l.container;
 
   // The exchange and its logs as Markdown, for an AI assistant (or a bug
-  // report). Secrets in headers are left out.
-  const SECRET = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-csrf-token)$/i;
+  // report). Secrets are left out: headers that carry them, and the values
+  // of query parameters named like them, in the URL and in the headers
+  // that hold one (an OAuth redirect's ?code=, a signed URL's signature).
+  const SECRET = /^(authorization|proxy-authorization|cookie|set-cookie)$|token|secret|signature|api-?key|passw|session/i;
+  const SECRET_PARAM = /token|secret|passw|pwd|signature|credential|session|jwt|auth|apikey|(^|[_-])(key|sig|code)$|^(key|sig|code)([_-]|$)/i;
+  const URL_HEADER = /^(location|content-location|referer|origin)$/i;
+  const hideQuery = (u) =>
+    u.replace(/([?&])([^=&#]+)=([^&#]*)/g, (m, sep, k) => {
+      let name = k;
+      try {
+        name = decodeURIComponent(k);
+      } catch {}
+      return SECRET_PARAM.test(name) ? `${sep}${k}=[hidden]` : m;
+    });
   function forAi(d, l) {
     const fence = "```";
     const cap = (t) => (t && t.length > 4000 ? `${t.slice(0, 4000)}\n… (cut)` : t || "");
-    const hs = (h) => h.map(([k, v]) => `${k}: ${SECRET.test(k) ? "[hidden]" : v}`).join("\n");
-    const out = [`## ${d.row.method} ${url(d.row)} → ${d.row.error ? `failed: ${d.row.error}` : `${d.row.status ?? "no answer"} ${d.row.reason}`} (${took(d.row.ms)})`, "", `Answered by the container \`${d.row.container}\`.`];
+    const hs = (h) => h.map(([k, v]) => `${k}: ${SECRET.test(k) ? "[hidden]" : URL_HEADER.test(k) ? hideQuery(v) : v}`).join("\n");
+    const out = [`## ${d.row.method} ${hideQuery(url(d.row))} → ${d.row.error ? `failed: ${d.row.error}` : `${d.row.status ?? "no answer"} ${d.row.reason}`} (${took(d.row.ms)})`, "", `Answered by the container \`${d.row.container}\`.`];
     out.push("", "### Request headers", fence, hs(d.req_headers), fence);
     if (d.req_body?.text) out.push("", "### Request body", fence, cap(d.req_body.text), fence);
     if (d.res_headers.length) out.push("", "### Response headers", fence, hs(d.res_headers), fence);

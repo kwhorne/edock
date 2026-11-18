@@ -26,11 +26,13 @@
   $effect(() => {
     if (query?.tab) tab = query.tab;
   });
-  // A stuck pod opens on what Kubernetes said about it.
-  let chose = false;
+  // A stuck pod opens on what Kubernetes said about it: each pod, when
+  // the page goes from one to another.
+  let chose = null;
   $effect(() => {
-    if (!chose && pod) {
-      chose = true;
+    const key = `${params.namespace}/${params.pod}`;
+    if (chose !== key && pod?.namespace === params.namespace && pod?.name === params.pod) {
+      chose = key;
       if (pod.why && !query?.tab) tab = "events";
     }
   });
@@ -59,6 +61,10 @@
   onDestroy(() => clearInterval(timer));
 
   const current = $derived(pod?.containers.find((c) => c.name === container));
+  // A shell needs the container running: otherwise its log.
+  $effect(() => {
+    if (tab === "terminal" && pod && current?.state !== "running") tab = "logs";
+  });
   const loadable = $derived(pod?.pull_failed && local.has(shortRef(pod.pull_failed)));
 
   async function loadImage() {
@@ -143,7 +149,7 @@
           {#key container}
             <Logs start={(tail, ts) => api.k8s_logs_follow(pod.namespace, pod.name, container, tail, ts)} />
           {/key}
-        {:else if id === "terminal" && container}
+        {:else if id === "terminal" && container && current?.state === "running"}
           {#key container}
             <Terminal start={(cols, rows) => api.k8s_exec_start(pod.namespace, pod.name, container, cols, rows)} />
           {/key}

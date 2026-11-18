@@ -44,7 +44,9 @@ impl Provider for Watcher {
         let bus = ctx.get::<EventBus>();
         let tray = ctx.try_get::<Tray>();
         let (alerts, notifier, b2) = (ctx.get::<alerts::Alerts>(), ctx.get::<elyra::notifier::Notifier>(), bus.clone());
-        let on_alert = move |a| alerts::show(&alerts, &notifier, &b2, a);
+        let on_alert = move |a| {
+            alerts::show(&alerts, &notifier, &b2, a);
+        };
         let ctx2 = ctx.clone();
         // A burst of events (`compose up` of 20 services) is one look,
         // a moment after the first of them.
@@ -91,11 +93,14 @@ fn watch_memory(ctx: Ctx) {
                 }
                 _ => "none",
             };
-            high = if level == "high" { high + 1 } else { 0 };
-            if high == 2 {
+            // High for half a minute, and as long as it lasts: `show` keeps
+            // its line in the popover fresh and tells again each half hour.
+            high = if level == "high" { high.saturating_add(1) } else { 0 };
+            if high >= 2 {
                 let a = alerts::Alert { id: "vm".into(), name: "Containers".into(), what: alerts::What::MemoryPressure };
-                alerts::show(&ctx.get::<alerts::Alerts>(), &ctx.get::<elyra::notifier::Notifier>(), &ctx.get::<EventBus>(), a);
-                refresh_tray(&ctx, None).await;
+                if alerts::show(&ctx.get::<alerts::Alerts>(), &ctx.get::<elyra::notifier::Notifier>(), &ctx.get::<EventBus>(), a) {
+                    refresh_tray(&ctx, None).await;
+                }
             }
         }
     });

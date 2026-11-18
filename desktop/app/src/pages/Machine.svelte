@@ -69,6 +69,10 @@
   }
 
   const running = $derived(machine?.state === "running");
+  // Terminal and Stats need it running: a stopped one shows its files.
+  $effect(() => {
+    if (machine && !running && (tab === "terminal" || tab === "stats")) tab = "files";
+  });
 </script>
 
 <div class="page detail">

@@ -11,6 +11,9 @@
   let containers = $state(null);
   let error = $state(null);
   let search = $state("");
+  // A path in the project's folder as ./path; a folder beside it, such as
+  // app-data next to app, stays as it is.
+  const rel = (s, dir) => (dir && (s === dir || s.startsWith(dir + "/") || s.startsWith(dir + ":")) ? "." + s.slice(dir.length) : s);
   // eDock's own (Linux machines, the Kubernetes node, BuildKit) have their
   // own pages; here only when asked for.
   let showSystem = $state(false);
@@ -257,7 +260,7 @@
           <section class="compose-service">
             <div class="compose-service-head">
               <strong>{sv.name}</strong>
-              <span class="muted mono">{sv.build ? `build ${sv.build.replace(view.data.dir, ".")}` : sv.image}</span>
+              <span class="muted mono">{sv.build ? `build ${rel(sv.build, view.data.dir)}` : sv.image}</span>
               {#each sv.profiles as p (p)}<Badge>{p}</Badge>{/each}
               <span class="spacer"></span>
               <Button size="sm" disabled={!!busy[view.project]} onclick={() => serviceUp(view.project, sv.name, false)} title="docker compose up -d --no-deps --force-recreate {sv.name}">Recreate</Button>
@@ -265,7 +268,7 @@
             </div>
             <dl class="compose-facts">
               {#if sv.ports.length}<dt>Ports</dt><dd class="mono">{sv.ports.join(", ")}</dd>{/if}
-              {#if sv.volumes.length}<dt>Volumes</dt><dd class="mono">{sv.volumes.map((v) => v.replace(view.data.dir, ".")).join(", ")}</dd>{/if}
+              {#if sv.volumes.length}<dt>Volumes</dt><dd class="mono">{sv.volumes.map((v) => rel(v, view.data.dir)).join(", ")}</dd>{/if}
               {#if sv.depends_on.length}<dt>Needs</dt><dd>{sv.depends_on.join(", ")}</dd>{/if}
               {#if sv.env.length}<dt>Variables</dt><dd class="mono">{sv.env.join(", ")}</dd>{/if}
             </dl>
@@ -273,7 +276,7 @@
         {/each}
         {#each view.data.env_files as f (f.path)}
           <section class="compose-service">
-            <div class="compose-service-head"><strong class="mono">{f.path.replace(view.data.dir + "/", "")}</strong><span class="muted">{f.keys.length} variable{f.keys.length === 1 ? "" : "s"}</span></div>
+            <div class="compose-service-head"><strong class="mono">{rel(f.path, view.data.dir).replace(/^\.\//, "")}</strong><span class="muted">{f.keys.length} variable{f.keys.length === 1 ? "" : "s"}</span></div>
             {#if f.keys.length}<p class="mono small">{f.keys.join(", ")}</p>{/if}
           </section>
         {/each}

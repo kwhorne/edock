@@ -160,12 +160,15 @@ pub async fn compose_project_open(ctx: Ctx, path: String) -> Result<String, Stri
     for f in &files {
         cmd.arg("-f").arg(f);
     }
-    // The name as the folder's own files and .env give it.
+    // The name as the folder's own files and .env give it. Every profile:
+    // without, a service that depends on one in a profile fails the check.
     let out = cmd
-        .args(["config", "--format", "json"])
+        .args(["--profile", "*", "config", "--format", "json"])
         .current_dir(&dir)
         .env_remove("COMPOSE_PROJECT_NAME")
         .env_remove("COMPOSE_FILE")
+        .env_remove("COMPOSE_PROFILES")
+        .env("DOCKER_HOST", ctx.get::<Engine>().context().1)
         .env_remove("DOCKER_CONTEXT")
         .stdin(Stdio::null())
         .output()
@@ -617,12 +620,15 @@ pub async fn compose_view(ctx: Ctx, project: String) -> Result<ComposeView, Stri
     let files: Vec<String> = args.windows(2).filter(|w| w[0] == "-f").map(|w| w[1].clone()).collect();
     let env_paths: Vec<String> = args.windows(2).filter(|w| w[0] == "--env-file").map(|w| w[1].clone()).collect();
     let docker = docker_cli().ok_or("The docker command isn't installed: Set up on the Engine page installs it")?;
+    // Every profile's services, each with its profiles shown.
     let mut cmd = args.clone();
-    cmd.extend(["config".into(), "--format".into(), "json".into()]);
+    cmd.extend(["--profile".into(), "*".into(), "config".into(), "--format".into(), "json".into()]);
     let out = tokio::process::Command::new(docker)
         .args(&cmd)
+        .env("DOCKER_HOST", ctx.get::<Engine>().context().1)
         .env_remove("DOCKER_CONTEXT")
         .env_remove("COMPOSE_PROJECT_NAME")
+        .env_remove("COMPOSE_PROFILES")
         .stdin(Stdio::null())
         .output()
         .await

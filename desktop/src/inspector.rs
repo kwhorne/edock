@@ -240,15 +240,14 @@ pub async fn http_request_logs(ctx: Ctx, seq: u32) -> Result<DuringLogs, String>
         // Whole seconds for the API; the lines are cut to the window below.
         let opts = q::LogsOptionsBuilder::default().stdout(true).stderr(true).timestamps(true).since(from.floor() as i32).until(to.ceil() as i32 + 1).build();
         let mut logs = docker.logs(name, Some(opts));
+        let mut lines_of = Joiner::default();
         while let Some(Ok(chunk)) = logs.next().await {
             let stderr = matches!(chunk, bollard::container::LogOutput::StdErr { .. });
-            let raw = String::from_utf8_lossy(&chunk.into_bytes()).into_owned();
-            for line in raw.lines() {
-                let (stamp, text) = crate::compose::split_time(line);
-                let Some(t) = unix_time(stamp) else { continue };
-                if t >= from && t <= to {
-                    lines.push(DuringLine { container: name.clone(), service: service.clone(), stderr, offset: t - r.at, text: text.to_owned() });
-                }
+            lines_of.add(stderr, &String::from_utf8_lossy(&chunk.into_bytes()));
+        }
+        for (stderr, t, text) in lines_of.finish() {
+            if t >= from && t <= to {
+                lines.push(DuringLine { container: name.clone(), service: service.clone(), stderr, offset: t - r.at, text });
             }
         }
     }
@@ -256,6 +255,57 @@ pub async fn http_request_logs(ctx: Ctx, seq: u32) -> Result<DuringLogs, String>
     let cut = lines.len() > MAX_LINES;
     lines.truncate(MAX_LINES);
     Ok(DuringLogs { from, to, containers: who.into_iter().map(|(n, _)| n).collect(), lines, cut })
+}
+
+/// Log lines from chunks, a stream each: a line can come in pieces (a
+/// terminal's output isn't framed, and an engine may split a long line),
+/// whose first has the time; a later piece's own time, if it has one, goes.
+#[derive(Default)]
+struct Joiner {
+    open: [Option<(f64, String)>; 2],
+    done: Vec<(bool, f64, String)>,
+}
+
+impl Joiner {
+    fn add(&mut self, stderr: bool, chunk: &str) {
+        let i = stderr as usize;
+        let mut rest = chunk;
+        while !rest.is_empty() {
+            let (piece, ended) = match rest.find('\n') {
+                Some(n) => (&rest[..n], true),
+                None => (rest, false),
+            };
+            rest = if ended { &rest[piece.len() + 1..] } else { "" };
+            let piece = piece.strip_suffix('\r').unwrap_or(piece);
+            let (stamp, text) = crate::compose::split_time(piece);
+            let at = unix_time(stamp);
+            match self.open[i].take() {
+                Some((t, mut so_far)) => {
+                    so_far.push_str(if at.is_some() { text } else { piece });
+                    self.open[i] = Some((t, so_far));
+                }
+                // A piece without a time and nothing before it: not a line of its own.
+                None => match at {
+                    Some(t) => self.open[i] = Some((t, text.to_owned())),
+                    None => continue,
+                },
+            }
+            if ended {
+                if let Some((t, text)) = self.open[i].take() {
+                    self.done.push((stderr, t, text));
+                }
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<(bool, f64, String)> {
+        for (i, open) in self.open.iter_mut().enumerate() {
+            if let Some((t, text)) = open.take() {
+                self.done.push((i == 1, t, text));
+            }
+        }
+        self.done
+    }
 }
 
 fn now() -> f64 {
@@ -323,6 +373,33 @@ pub async fn http_replay(ctx: Ctx, seq: u32) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// A line in pieces is one line, at its first piece's time: a terminal's
+    /// chunks cut anywhere, and an engine's pieces each with a time.
+    #[test]
+    fn a_line_in_pieces_is_one_line() {
+        let mut j = super::Joiner::default();
+        // Cut mid-line, the rest without a time.
+        j.add(false, "2026-11-18T10:00:00.100Z first\n2026-11-18T10:00:00.200Z {\"error\":\"long");
+        j.add(false, " and longer\"}\n");
+        // Pieces of one line, each with its own time (eDock's long lines).
+        j.add(true, "2026-11-18T10:00:00.300Z Traceback: ");
+        j.add(true, "2026-11-18T10:00:00.301Z at main.py:3\r\n");
+        // A piece with no time and nothing before it isn't a line.
+        j.add(false, "stray\n");
+        // Unfinished at the end: kept.
+        j.add(false, "2026-11-18T10:00:00.400Z last");
+        let got: Vec<(bool, String)> = j.finish().into_iter().map(|(e, _, t)| (e, t)).collect();
+        assert_eq!(
+            got,
+            [
+                (false, "first".into()),
+                (false, "{\"error\":\"long and longer\"}".into()),
+                (true, "Traceback: at main.py:3".into()),
+                (false, "last".into()),
+            ]
+        );
+    }
+
     #[test]
     fn docker_timestamps_read_as_unix_seconds() {
         assert_eq!(super::unix_time("1970-01-01T00:00:00Z"), Some(0.0));

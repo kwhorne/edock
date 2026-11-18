@@ -35,11 +35,13 @@
     vm = onEdock && up ? await api.vm_info().catch(() => null) : null;
   }
 
+  // While it's open. Hidden, it loads when opened (`shown`): no looks at
+  // the engine for nobody, which would also keep its VM from sleeping.
   $effect(() => {
     changes.container;
     s?.context;
     s?.state;
-    load();
+    if (!document.hidden) load();
   });
 
   // Opened from the menu bar: fresh, and the menu bar item loses its dot.

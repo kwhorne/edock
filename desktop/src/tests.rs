@@ -1408,7 +1408,7 @@ async fn a_compose_project_as_a_whole() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("compose.yaml"),
-        "services:\n  api:\n    image: alpine:latest\n    command: sh -c 'echo api-says-hi; sleep 300'\n    environment:\n      API_SECRET: hunter2\n      FROM_DOTENV: ${DOTENV_VALUE}\n    labels: [app.edock.test=1]\n  worker:\n    image: alpine:latest\n    command: sh -c 'echo worker-says-hi; sleep 300'\n    labels: [app.edock.test=1]\n",
+        "services:\n  api:\n    image: alpine:latest\n    command: sh -c 'echo api-says-hi; sleep 300'\n    environment:\n      API_SECRET: hunter2\n      FROM_DOTENV: ${DOTENV_VALUE}\n    labels: [app.edock.test=1]\n  worker:\n    image: alpine:latest\n    command: sh -c 'echo worker-says-hi; sleep 300'\n    labels: [app.edock.test=1]\n  tools:\n    image: alpine:latest\n    profiles: [debug]\n    labels: [app.edock.test=1]\n",
     )
     .unwrap();
     std::fs::write(dir.join(".env"), "# for the test\nDOTENV_VALUE=s3cret\n").unwrap();
@@ -1440,6 +1440,9 @@ async fn a_compose_project_as_a_whole() {
     assert_eq!(view.env_files[0].keys, ["DOTENV_VALUE"]);
     let shown = serde_json::to_string(&view.services).unwrap() + &serde_json::to_string(&view.env_files).unwrap();
     assert!(!shown.contains("hunter2") && !shown.contains("s3cret"), "no values: {shown}");
+    // A service in a profile is there too, with its profile.
+    let tools = view.services.iter().find(|s| s.name == "tools").expect("a service in a profile");
+    assert_eq!(tools.profiles, ["debug"]);
 
     // One service made again; the other stays as it was.
     let docker = app.ctx().get::<Engine>().docker().unwrap();
@@ -1483,6 +1486,16 @@ async fn a_compose_project_as_a_whole() {
     let _: () = app.invoke("compose_project_forget", (project.clone(),)).await.unwrap();
     assert!(app.invoke::<String>("compose_project_open", (std::env::temp_dir().display().to_string(),)).await.is_err(), "no compose file");
     let _ = std::fs::remove_dir_all(&dir);
+
+    // A service that needs one in a profile: Compose's check fails without
+    // every profile, so the project couldn't be opened.
+    let other = std::env::temp_dir().join(format!("{project}-profiles"));
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("compose.yaml"), "services:\n  web:\n    image: alpine:latest\n    depends_on: [db]\n  db:\n    image: alpine:latest\n    profiles: [data]\n").unwrap();
+    let named: String = app.invoke("compose_project_open", (other.display().to_string(),)).await.unwrap();
+    assert_eq!(named, format!("{project}-profiles"));
+    let _: () = app.invoke("compose_project_forget", (named,)).await.unwrap();
+    let _ = std::fs::remove_dir_all(&other);
 }
 
 /// A volume's files without a container of the user's: browsed through a

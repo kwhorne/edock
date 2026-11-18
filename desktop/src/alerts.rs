@@ -89,15 +89,17 @@ const RECENT: Duration = Duration::from_secs(3600);
 
 impl Alerts {
     /// Keep it for the popover (once per container and kind, the latest),
-    /// and mark the menu bar item.
-    fn record(&self, a: &Alert) {
+    /// and mark the menu bar item when it's news (`due`).
+    fn record(&self, a: &Alert, news: bool) {
         let mut recent = self.recent.lock();
         recent.retain(|(r, at)| at.elapsed() < RECENT && !(r.id == a.id && r.what == a.what));
         recent.push((a.clone(), Instant::now()));
         if recent.len() > 20 {
             recent.remove(0);
         }
-        self.unseen.store(true, Ordering::SeqCst);
+        if news {
+            self.unseen.store(true, Ordering::SeqCst);
+        }
     }
 
     /// Something happened that the popover hasn't shown yet.
@@ -125,11 +127,15 @@ impl Alerts {
 }
 
 /// Shows the note for `a`, unless notes are off or it was said lately. A
-/// click shows the window, on the container's log.
-pub fn show(alerts: &Alerts, notifier: &Notifier, bus: &Arc<EventBus>, a: Alert) {
-    alerts.record(&a);
-    if Settings::load().alerts_off || !alerts.due(&a) {
-        return;
+/// click shows the window, on the container's log. True when it was news
+/// (the menu bar item gets its dot).
+pub fn show(alerts: &Alerts, notifier: &Notifier, bus: &Arc<EventBus>, a: Alert) -> bool {
+    // The same again within its quiet time is not news: the popover's line
+    // is kept fresh, but the menu bar item gets no dot and there's no note.
+    let due = alerts.due(&a);
+    alerts.record(&a, due);
+    if Settings::load().alerts_off || !due {
+        return due;
     }
     let (title, body) = match a.what {
         What::OutOfMemory => (format!("{} ran out of memory", a.name), "The kernel stopped it: it used all the memory it may have. Click for its last log lines."),
@@ -146,6 +152,7 @@ pub fn show(alerts: &Alerts, notifier: &Notifier, bus: &Arc<EventBus>, a: Alert)
         let _ = bus.emit("navigate", &path);
     });
     let _ = notifier.show(Shown { title, body: Some(body.to_owned()) }, Some(on_click));
+    true
 }
 
 #[derive(Serialize, Deserialize, specta::Type)]
@@ -257,15 +264,36 @@ mod tests {
         let alerts = Alerts::default();
         let a = |id: &str, what| Alert { id: id.into(), name: id.into(), what };
         assert!(!alerts.unseen());
-        alerts.record(&a("db", What::Unhealthy));
-        alerts.record(&a("web", What::OutOfMemory));
-        alerts.record(&a("db", What::Unhealthy));
+        alerts.record(&a("db", What::Unhealthy), true);
+        alerts.record(&a("web", What::OutOfMemory), true);
+        alerts.record(&a("db", What::Unhealthy), false);
         assert!(alerts.unseen());
         let names: Vec<_> = alerts.list().into_iter().map(|(a, _)| a.name).collect();
         assert_eq!(names, ["db", "web"], "newest first, once each");
         for i in 0..30 {
-            alerts.record(&a(&format!("c{i}"), What::OutOfMemory));
+            alerts.record(&a(&format!("c{i}"), What::OutOfMemory), true);
         }
         assert_eq!(alerts.list().len(), 20);
+    }
+
+    /// Memory that stays tight: told again each half hour, its line kept
+    /// fresh in between, and the dot only when it's told.
+    #[test]
+    fn lasting_memory_pressure_is_news_each_half_hour() {
+        let alerts = Alerts::default();
+        let vm = Alert { id: "vm".into(), name: "Containers".into(), what: What::MemoryPressure };
+        let seen = |alerts: &Alerts| alerts.unseen.swap(false, Ordering::SeqCst);
+        let look = |alerts: &Alerts| {
+            let due = alerts.due(&vm);
+            alerts.record(&vm, due);
+            due
+        };
+        assert!(look(&alerts) && seen(&alerts));
+        assert!(!look(&alerts) && !seen(&alerts), "15 s later: no dot");
+        *alerts.recent.lock().last_mut().map(|(_, at)| at).unwrap() -= Duration::from_secs(3000);
+        assert!(!look(&alerts));
+        assert!(alerts.list()[0].1 < Duration::from_secs(5), "its line kept fresh");
+        *alerts.last.lock().get_mut(&("vm".to_string(), What::MemoryPressure as u8)).unwrap() -= Duration::from_secs(1800);
+        assert!(look(&alerts) && seen(&alerts), "half an hour on: told again");
     }
 }
