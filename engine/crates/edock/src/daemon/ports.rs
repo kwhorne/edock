@@ -702,6 +702,74 @@ fn open_framed_relay(vm: &VmLink, ip: [u8; 4], port: u16) -> io::Result<(edock_v
     Ok((open_relay(vm, ip, port)?, false))
 }
 
+/// macOS's `TCP_ENABLE_ECN` from <netinet/tcp.h>; the libc crate lacks it.
+#[cfg(target_os = "macos")]
+const TCP_ENABLE_ECN: libc::c_int = 0x104;
+
+/// A connect over the VM's NAT network, with ECN off. macOS answers a RST
+/// to an ECN SYN by trying again a second later without ECN, in case the
+/// network dropped it: a container that doesn't listen yet (one that just
+/// started) read as no answer, and two of those in a row turned the NAT
+/// network off for every port for `NAT_RETRY`, with a warning that blamed a
+/// VPN. Nothing on this link marks congestion, so ECN gains nothing here.
+fn connect_nat(addr: SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
+    let family = if addr.is_ipv6() { libc::AF_INET6 } else { libc::AF_INET };
+    // SAFETY: plain socket creation; owned at once.
+    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is fresh and ours.
+    let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+    // As std's sockets: not inherited by children.
+    // SAFETY: setting a descriptor flag on a socket we own.
+    if unsafe { libc::fcntl(sock.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[cfg(target_os = "macos")]
+    for (level, opt, value) in [(libc::SOL_SOCKET, libc::SO_NOSIGPIPE, 1), (libc::IPPROTO_TCP, TCP_ENABLE_ECN, 0)] {
+        // SAFETY: setsockopt with an int of the stated size, on a socket we own.
+        if unsafe { libc::setsockopt(sock.as_raw_fd(), level, opt, (&value as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>() as libc::socklen_t) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let stream = TcpStream::from(sock);
+    stream.set_nonblocking(true)?;
+    let (storage, len) = sockaddr_of(addr);
+    // SAFETY: the sockaddr storage is filled for `addr`'s family and sized to match.
+    if unsafe { libc::connect(stream.as_raw_fd(), (&storage as *const libc::sockaddr_storage).cast(), len) } != 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EINPROGRESS) {
+            return Err(e);
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "connection timed out"));
+            }
+            let mut fds = [libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLOUT, revents: 0 }];
+            // SAFETY: polling one descriptor we own.
+            let n = unsafe { libc::poll(fds.as_mut_ptr(), 1, left.as_millis().clamp(1, i32::MAX as u128) as libc::c_int) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            if n > 0 {
+                break;
+            }
+        }
+        if let Some(e) = stream.take_error()? {
+            return Err(e);
+        }
+    }
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
+
 fn relay(client: TcpStream, vm: &VmLink, ip: [u8; 4], port: u16, nat: Option<SocketAddr>) -> io::Result<()> {
     client.set_nonblocking(false)?;
     client.set_nodelay(true)?;
@@ -712,7 +780,7 @@ fn relay(client: TcpStream, vm: &VmLink, ip: [u8; 4], port: u16, nat: Option<Soc
         return relay_direct(client, ip, port);
     }
     if let Some(addr) = nat.filter(|_| nat_usable() && nat_budget()) {
-        match TcpStream::connect_timeout(&addr, NAT_CONNECT) {
+        match connect_nat(addr, NAT_CONNECT) {
             Ok(guest) => {
                 NAT_TIMEOUTS.store(0, Ordering::Relaxed);
                 return relay_tcp(client, guest);
@@ -1080,6 +1148,29 @@ mod tests {
     use super::{MAX_PEER_SESSIONS, MAX_REMOTE_SESSIONS, MAX_TCP_SESSIONS, NAT_PORTS, REMOTE_SESSIONS, TCP_SESSIONS, kernel_forwards, kernel_host_ip, listening, nat_port, relays_too, tcp_permit};
     use std::net::IpAddr;
     use std::sync::atomic::Ordering;
+
+    /// Connections over the NAT network go without ECN: macOS meets a RST
+    /// to an ECN SYN with a second SYN a second later, so a container not
+    /// yet listening read as a network that doesn't answer.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nat_connects_go_without_ecn() {
+        use std::os::fd::AsRawFd;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = super::connect_nat(addr, std::time::Duration::from_secs(1)).unwrap();
+        let mut ecn: libc::c_int = -1;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: getsockopt into an int of the stated size.
+        assert_eq!(unsafe { libc::getsockopt(stream.as_raw_fd(), libc::IPPROTO_TCP, super::TCP_ENABLE_ECN, (&mut ecn as *mut libc::c_int).cast(), &mut len) }, 0);
+        assert_eq!(ecn, 0);
+        drop((stream, listener));
+        // Nothing there now: refused, at once.
+        let t = std::time::Instant::now();
+        let e = super::connect_nat(addr, std::time::Duration::from_secs(2)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::ConnectionRefused);
+        assert!(t.elapsed() < std::time::Duration::from_millis(500));
+    }
 
     /// A clash names the other program holding the port, never eDock itself.
     #[test]

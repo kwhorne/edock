@@ -225,8 +225,13 @@ fn shell(name: &str, cmd: &[&str]) -> io::Result<()> {
 
 /// Installs openssh-server with the distro's own package manager, once
 /// another one has finished (a new machine fetches sudo in the background,
-/// holding apt's lock). Its last lines when it fails.
-const INSTALL_SSHD: &str = r#"busy() { grep -qsxE 'apt-get|apt|dpkg|apk|dnf|rpm|pacman|zypper' /proc/[0-9]*/comm; }
+/// holding apt's lock). One at a time: VS Code and Cursor open several
+/// connections at once, and a second waits for the first's install. Its
+/// last lines when it fails.
+const INSTALL_SSHD: &str = r#"for i in $(seq 300); do mkdir /run/edock-sshd.lock 2>/dev/null && break; [ -x /usr/sbin/sshd ] && exit 0; sleep 1; done
+trap 'rmdir /run/edock-sshd.lock' EXIT
+[ -x /usr/sbin/sshd ] && exit 0
+busy() { grep -qsxE 'apt-get|apt|dpkg|apk|dnf|rpm|pacman|zypper' /proc/[0-9]*/comm; }
 for i in $(seq 180); do busy || break; sleep 1; done
 log=/tmp/edock-ssh-install.log
 if command -v apt-get >/dev/null; then
@@ -256,13 +261,15 @@ fn user_ssh_config() -> io::Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(home).join(".ssh/config"))
 }
 
-/// The `Host *.edock` block: this `edock` as the ProxyCommand, eDock's key,
-/// and no host-key checks (the way in is the engine's socket, which only
-/// this user can open, and a machine made again has new host keys).
+/// The `Host *.edock` block: this `edock` as the ProxyCommand, eDock's key
+/// and no agent (a `Host *` IdentityAgent, such as 1Password's, would be
+/// asked on every connection), and no host-key checks (the way in is the
+/// engine's socket, which only this user can open, and a machine made again
+/// has new host keys).
 fn host_block(edock: &std::path::Path, user: &str, key: &std::path::Path) -> String {
     format!(
         "# Written by eDock (`edock machine ssh on`): `ssh NAME.edock` reaches the machine NAME.\n\
-         Host *.edock\n  User {user}\n  ProxyCommand \"{}\" machine stdio %n\n  IdentityFile \"{}\"\n  IdentitiesOnly yes\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n",
+         Host *.edock\n  User {user}\n  ProxyCommand \"{}\" machine stdio %n\n  IdentityFile \"{}\"\n  IdentitiesOnly yes\n  IdentityAgent none\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n",
         edock.display(),
         key.display()
     )
@@ -294,7 +301,13 @@ fn ssh(what: &str) -> io::Result<()> {
             Ok(())
         }
         "on" => {
+            // ssh refuses an included config others may write (with a umask
+            // of 002, every ssh and git command on the Mac would fail).
             std::fs::create_dir_all(&dir)?;
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+            }
             if !key.is_file() {
                 let made = Command::new("/usr/bin/ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", "edock"]).arg("-f").arg(&key).status()?;
                 if !made.success() {
@@ -302,7 +315,7 @@ fn ssh(what: &str) -> io::Result<()> {
                 }
             }
             let me = std::env::current_exe()?.canonicalize()?;
-            std::fs::write(dir.join("config"), host_block(&me, &user().0, &key))?;
+            write_private(&dir.join("config"), &host_block(&me, &user().0, &key))?;
             if let Some(parent) = config.parent() {
                 std::fs::create_dir_all(parent)?;
                 use std::os::unix::fs::PermissionsExt;
@@ -364,10 +377,14 @@ fn stdio(name: &str) -> io::Result<()> {
     }
     // Host keys, the run directory sshd wants, eDock's key, and the user
     // unlocked for key logins (useradd leaves `!`, which sshd refuses
-    // without PAM).
+    // without PAM). Host keys made one connection at a time, and the key
+    // file replaced whole: another connection's sshd may be reading it.
     let prepare = format!(
-        "set -e; mkdir -p /etc/edock /run/sshd; chmod 755 /run/sshd; ssh-keygen -A >/dev/null 2>&1; \
-         printf '%s\\n' \"$1\" > /etc/edock/authorized_keys; chmod 644 /etc/edock/authorized_keys; \
+        "set -e; mkdir -p /etc/edock /run/sshd; chmod 755 /run/sshd; \
+         for i in $(seq 100); do mkdir /run/edock-sshd.lock 2>/dev/null && break; sleep 0.1; done; \
+         trap 'rmdir /run/edock-sshd.lock 2>/dev/null' EXIT; ssh-keygen -A >/dev/null 2>&1; \
+         printf '%s\\n' \"$1\" > /etc/edock/.authorized_keys.$$; chmod 644 /etc/edock/.authorized_keys.$$; \
+         mv -f /etc/edock/.authorized_keys.$$ /etc/edock/authorized_keys; \
          sed -i 's/^{user}:![^:]*:/{user}:*:/' /etc/shadow 2>/dev/null || true"
     );
     let (code, out) = client::exec(&id, &["sh", "-c", &prepare, "sh", pubkey.trim()])?;
@@ -412,5 +429,7 @@ mod ssh_tests {
         assert!(b.contains("ProxyCommand \"/Applications/eDock.app/Contents/MacOS/edock\" machine stdio %n"));
         assert!(b.contains("IdentityFile \"/Users/kh/.edock/ssh/id_ed25519\""));
         assert!(b.contains("User kh"));
+        // Not a `Host *` agent (1Password's asks for Touch ID on each one).
+        assert!(b.contains("IdentitiesOnly yes\n  IdentityAgent none\n"));
     }
 }

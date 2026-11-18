@@ -1016,22 +1016,32 @@ impl Engine {
     /// as Docker's daemon does when it comes back.
     pub fn sleep_now(&self) -> Result<(), Error> {
         let running = self.each(|c| (c.status == Status::Running).then(|| c.id.clone()));
+        // Those running with a policy that brings them back, and those that
+        // exited and wait to be started again by it (whose restart would
+        // otherwise come while the VM is off, or not at all after Stop).
         let comes_back: Vec<String> = self.each(|c| {
-            (c.status == Status::Running && !c.spec.auto_remove && !c.stopped_by_user && matches!(c.spec.restart.name.as_str(), "always" | "unless-stopped")).then(|| c.id.clone())
+            let policy = c.status == Status::Running && !c.spec.auto_remove && !c.stopped_by_user && matches!(c.spec.restart.name.as_str(), "always" | "unless-stopped");
+            (policy || c.restart_pending).then(|| c.id.clone())
         });
         self.stopping_to_sleep.store(true, std::sync::atomic::Ordering::SeqCst);
         let stopped = running.iter().try_for_each(|id| self.stop_as(id, self.stop_timeout(id), !comes_back.contains(id)).map(|_| ()));
         if !comes_back.is_empty() {
             // Pending until it starts, as at the daemon's start: a `docker
-            // stop` in the meantime cancels it (mark_stopped).
-            {
+            // stop` in the meantime cancels it (mark_stopped), and one while
+            // these were stopping is kept.
+            let comes_back: Vec<String> = {
                 let mut st = self.lock();
-                for id in &comes_back {
-                    if let Some(c) = st.containers.get_mut(id) {
-                        c.restart_pending = true;
-                    }
-                }
-            }
+                comes_back
+                    .into_iter()
+                    .filter(|id| match st.containers.get_mut(id) {
+                        Some(c) if !c.stopped_by_user => {
+                            c.restart_pending = true;
+                            true
+                        }
+                        _ => false,
+                    })
+                    .collect()
+            };
             let mut held = self.held_restarts.lock().unwrap_or_else(|e| e.into_inner());
             for id in comes_back {
                 if !held.contains(&id) {
@@ -1325,7 +1335,9 @@ impl Engine {
                         // start_inner checks again, under its lock, that the
                         // restart is still pending: a stop between here and
                         // there cancels it.
-                        let still_wanted = me.lock().containers.get(&id).is_some_and(|c| c.status == Status::Exited && !c.stopped_by_user);
+                        // While eDock is stopped it stays pending: Start
+                        // starts it with the others sleep_now held.
+                        let still_wanted = !me.is_stopped() && me.lock().containers.get(&id).is_some_and(|c| c.status == Status::Exited && !c.stopped_by_user);
                         if still_wanted {
                             if let Err(e) = me.start_inner(&id, false) {
                                 crate::diag::warn!("container did not restart", id = &id[..12], error = format!("{e:?}"));
