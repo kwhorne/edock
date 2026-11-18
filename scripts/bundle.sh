@@ -6,8 +6,9 @@
 #   eDock.app/Contents/MacOS/edock           the engine (finds ../Resources/guest)
 #   eDock.app/Contents/Resources/guest/      kernel, initramfs, data disk template
 #
-# The engine's guest (kernel, initramfs, disk) must have been built once:
-# `cargo xtask kernel && cargo xtask disk && cargo xtask guest` in engine/.
+# The engine's guest kernel and disk must have been built once:
+# `cargo xtask kernel && cargo xtask disk` in engine/. Its agent (the
+# initramfs) is built again here every time, from the code being released.
 #
 # `rata bundle` signs the app with `codesign --deep`, which would strip the
 # engine's virtualization entitlement, so the engine goes in after it and
@@ -119,10 +120,12 @@ sign() { codesign --force --sign "$SIGN_ID" $SIGN_OPTS "$@"; }
 # ── Build ──────────────────────────────────────────────────────────────
 if [ "$SKIP_ENGINE" = 0 ]; then
   echo "== engine"
-  for f in Image initramfs.cpio data.img; do
+  for f in Image data.img; do
     [ -f "$ENGINE/guest/out/$f" ] || die "engine/guest/out/$f is missing: build the guest first (see engine/docs/development.md)"
   done
-  (cd "$ENGINE" && cargo xtask host && cargo xtask bundle)
+  # The guest agent too: an initramfs left from an older build would ship
+  # an agent without the changes since.
+  (cd "$ENGINE" && cargo xtask guest && cargo xtask host && cargo xtask bundle)
 fi
 [ -x "$ENGINE/target/edock-engine/MacOS/edock" ] || die "no engine bundle: run without --skip-engine"
 ENGINE_VERSION=$(cd "$ENGINE" && cargo pkgid -p edock 2>/dev/null | sed 's/.*[#@]//')

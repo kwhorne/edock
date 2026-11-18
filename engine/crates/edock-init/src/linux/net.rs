@@ -261,6 +261,16 @@ pub fn publish_vm(dnat: &[netlink::Dnat], gateway: [u8; 4]) -> io::Result<()> {
     install_nat(Nat { uplink: index, redirect: true, dnat: dnat.to_vec(), gateway })
 }
 
+/// How long to wait for an answer after the `attempt`th message before
+/// sending it again. macOS's DHCP server answers within milliseconds, but a
+/// first message sent as the VM's network comes up can go nowhere: a
+/// container that needs the network waits for the lease, so the wake of a
+/// sleeping VM waited the whole first interval (it was 500 ms). Quick at
+/// first, then twice as long each time, up to 4 s.
+fn resend_after(attempt: u32) -> Duration {
+    Duration::from_millis((50u64 << attempt.saturating_sub(1).min(7)).min(4000))
+}
+
 enum DhcpState {
     Discovering,
     Requesting { offered: [u8; 4], server: [u8; 4] },
@@ -356,7 +366,7 @@ impl Dhcp {
         // SAFETY: sending a buffer we own to a valid sockaddr_in.
         unsafe { libc::sendto(self.sock.as_raw_fd(), p.as_ptr().cast(), p.len(), 0, (&to as *const libc::sockaddr_in).cast(), std::mem::size_of::<libc::sockaddr_in>() as u32) };
         self.attempt += 1;
-        self.next_send = Instant::now() + Duration::from_millis((250u64 << self.attempt.min(5)).min(4000));
+        self.next_send = Instant::now() + resend_after(self.attempt);
         Ok(())
     }
 
@@ -744,6 +754,14 @@ pub fn route(dst: [u8; 4], prefix: u8, via: [u8; 4], add: bool) -> io::Result<()
 
 #[cfg(test)]
 mod tests {
+    /// A lost first DHCP message is sent again soon, then less and less often.
+    #[test]
+    fn dhcp_resends_soon_then_backs_off() {
+        let ms = |a| super::resend_after(a).as_millis();
+        assert_eq!([1, 2, 3, 4, 5, 6, 7, 8, 9, 50].map(ms), [50, 100, 200, 400, 800, 1600, 3200, 4000, 4000, 4000]);
+        assert_eq!(ms(0), 50);
+    }
+
     use super::*;
 
     #[test]

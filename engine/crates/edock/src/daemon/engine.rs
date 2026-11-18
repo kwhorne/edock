@@ -365,6 +365,19 @@ pub struct Container {
     pub pid: u32,
     /// Published ports while running.
     pub forwards: Option<super::ports::Forwards>,
+    /// On demand (`app.edock.on-demand`), stopped while its project was
+    /// idle: the next connection to the project's ports starts it again.
+    pub parked: bool,
+    /// A parked container's published ports, still bound (not while eDock
+    /// is stopped): the first connection wakes its project. Never dropped
+    /// under the state lock: dropping one joins its thread.
+    held: Option<super::ports::Parked>,
+    /// Being stopped to be parked.
+    parking: bool,
+    /// Started by a wake: if it exits by itself (not stopped by you, not
+    /// restarted by its policy), it's parked again, and the next
+    /// connection tries again.
+    woken: bool,
     /// Frozen by `docker pause`.
     pub paused: bool,
     /// Addresses on `spec.extra_networks` while running, as (network, ip).
@@ -452,6 +465,8 @@ struct Saved {
     restart_count: u32,
     #[serde(default)]
     health: Option<super::health::Health>,
+    #[serde(default)]
+    parked: bool,
 }
 
 /// A container's healthcheck while it has one: its `State.Health`, and
@@ -546,6 +561,15 @@ pub struct Engine {
     /// to a cluster address. They go when the cluster does.
     /// Kubernetes addresses on the Mac: local port → (address, port, forward).
     k8s_fwd: Mutex<HashMap<u16, ([u8; 4], u16, super::ports::Forwards)>>,
+    /// On-demand units with something running: the bytes their containers
+    /// had sent when last looked at, and since when that has stayed so.
+    on_demand: Mutex<HashMap<String, (u64, std::time::Instant)>>,
+    /// On-demand units waking now: one wake each at a time.
+    waking: Mutex<std::collections::HashSet<String>>,
+    /// Connections open through the container-name router, by container.
+    domain_open: Mutex<HashMap<String, usize>>,
+    /// On demand's settings (on-demand.json), over the label.
+    od_settings: Mutex<super::ondemand::Settings>,
 }
 
 /// k3s's pod and service ranges, which `edock k8s` leaves at their defaults.
@@ -634,6 +658,10 @@ impl Engine {
             k8s_lb: Mutex::new(HashMap::new()),
             k8s_routes: Mutex::new(None),
             k8s_fwd: Mutex::new(HashMap::new()),
+            on_demand: Mutex::new(HashMap::new()),
+            waking: Mutex::new(std::collections::HashSet::new()),
+            domain_open: Mutex::new(HashMap::new()),
+            od_settings: Mutex::new(super::ondemand::load()),
         });
         let _ = engine.me.set(Arc::downgrade(&engine));
         engine.load()?;
@@ -873,6 +901,7 @@ impl Engine {
         let _ = std::thread::Builder::new().name("edock-sleeper".into()).spawn(move || loop {
             std::thread::sleep(Duration::from_secs(5));
             let Some(engine) = me.upgrade() else { return };
+            engine.park_idle();
             let quiet_for = now_secs().saturating_sub(engine.last_activity.load(std::sync::atomic::Ordering::Relaxed));
             // BuildKit containers (buildx's docker-container driver) run until
             // paused, which keeps the VM's state without using CPU. Between
@@ -950,7 +979,10 @@ impl Engine {
             let _ = std::fs::write(f, b"");
         }
         crate::diag::info!("eDock stopped: the VM stays off until Start");
-        self.sleep_now()
+        let slept = self.sleep_now();
+        // Off means off: parked projects let their ports go until Start.
+        self.release_held();
+        slept
     }
 
     /// Start: no longer stopped (the VM boots on the next request, or now
@@ -962,6 +994,7 @@ impl Engine {
         if let Some(f) = stopped_marker() {
             let _ = std::fs::remove_file(f);
         }
+        self.hold_parked();
         // What the daemon would have restarted when it came up, had eDock
         // not been stopped then. Off this thread: the caller boots the VM.
         if let Some(me) = self.me.get().and_then(Weak::upgrade) {
@@ -972,7 +1005,13 @@ impl Engine {
     /// Starts the containers held since the daemon came up. Whoever calls
     /// first takes them: Start, or `retry_held` once the VM boots.
     fn start_held(&self) {
-        let held = std::mem::take(&mut *self.held_restarts.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut held = std::mem::take(&mut *self.held_restarts.lock().unwrap_or_else(|e| e.into_inner()));
+        // As at the daemon's start: those that join another's network or
+        // link to others after those (sleep_now holds them in any order).
+        {
+            let st = self.lock();
+            held.sort_by_key(|id| st.containers.get(id).is_some_and(|c| c.spec.network_mode.starts_with("container:") || !c.spec.links.is_empty()));
+        }
         for id in held {
             if let Err(e) = self.start_inner(&id, false) {
                 crate::diag::warn!("container did not restart", id = &id[..12], error = format!("{e:?}"));
@@ -1015,6 +1054,18 @@ impl Engine {
     /// and the next Start (or the wake after Restart VM) starts them again,
     /// as Docker's daemon does when it comes back.
     pub fn sleep_now(&self) -> Result<(), Error> {
+        // On-demand projects that run are parked, not stopped: the next
+        // connection wakes them, with the VM.
+        let units: std::collections::BTreeSet<String> = {
+            let st = self.lock();
+            let on_demand = on_demand_units(&st, &self.od_settings.lock().unwrap_or_else(|e| e.into_inner()));
+            st.containers.values().filter(|c| c.status == Status::Running).filter_map(unit_of).filter(|u| on_demand.contains_key(u)).collect()
+        };
+        for unit in &units {
+            if let Err(e) = self.park_unit(unit) {
+                crate::diag::warn!("an on-demand project was not parked", unit = unit, error = format!("{e:?}"));
+            }
+        }
         let running = self.each(|c| (c.status == Status::Running).then(|| c.id.clone()));
         // Those running with a policy that brings them back, and those that
         // exited and wait to be started again by it (whose restart would
@@ -1094,6 +1145,10 @@ impl Engine {
             let mut st = self.lock();
             for s in saved {
                 let was_running = s.status == Status::Running;
+                // Running when the daemon stopped (still marked running, or
+                // stopped by the VM's shutdown under it): parked if its unit is
+                // on demand, which is settled once all are read (below).
+                let parked = s.parked || was_running || (s.vm_stopped && s.status == Status::Exited);
                 let mut c = Container {
                     id: s.id.clone(),
                     name: s.name,
@@ -1113,6 +1168,10 @@ impl Engine {
                 ip: None,
                 pid: 0,
                 forwards: None,
+                parked,
+                held: None,
+                parking: false,
+                woken: false,
                 live: false,
                 early_input: Vec::new(),
                 early_close: false,
@@ -1139,6 +1198,23 @@ impl Engine {
                 }
                 st.containers.insert(s.id, c);
             }
+            // Parked only where the unit is on demand (its setting, or any of
+            // its containers' labels; what wakes it is checked later, the
+            // routers aren't up yet): the rest are just stopped. Parked ones
+            // wait for a connection, not their restart policy.
+            let on: std::collections::HashSet<String> = on_demand_units_of(&st, &self.od_settings.lock().unwrap_or_else(|e| e.into_inner()), false).into_keys().collect();
+            for c in st.containers.values_mut() {
+                if c.parked && !unit_of(c).is_some_and(|u| on.contains(&u)) {
+                    c.parked = false;
+                }
+            }
+            restart.retain(|id| {
+                let Some(c) = st.containers.get_mut(id) else { return false };
+                if c.parked {
+                    c.restart_pending = false;
+                }
+                !c.parked
+            });
             // Logs of containers that are gone (`--rm` ones are never saved).
             if let Ok(dirs) = std::fs::read_dir(self.store.root().join("containers")) {
                 for d in dirs.flatten() {
@@ -1174,6 +1250,9 @@ impl Engine {
                 crate::diag::warn!("container did not restart", id = &id[..12], error = format!("{e:?}"));
             }
         }
+        if !self.is_stopped() {
+            self.hold_parked();
+        }
         Ok(())
     }
 
@@ -1200,6 +1279,7 @@ impl Engine {
                     stopped_by_user: c.stopped_by_user,
                     restart_count: c.restart_count,
                     health: st.health.get(&c.id).map(|h| h.health.clone()),
+                    parked: c.parked,
                 })
                 .collect();
             serde_json::to_vec(&saved)
@@ -1246,7 +1326,12 @@ impl Engine {
                 let mut restart_in = None;
                 let mut persist = false;
                 let mut closed_ports = None;
+                let mut parking = false;
+                let mut reparked = false;
                 let actor = st.containers.get(id).map(|c| (c.spec.image.clone(), container_attrs(c)));
+                // Whether its unit is still on demand: one woken but turned
+                // off since doesn't park again when it exits.
+                let still_on_demand = st.containers.get(id).and_then(unit_of).is_some_and(|u| on_demand_units(&st, &self.od_settings.lock().unwrap_or_else(|e| e.into_inner())).contains_key(&u));
                 // Docker stops a container's healthcheck when it exits.
                 if let Some(h) = st.health.get_mut(id) {
                     close_monitor(h);
@@ -1273,6 +1358,10 @@ impl Engine {
                         self.release_ip6s(c);
                         c.paused = false;
                         closed_ports = c.forwards.take();
+                        parking = std::mem::take(&mut c.parking);
+                        if parking {
+                            c.parked = true;
+                        }
                         c.finished = Some(SystemTime::now());
                         // Dropping the senders ends every attach stream.
                         c.attached.clear();
@@ -1284,11 +1373,17 @@ impl Engine {
                             "on-failure" => code != 0 && !c.stopped_by_user && (p.max_retries == 0 || c.restart_count < p.max_retries),
                             _ => false,
                         };
-                        if wants && !c.spec.auto_remove && !SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst) && !self.stopping_to_sleep.load(std::sync::atomic::Ordering::SeqCst) {
+                        if wants && !parking && !c.spec.auto_remove && !SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst) && !self.stopping_to_sleep.load(std::sync::atomic::Ordering::SeqCst) {
                             let backoff = RESTART_BASE.saturating_mul(1 << c.restart_count.min(10)).min(RESTART_CAP);
                             c.restart_count += 1;
                             c.restart_pending = true;
                             restart_in = Some(backoff);
+                        }
+                        // Woken, and exited by itself: parked again. Not when
+                        // the engine shuts down: its start parks it then.
+                        if std::mem::take(&mut c.woken) && still_on_demand && !parking && !c.stopped_by_user && restart_in.is_none() && !c.spec.auto_remove && !SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst) {
+                            c.parked = true;
+                            reparked = true;
                         }
                         c.spec.auto_remove
                     }
@@ -1315,7 +1410,29 @@ impl Engine {
                     }
                 }
                 // Closing listeners joins their threads: never under the lock.
+                // Parked, their sockets stay bound for the next connection
+                // (park_unit holds them before it stops the container).
+                if parking && let Some(fw) = closed_ports.take() {
+                    let held = fw.park(self.waker(id));
+                    let mut st = self.lock();
+                    let held = match st.containers.get_mut(id).filter(|c| c.status == Status::Exited && c.held.is_none()) {
+                        Some(c) => {
+                            c.held = held;
+                            None
+                        }
+                        None => held,
+                    };
+                    drop(st);
+                    drop(held);
+                }
+                if parking && let Some(name) = self.lock().containers.get(id).map(|c| c.name.clone()) {
+                    crate::diag::info!("container parked: the next connection wakes it", name = name);
+                }
                 drop(closed_ports);
+                // Its ports held again, now that they're free.
+                if reparked {
+                    self.hold_parked();
+                }
                 if let Some(log) = removed_log {
                     lock_log(&log).remove();
                 }
@@ -1632,6 +1749,10 @@ impl Engine {
                 ip: None,
                 pid: 0,
                 forwards: None,
+                parked: false,
+                held: None,
+                parking: false,
+                woken: false,
                 live: false,
                 early_input: Vec::new(),
                 early_close: false,
@@ -1663,7 +1784,7 @@ impl Engine {
     }
 
     fn start_inner(&self, key: &str, by_user: bool) -> Result<(), Error> {
-        let (id, layers, argv, spec, size) = {
+        let (id, layers, argv, spec, size, was_parked, unit) = {
             let mut st = self.lock();
             let id = resolve(&st, key)?;
             let c = st.containers.get_mut(&id).expect("resolved");
@@ -1684,6 +1805,12 @@ impl Engine {
             }
             c.status = Status::Running;
             c.restart_pending = false;
+            // Woken: the rest of its project wakes too (wake, below).
+            let was_parked = std::mem::take(&mut c.parked);
+            c.woken = was_parked;
+            // Its unit's quiet time starts again: counters from before it
+            // stopped say nothing now (and could match by chance).
+            let unit = unit_of(c);
             c.started = Some(SystemTime::now());
             c.finished = None;
             c.oom_killed = false;
@@ -1697,8 +1824,11 @@ impl Engine {
                 c.stopped_by_user = false;
                 c.restart_count = 0;
             }
-            (id, c.layers.clone(), argv, c.spec.clone(), c.size.or(c.spec.console_size))
+            (id, c.layers.clone(), argv, c.spec.clone(), c.size.or(c.spec.console_size), was_parked, unit)
         };
+        if let Some(unit) = unit {
+            self.on_demand.lock().unwrap_or_else(|e| e.into_inner()).remove(&unit);
+        }
         let mut hostname = if spec.hostname.is_empty() { id[..12].to_owned() } else { spec.hostname.clone() };
         let mut domainname = spec.domainname.clone();
         // `--network container:<id>`: that container's namespace, hostname
@@ -1870,8 +2000,21 @@ impl Engine {
                 }
             }
         }
-        if !spec.ports.is_empty() {
-            let target = if flags & run_flags::NET_HOST != 0 { [127, 0, 0, 1] } else { ip };
+        let target = if flags & run_flags::NET_HOST != 0 { [127, 0, 0, 1] } else { ip };
+        if was_parked {
+            self.wake(&id);
+        }
+        let held = self.lock().containers.get(&id).is_some_and(|c| c.held.is_some());
+        if held {
+            // Its ports take connections again once it listens on them.
+            let me = self.me.get().and_then(Weak::upgrade);
+            let wake_id = id.clone();
+            let _ = std::thread::Builder::new().name("edock-wake".into()).spawn(move || {
+                if let Some(me) = me {
+                    me.finish_wake(&wake_id, target);
+                }
+            });
+        } else if !spec.ports.is_empty() {
             match super::ports::start(vm.clone(), &id, &spec.ports, target) {
                 Ok(fw) => {
                     if let Some(c) = self.lock().containers.get_mut(&id) {
@@ -2170,18 +2313,9 @@ impl Engine {
     /// Names are the container name, or `<service>.<project>` for Compose
     /// services.
     pub fn route(&self, host: &str) -> Option<super::domains::Target> {
-        let host = host.split(':').next()?.to_ascii_lowercase();
-        let name = host.strip_suffix(".edock.localhost").or_else(|| host.strip_suffix(".edock.local"))?.to_owned();
+        let name = domain_name(host)?;
         let st = self.lock();
-        let c = st.containers.values().find(|c| {
-            c.status == Status::Running && {
-                let label = |k: &str| c.spec.labels.get(k).and_then(|v| v.as_str()).unwrap_or("");
-                let service = format!("{}.{}", label("com.docker.compose.service"), label("com.docker.compose.project"));
-                // `app.edock.domain=api.myapp` (comma-separated for several) picks the names.
-                let chosen = label(DOMAIN_LABEL).split(',').map(|d| own_name(d.trim())).any(|d| !d.is_empty() && d.eq_ignore_ascii_case(&name));
-                chosen || c.name.eq_ignore_ascii_case(&name) || service.eq_ignore_ascii_case(&name) || (name.len() >= 12 && c.id.starts_with(&name))
-            }
-        })?;
+        let c = st.containers.values().find(|c| c.status == Status::Running && answers_to(c, &name))?;
         let ip = if c.spec.network_mode == "host" { [127, 0, 0, 1] } else { c.ip? };
         Some(super::domains::Target {
             ip,
@@ -2190,7 +2324,51 @@ impl Engine {
             label: c.spec.labels.get("app.edock.http.port").and_then(|v| v.as_str()).and_then(|p| p.parse().ok()),
             published: c.spec.ports.iter().filter(|b| b.proto != "udp").map(|b| b.container_port).collect(),
             exposed: c.spec.exposed.clone(),
+            waking: c.woken && c.started.and_then(|t| t.elapsed().ok()).is_some_and(|e| e < WAKE_LIMIT),
         })
+    }
+
+    /// `route`, and for a parked container the name is its project woken
+    /// first, waiting until it runs (true: it was parked). Why not, when it
+    /// doesn't start or exits.
+    pub fn route_waking(&self, host: &str) -> Result<Option<(super::domains::Target, bool)>, String> {
+        if let Some(t) = self.route(host) {
+            return Ok(Some((t, false)));
+        }
+        let Some(name) = domain_name(host) else { return Ok(None) };
+        let parked = self.lock().containers.values().find(|c| c.status != Status::Running && c.parked && answers_to(c, &name)).and_then(|c| Some((c.id.clone(), c.name.clone(), unit_of(c)?)));
+        let Some((id, cname, unit)) = parked else { return Ok(None) };
+        self.wake(&id);
+        let deadline = std::time::Instant::now() + WAKE_LIMIT;
+        loop {
+            if let Some(t) = self.route(host) {
+                return Ok(Some((t, true)));
+            }
+            let waking = self.waking.lock().unwrap_or_else(|e| e.into_inner()).contains(&unit);
+            if !waking {
+                // The wake is over and it doesn't run: it didn't start, or exited.
+                let st = self.lock();
+                let Some(c) = st.containers.get(&id) else { return Err(format!("{cname} is gone")) };
+                if c.status != Status::Running {
+                    return Err(if c.exits > 0 && c.finished.is_some_and(|f| f.elapsed().is_ok_and(|e| e < WAKE_LIMIT)) {
+                        format!("{cname} exited with code {} as it woke: its log says why", c.exit_code)
+                    } else {
+                        format!("{cname} didn't start: the engine's log says why")
+                    });
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!("{cname} didn't wake in {} s", WAKE_LIMIT.as_secs()));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A connection through the container-name router to `id`, counted
+    /// while it's open: an open one keeps its on-demand project awake.
+    pub fn domain_open(&self, id: &str) -> DomainOpen<'_> {
+        *self.domain_open.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_owned()).or_default() += 1;
+        DomainOpen { engine: self, id: id.to_owned() }
     }
 
     /// For the Finder view (macOS).
@@ -2218,8 +2396,9 @@ impl Engine {
     }
 
     /// Opens a `docker cp` session with the guest for a container, running
-    /// or not: the request frame is sent, the caller does the rest.
-    pub fn copy(&self, key: &str, op: u8, path: &str, flags: u32) -> Result<edock_vmm::VsockStream, Error> {
+    /// or not: the request frame is sent, the caller does the rest. `owner`
+    /// (`user[:group]`) owns what's unpacked without `KEEP_OWNERS`.
+    pub fn copy(&self, key: &str, op: u8, path: &str, flags: u32, owner: &str) -> Result<edock_vmm::VsockStream, Error> {
         let (id, layers) = {
             let st = self.lock();
             let id = resolve(&st, key)?;
@@ -2229,7 +2408,7 @@ impl Engine {
         let vm = self.vm()?;
         let stream = vm.connect(edock_proto::COPY_PORT)?;
         let mut out = Vec::new();
-        edock_proto::encode_copy(&mut out, op, &id, path, flags, &layers);
+        edock_proto::encode_copy(&mut out, op, &id, path, flags, &layers, owner);
         std::io::Write::write_all(&mut std::fs::File::from(stream.fd.try_clone()?), &out)?;
         Ok(stream)
     }
@@ -2688,6 +2867,430 @@ impl Engine {
         Ok(())
     }
 
+    /// What a parked container's ports call on their first connection: its
+    /// unit wakes. Off the ports' thread, which must never wait for the
+    /// state lock (a `Parked` is dropped under it, joining that thread).
+    fn waker(&self, id: &str) -> super::ports::Waker {
+        let me = self.me.get().cloned().unwrap_or_default();
+        let id = id.to_owned();
+        Arc::new(move || {
+            let (me, id) = (me.clone(), id.clone());
+            let _ = std::thread::Builder::new().name("edock-wake".into()).spawn(move || {
+                if let Some(engine) = me.upgrade() {
+                    engine.wake(&id);
+                }
+            });
+        })
+    }
+
+    /// Wakes the on-demand unit `id` belongs to (its Compose project, or it
+    /// alone), in the background, once at a time per unit.
+    fn wake(&self, id: &str) {
+        let Some(unit) = self.lock().containers.get(id).and_then(unit_of) else { return };
+        if !self.waking.lock().unwrap_or_else(|e| e.into_inner()).insert(unit.clone()) {
+            return;
+        }
+        let me = self.me.get().cloned().unwrap_or_default();
+        let spawned = std::thread::Builder::new().name("edock-wake".into()).spawn(move || {
+            let Some(engine) = me.upgrade() else { return };
+            engine.wake_unit(&unit);
+            engine.waking.lock().unwrap_or_else(|e| e.into_inner()).remove(&unit);
+        });
+        if spawned.is_err() {
+            self.waking.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+    }
+
+    /// Starts a unit's parked containers: those others need first, as
+    /// `depends_on` orders them, waiting for `service_healthy` where it
+    /// says so. Each one's ports take connections once it listens on them
+    /// (`finish_wake`). If one doesn't start, the connections that waited
+    /// are closed, and the next one wakes the unit again.
+    fn wake_unit(&self, unit: &str) {
+        let t0 = std::time::Instant::now();
+        // Still being parked: it finishes stopping first.
+        let parking = |c: &Container| c.parking && unit_of(c).as_deref() == Some(unit);
+        while t0.elapsed() < PARK_STOP + Duration::from_secs(5) && self.lock().containers.values().any(parking) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let order = {
+            let st = self.lock();
+            start_order(&st.containers.values().filter(|c| unit_of(c).as_deref() == Some(unit)).collect::<Vec<_>>())
+        };
+        let mut woke = 0;
+        for (id, needs) in &order {
+            let parked = self.lock().containers.get(id).is_some_and(|c| c.status != Status::Running && (c.parked || c.held.is_some()));
+            if !parked {
+                continue;
+            }
+            for (dep, _) in needs.iter().filter(|(_, healthy)| *healthy) {
+                self.wait_healthy(dep, WAKE_LIMIT);
+            }
+            if let Err(e) = self.start_inner(id, true) {
+                crate::diag::warn!("a parked project did not wake", unit = unit, id = &id[..12], error = format!("{e:?}"));
+                let st = self.lock();
+                for c in st.containers.values().filter(|c| unit_of(c).as_deref() == Some(unit)) {
+                    if let Some(h) = &c.held {
+                        h.rearm();
+                    }
+                }
+                return;
+            }
+            woke += 1;
+        }
+        if woke > 0 {
+            crate::diag::info!("parked project woke", unit = unit, containers = woke, ms = t0.elapsed().as_millis() as u64);
+        }
+    }
+
+    /// Waits until a container is healthy, or has no healthcheck, or stops.
+    fn wait_healthy(&self, id: &str, limit: Duration) {
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline {
+            let healthy = {
+                let st = self.lock();
+                let running = st.containers.get(id).is_some_and(|c| c.status == Status::Running);
+                !running || st.health.get(id).is_none_or(|h| h.health.status == super::health::HEALTHY)
+            };
+            if healthy {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// A parked container started again: once it listens on its published
+    /// TCP ports (or after `WAKE_LIMIT`), they take connections again, the
+    /// ones that waited first. Its health check isn't waited for: its first
+    /// probe can be half a minute away, and a client only needs the port.
+    /// If it exits meanwhile, it stays parked.
+    fn finish_wake(&self, id: &str, target: [u8; 4]) {
+        let Some((ports, name)) = self.lock().containers.get(id).map(|c| (c.spec.ports.clone(), c.name.clone())) else { return };
+        let mut want: Vec<u16> = ports.iter().filter(|b| b.proto != "udp").map(|b| b.container_port).collect();
+        want.sort_unstable();
+        want.dedup();
+        let deadline = std::time::Instant::now() + WAKE_LIMIT;
+        let ready = loop {
+            if !self.is_running(id) {
+                break false;
+            }
+            if self.listening(id).is_ok_and(|(reach, _)| want.iter().all(|p| reach.contains(p))) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let Some(held) = self.lock().containers.get_mut(id).and_then(|c| c.held.take()) else { return };
+        let ms = held.woken_at().map(|t| t.elapsed().as_millis() as u64);
+        if !self.is_running(id) {
+            crate::diag::warn!("a parked container exited while waking; it stays parked", name = name);
+            held.rearm();
+            let mut st = self.lock();
+            let held = match st.containers.get_mut(id).filter(|c| c.status == Status::Exited && c.held.is_none()) {
+                Some(c) => {
+                    c.parked = true;
+                    c.held = Some(held);
+                    None
+                }
+                None => Some(held),
+            };
+            drop(st);
+            drop(held);
+            self.save();
+            return;
+        }
+        let (socks, waiting) = held.unpark();
+        let count = waiting.len();
+        let started = self.vm().map_err(|e| e.to_string()).and_then(|vm| super::ports::start_with(vm, id, &ports, target, Some(socks)).map_err(|e| e.to_string()));
+        match started {
+            Ok(fw) => {
+                fw.adopt(waiting);
+                let mut st = self.lock();
+                let fw = match st.containers.get_mut(id).filter(|c| c.status == Status::Running) {
+                    Some(c) => {
+                        c.forwards = Some(fw);
+                        None
+                    }
+                    None => Some(fw),
+                };
+                drop(st);
+                drop(fw);
+            }
+            Err(e) => crate::diag::warn!("a woken container's ports are not published", name = name, error = e),
+        }
+        match (ready, ms) {
+            (true, Some(ms)) => crate::diag::info!("parked container woke", name = name, ms = ms, waiting = count),
+            (true, None) => crate::diag::info!("parked container started", name = name),
+            (false, _) => crate::diag::warn!("a woken container does not listen on its ports yet", name = name, waiting = count),
+        }
+    }
+
+    /// Parks a Compose project, or a container in none, now: as if it had
+    /// been quiet for its time. It must be on demand, and something must
+    /// be able to wake it. `POST /edock/on-demand/park`.
+    pub fn park_now(&self, name: &str) -> Result<serde_json::Value, Error> {
+        let name = name.trim().trim_start_matches('/');
+        let report = self.on_demand_report().into_iter().find(|u| u["name"] == name).ok_or_else(|| Error::NotFound(format!("there's no Compose project or container named {name}")))?;
+        if report["on"] != true {
+            return Err(Error::Conflict(format!("{name} isn't on demand: turn it on first")));
+        }
+        let unit = self.lock().containers.values().find(|c| !is_own(c) && (if report["kind"] == "project" { c.spec.labels.get("com.docker.compose.project").and_then(|v| v.as_str()) == Some(name) } else { c.name == name })).and_then(unit_of);
+        if let Some(unit) = unit {
+            self.park_unit(&unit)?;
+        }
+        Ok(self.on_demand_report().into_iter().find(|u| u["name"] == name).unwrap_or_default())
+    }
+
+    /// Every Compose project and lone container (not eDock's own: Linux
+    /// machines, the Kubernetes node, BuildKit), with On demand as it
+    /// stands: on or not, its time and where that comes from, and whether
+    /// it's parked. `GET /edock/on-demand`.
+    pub fn on_demand_report(&self) -> Vec<serde_json::Value> {
+        use super::ondemand::{Choice, shown};
+        let st = self.lock();
+        let settings = self.od_settings.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let on = on_demand_units(&st, &settings);
+        // unit → (name, kind, members)
+        let mut units: std::collections::BTreeMap<String, (String, &str, Vec<&Container>)> = std::collections::BTreeMap::new();
+        for c in st.containers.values().filter(|c| !is_own(c)) {
+            let Some(unit) = unit_of(c) else { continue };
+            let project = c.spec.labels.get("com.docker.compose.project").and_then(|v| v.as_str()).filter(|p| !p.is_empty());
+            let (name, kind) = match project {
+                Some(p) => (p.to_owned(), "project"),
+                None => (c.name.clone(), "container"),
+            };
+            units.entry(unit).or_insert_with(|| (name, kind, Vec::new())).2.push(c);
+        }
+        let mut out: Vec<serde_json::Value> = units
+            .into_iter()
+            .map(|(unit, (name, kind, members))| {
+                let setting = unit_setting(&settings, &members[0].spec, &members[0].name);
+                let label = members.iter().filter_map(|c| label_after(&c.spec)).max();
+                let running = members.iter().filter(|c| c.status == Status::Running).count();
+                let parked = members.iter().any(|c| c.parked);
+                let state = match (running, parked) {
+                    (0, true) => "parked",
+                    (0, false) => "stopped",
+                    (n, _) if n == members.len() => "running",
+                    _ => "partly running",
+                };
+                serde_json::json!({
+                    "name": name,
+                    "kind": kind,
+                    "on": on.contains_key(&unit),
+                    "after": on.get(&unit).map(|d| shown(*d)),
+                    "from": match setting { Some(_) => Some("setting"), None => label.map(|_| "label") },
+                    "setting": setting.map(|c| match c { Choice::Off => "off".to_owned(), Choice::After(d) => shown(d) }),
+                    "label": label.map(shown),
+                    "wakeable": members.iter().any(|c| !c.spec.ports.is_empty()) || super::domains::routing(),
+                    "state": state,
+                    "containers": members.len(),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        out
+    }
+
+    /// Sets On demand for a Compose project, or a container in none:
+    /// `15m` and the like turns it on (over the label), `off` off, `None`
+    /// (reset) leaves it to the label again. Turned off while parked, it
+    /// wakes. `POST /edock/on-demand`.
+    pub fn set_on_demand(&self, name: &str, value: Option<&str>) -> Result<serde_json::Value, Error> {
+        use super::ondemand::{Choice, choice, shown};
+        let name = name.trim().trim_start_matches('/');
+        let kind = {
+            let st = self.lock();
+            let project = |c: &Container| c.spec.labels.get("com.docker.compose.project").and_then(|v| v.as_str()).filter(|p| !p.is_empty()).map(str::to_owned);
+            if st.containers.values().any(|c| !is_own(c) && project(c).as_deref() == Some(name)) {
+                "project"
+            } else {
+                match st.containers.values().find(|c| c.name == name) {
+                    Some(c) if is_own(c) => return Err(Error::BadRequest(format!("{name} is eDock's own"))),
+                    Some(c) => match project(c) {
+                        Some(p) => return Err(Error::BadRequest(format!("{name} is in the Compose project {p}: set it for {p}"))),
+                        None => "container",
+                    },
+                    None => return Err(Error::NotFound(format!("there's no Compose project or container named {name}"))),
+                }
+            }
+        };
+        let stored = match value.map(str::trim).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("reset")) {
+            None => None,
+            Some(v) => Some(match choice(v) {
+                Some(Choice::Off) => "off".to_owned(),
+                Some(Choice::After(d)) => shown(d),
+                None => return Err(Error::BadRequest(format!("{v:?} isn't a time (30s, 15m, 1h) or off"))),
+            }),
+        };
+        {
+            let mut settings = self.od_settings.lock().unwrap_or_else(|e| e.into_inner());
+            let mut next = settings.clone();
+            let map = if kind == "project" { &mut next.projects } else { &mut next.containers };
+            match &stored {
+                Some(v) => {
+                    map.insert(name.to_owned(), v.clone());
+                }
+                None => {
+                    map.remove(name);
+                }
+            }
+            super::ondemand::save(&next).map_err(Error::Io)?;
+            *settings = next;
+        }
+        crate::diag::info!("On demand set", name = name, kind = kind, to = stored.as_deref().unwrap_or("the label's"));
+        // Off now, and parked: it runs again.
+        let report = self.on_demand_report().into_iter().find(|u| u["name"] == name && u["kind"] == kind).unwrap_or_default();
+        if report["on"] == false {
+            let parked = self.lock().containers.values().find(|c| c.parked && !is_own(c) && unit_of(c).is_some() && (if kind == "project" { c.spec.labels.get("com.docker.compose.project").and_then(|v| v.as_str()) == Some(name) } else { c.name == name })).map(|c| c.id.clone());
+            if let Some(id) = parked {
+                self.wake(&id);
+            }
+        }
+        Ok(report)
+    }
+
+    /// Parks the on-demand units that have been quiet for their time: no
+    /// connection open through their ports, nothing sent by their
+    /// containers (to each other too), no interactive exec, nothing paused. A unit needs a published port, or nothing would wake it.
+    /// Called by the sleeper every few seconds.
+    fn park_idle(&self) {
+        let Some(vm) = self.awake() else { return };
+        // unit → (idle time, busy, its running containers)
+        let units: HashMap<String, (Duration, bool, Vec<String>)> = {
+            let st = self.lock();
+            let after = on_demand_units(&st, &self.od_settings.lock().unwrap_or_else(|e| e.into_inner()));
+            let mut units: HashMap<String, (Duration, bool, Vec<String>)> = HashMap::new();
+            for c in st.containers.values().filter(|c| c.status == Status::Running) {
+                let Some(unit) = unit_of(c) else { continue };
+                let Some(&a) = after.get(&unit) else { continue };
+                let exec = st.execs.values().any(|e| e.running && e.container_id == c.id && (e.config.tty || e.config.stdin));
+                let busy = c.paused || c.parking || exec || c.forwards.as_ref().is_some_and(|f| f.open() > 0) || self.domain_open.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&c.id);
+                let u = units.entry(unit).or_insert((a, false, Vec::new()));
+                u.1 |= busy;
+                u.2.push(c.id.clone());
+            }
+            units
+        };
+        let now = std::time::Instant::now();
+        let mut idle = Vec::new();
+        {
+            let mut seen = self.on_demand.lock().unwrap_or_else(|e| e.into_inner());
+            seen.retain(|unit, _| units.contains_key(unit));
+            for (unit, (after, busy, ids)) in units {
+                // What they send: anything that uses them gets an answer (TCP
+                // at least acknowledges), while what they receive includes
+                // the network's own chatter (IPv6 neighbour discovery,
+                // multicast), which would keep them awake for nothing.
+                let bytes: Option<u64> = ids.iter().map(|id| vm.container_stats(id).ok().map(|s| s.tx_bytes)).sum();
+                let entry = seen.entry(unit.clone()).or_insert((bytes.unwrap_or(0), now));
+                crate::diag::debug!("on-demand unit", unit = &unit, busy = busy, sent = bytes.unwrap_or(0), was = entry.0, quiet_ms = now.duration_since(entry.1).as_millis() as u64);
+                match bytes {
+                    Some(b) if !busy && b == entry.0 => {
+                        if now.duration_since(entry.1) >= after {
+                            idle.push(unit);
+                        }
+                    }
+                    _ => *entry = (bytes.unwrap_or(0), now),
+                }
+            }
+        }
+        for unit in idle {
+            if let Err(e) = self.park_unit(&unit) {
+                crate::diag::warn!("an on-demand project was not parked", unit = unit, error = format!("{e:?}"));
+            }
+        }
+    }
+
+    /// Parks a unit: its containers' published ports are held first, so a
+    /// connection from then on waits for the next wake, then they stop,
+    /// those that need others first. Their restart policies don't start
+    /// them, and `parked` is kept in containers.json.
+    fn park_unit(&self, unit: &str) -> Result<(), Error> {
+        let (order, forwards) = {
+            let mut st = self.lock();
+            let running: Vec<&Container> = st.containers.values().filter(|c| c.status == Status::Running && unit_of(c).as_deref() == Some(unit)).collect();
+            let order: Vec<String> = start_order(&running).into_iter().rev().map(|(id, _)| id).collect();
+            let mut forwards = Vec::new();
+            for id in &order {
+                if let Some(c) = st.containers.get_mut(id) {
+                    c.parking = true;
+                    c.woken = false;
+                    forwards.extend(c.forwards.take().map(|fw| (id.clone(), fw)));
+                }
+            }
+            (order, forwards)
+        };
+        for (id, fw) in forwards {
+            let held = fw.park(self.waker(&id));
+            let mut st = self.lock();
+            let held = match st.containers.get_mut(&id) {
+                Some(c) if c.held.is_none() => {
+                    c.held = held;
+                    None
+                }
+                _ => held,
+            };
+            drop(st);
+            drop(held);
+        }
+        let mut result = Ok(());
+        for id in &order {
+            if let Err(e) = self.stop_as(id, PARK_STOP, false) {
+                if let Some(c) = self.lock().containers.get_mut(id) {
+                    c.parking = false;
+                }
+                result = Err(e);
+            }
+        }
+        result
+    }
+
+    /// Binds the published ports of parked containers that have none held:
+    /// after the engine starts, and on Start. A port something else took
+    /// meanwhile leaves its container stopped, no longer parked.
+    fn hold_parked(&self) {
+        let want: Vec<(String, String, Vec<super::ports::Binding>)> = self.each(|c| (c.parked && c.held.is_none() && c.status != Status::Running && !c.spec.ports.is_empty()).then(|| (c.id.clone(), c.name.clone(), c.spec.ports.clone())));
+        let mut changed = false;
+        for (id, name, ports) in want {
+            match super::ports::bind(&ports).and_then(|socks| super::ports::Parked::new(socks, self.waker(&id))) {
+                Ok(held) => {
+                    let mut st = self.lock();
+                    let held = match st.containers.get_mut(&id).filter(|c| c.parked && c.held.is_none()) {
+                        Some(c) => {
+                            c.held = Some(held);
+                            None
+                        }
+                        None => Some(held),
+                    };
+                    drop(st);
+                    drop(held);
+                }
+                Err(e) => {
+                    let mut st = self.lock();
+                    // Unless a wake that just ended holds them itself (finish_wake).
+                    if let Some(c) = st.containers.get_mut(&id).filter(|c| c.held.is_none()) {
+                        crate::diag::warn!("a parked container's port is taken; it stays stopped, not parked", name = name, error = e);
+                        c.parked = false;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.save();
+        }
+    }
+
+    /// Stop: parked containers let their ports go, and stay parked; Start
+    /// holds them again (`hold_parked`).
+    fn release_held(&self) {
+        let held: Vec<super::ports::Parked> = self.lock().containers.values_mut().filter_map(|c| c.held.take()).collect();
+        drop(held);
+    }
+
     /// Pauses an idle BuildKit container, and resumes it at once if an exec
     /// started in it meanwhile: exec_start marks its exec running before it
     /// looks for the pause, so one of the two sees the other.
@@ -2716,6 +3319,15 @@ impl Engine {
     fn stop_as(&self, key: &str, timeout: Duration, by_user: bool) -> Result<bool, Error> {
         let id = self.resolve(key)?;
         self.thaw_for_signal(&id);
+        // Stopped by you, a parked container is just stopped: its ports go.
+        if by_user {
+            let held = self.lock().containers.get_mut(&id).and_then(|c| {
+                c.parked = false;
+                c.woken = false;
+                c.held.take()
+            });
+            drop(held);
+        }
         let cancelled = if by_user { self.mark_stopped(&id) } else { false };
         if !self.is_running(&id) {
             return Ok(cancelled);
@@ -3028,7 +3640,7 @@ impl Engine {
         self.lock().execs.remove(exec_id);
     }
 
-    fn is_running(&self, id: &str) -> bool {
+    pub fn is_running(&self, id: &str) -> bool {
         self.lock().containers.get(id).is_some_and(|c| c.status == Status::Running)
     }
 
@@ -3175,6 +3787,148 @@ fn note_removed(st: &mut State, id: &str, code: i32) {
     while st.removed.len() > 1024 {
         st.removed.pop_front();
     }
+}
+
+/// How long a woken container has to listen on its ports.
+const WAKE_LIMIT: Duration = Duration::from_secs(30);
+/// How long a container being parked has to stop, as `docker stop`.
+const PARK_STOP: Duration = Duration::from_secs(10);
+
+/// What a container's `app.edock.on-demand` label asks its unit for.
+fn label_after(spec: &Spec) -> Option<Duration> {
+    super::ondemand::parse_idle(spec.labels.get(super::ondemand::LABEL)?.as_str()?)
+}
+
+/// The setting (on-demand.json) for a container's unit: by its Compose
+/// project's name, or its own when it's in none.
+fn unit_setting(settings: &super::ondemand::Settings, spec: &Spec, name: &str) -> Option<super::ondemand::Choice> {
+    match spec.labels.get("com.docker.compose.project").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+        Some(project) => settings.project(project),
+        None => settings.container(name),
+    }
+}
+
+/// The on-demand units and how long each may be quiet: its setting, else
+/// the longest any of its containers' labels asks for. Only units something
+/// can wake: a published port, or the container-name router
+/// (`NAME.edock.localhost`).
+fn on_demand_units(st: &State, settings: &super::ondemand::Settings) -> HashMap<String, Duration> {
+    on_demand_units_of(st, settings, true)
+}
+
+/// `on_demand_units`, with or without the check that something can wake them.
+fn on_demand_units_of(st: &State, settings: &super::ondemand::Settings, wakeable_only: bool) -> HashMap<String, Duration> {
+    use super::ondemand::Choice;
+    let mut units: HashMap<String, (Option<Choice>, Duration, bool)> = HashMap::new();
+    for c in st.containers.values().filter(|c| !is_own(c)) {
+        let Some(unit) = unit_of(c) else { continue };
+        let u = units.entry(unit).or_insert_with(|| (unit_setting(settings, &c.spec, &c.name), Duration::ZERO, false));
+        if let Some(a) = label_after(&c.spec) {
+            u.1 = u.1.max(a);
+        }
+        u.2 |= !c.spec.ports.is_empty() || super::domains::routing();
+    }
+    units
+        .into_iter()
+        .filter_map(|(unit, (setting, label, wakeable))| {
+            let after = match setting {
+                Some(Choice::Off) => return None,
+                Some(Choice::After(d)) => d,
+                None => label,
+            };
+            ((wakeable || !wakeable_only) && !after.is_zero()).then_some((unit, after))
+        })
+        .collect()
+}
+
+/// The container name a host asks for: `NAME.edock.localhost` (or `.local`).
+fn domain_name(host: &str) -> Option<String> {
+    let host = host.split(':').next()?.to_ascii_lowercase();
+    Some(host.strip_suffix(".edock.localhost").or_else(|| host.strip_suffix(".edock.local"))?.to_owned())
+}
+
+/// Whether a container answers to that name: one its `app.edock.domain`
+/// label gives, its own, its Compose `service.project`, or its id's start.
+fn answers_to(c: &Container, name: &str) -> bool {
+    let label = |k: &str| c.spec.labels.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let service = format!("{}.{}", label("com.docker.compose.service"), label("com.docker.compose.project"));
+    // `app.edock.domain=api.myapp` (comma-separated for several) picks the names.
+    let chosen = label(DOMAIN_LABEL).split(',').map(|d| own_name(d.trim())).any(|d| !d.is_empty() && d.eq_ignore_ascii_case(name));
+    chosen || c.name.eq_ignore_ascii_case(name) || service.eq_ignore_ascii_case(name) || (name.len() >= 12 && c.id.starts_with(name))
+}
+
+/// Counts a container-name router connection while it's open.
+pub struct DomainOpen<'a> {
+    engine: &'a Engine,
+    id: String,
+}
+
+impl Drop for DomainOpen<'_> {
+    fn drop(&mut self) {
+        let mut open = self.engine.domain_open.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = open.get_mut(&self.id) {
+            *n -= 1;
+            if *n == 0 {
+                open.remove(&self.id);
+            }
+        }
+    }
+}
+
+/// What parks and wakes as one: a container's Compose project, or the
+/// container alone. Not `docker compose run`'s one-off containers.
+fn unit_of(c: &Container) -> Option<String> {
+    let label = |k: &str| c.spec.labels.get(k).and_then(|v| v.as_str()).filter(|v| !v.is_empty());
+    if label("com.docker.compose.oneoff") == Some("True") {
+        return None;
+    }
+    Some(match label("com.docker.compose.project") {
+        Some(p) => format!("project {p}"),
+        None => format!("container {}", c.id),
+    })
+}
+
+/// A unit's containers in the order to start them: each after those its
+/// `depends_on` names (from Compose's label), with whether it waits for
+/// one to be healthy. A cycle, or a name that isn't there, doesn't stop
+/// the rest.
+fn start_order(members: &[&Container]) -> Vec<(String, Vec<(String, bool)>)> {
+    let label = |c: &Container, k: &str| c.spec.labels.get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
+    let mut by_name: Vec<&&Container> = members.iter().collect();
+    by_name.sort_by(|a, b| a.name.cmp(&b.name));
+    order_by_needs(by_name.iter().map(|c| (c.id.clone(), label(c, "com.docker.compose.service"), label(c, "com.docker.compose.depends_on"))).collect())
+}
+
+/// `start_order` on (id, service, `depends_on` label), in the order given
+/// where nothing says otherwise.
+fn order_by_needs(members: Vec<(String, String, String)>) -> Vec<(String, Vec<(String, bool)>)> {
+    let by_service: HashMap<&str, &str> = members.iter().map(|(id, service, _)| (service.as_str(), id.as_str())).collect();
+    let mut pending: Vec<(String, Vec<(String, bool)>)> = members
+        .iter()
+        .map(|(id, _, depends_on)| {
+            let needs = depends_on
+                .split(',')
+                .filter_map(|d| {
+                    let mut f = d.trim().split(':');
+                    let service = f.next().filter(|s| !s.is_empty())?;
+                    let healthy = f.next() == Some("service_healthy");
+                    by_service.get(service).filter(|n| **n != id.as_str()).map(|n| (n.to_string(), healthy))
+                })
+                .collect();
+            (id.clone(), needs)
+        })
+        .collect();
+    let mut order: Vec<(String, Vec<(String, bool)>)> = Vec::new();
+    while !pending.is_empty() {
+        let next = pending.iter().position(|(_, needs)| needs.iter().all(|(n, _)| order.iter().any(|(o, _)| o == n)));
+        order.push(pending.remove(next.unwrap_or(0)));
+    }
+    order
+}
+
+/// eDock's own containers: a Linux machine, the Kubernetes node, BuildKit.
+fn is_own(c: &Container) -> bool {
+    is_builder(c) || c.spec.labels.get("app.edock.machine").is_some() || c.spec.labels.get("app.edock.k8s").is_some()
 }
 
 /// A BuildKit daemon that buildx runs for its docker-container driver.
@@ -3604,4 +4358,41 @@ fn set_port_bindings(host_opts: &mut serde_json::Value, ports: &[super::ports::B
         *host_opts = serde_json::json!({});
     }
     host_opts["PortBindings"] = serde_json::Value::Object(map);
+}
+
+#[cfg(test)]
+mod on_demand_tests {
+    use std::time::Duration;
+
+    /// The name in a container-name router's Host, as route and
+    /// route_waking read it.
+    #[test]
+    fn a_host_names_a_container() {
+        assert_eq!(super::domain_name("web.dom.edock.localhost").as_deref(), Some("web.dom"));
+        assert_eq!(super::domain_name("Web.Dom.edock.localhost:18480").as_deref(), Some("web.dom"));
+        assert_eq!(super::domain_name("app.edock.local").as_deref(), Some("app"));
+        assert_eq!(super::domain_name("example.com"), None);
+    }
+
+    /// Compose's depends_on label orders a project's start: what a service
+    /// needs first, waiting for health where it says service_healthy.
+    #[test]
+    fn a_project_starts_in_its_depends_on_order() {
+        let m = |id: &str, deps: &str| (id.to_owned(), id.to_owned(), deps.to_owned());
+        let got = super::order_by_needs(vec![
+            m("web", "api:service_started:false"),
+            m("api", "db:service_healthy:false,cache:service_started:true"),
+            m("cache", ""),
+            m("db", ""),
+            m("worker", "gone:service_started:false,db:service_completed_successfully:false"),
+        ]);
+        let ids: Vec<&str> = got.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["cache", "db", "api", "web", "worker"]);
+        let api = &got.iter().find(|(id, _)| id == "api").unwrap().1;
+        assert_eq!(api, &[("db".to_owned(), true), ("cache".to_owned(), false)]);
+        // A cycle still starts every one.
+        let cycle = super::order_by_needs(vec![m("a", "b:service_started:false"), m("b", "a:service_started:false")]);
+        assert_eq!(cycle.len(), 2);
+    }
+
 }

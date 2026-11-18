@@ -158,7 +158,7 @@ fn update(req: &Request, engine: &Engine, key: &str) -> Result<Value, Error> {
 
 /// Starts a copy-service job and checks it accepted: `CopyDone` first.
 fn layer_job(engine: &Engine, key: &str, op: u8) -> Result<(edock_vmm::VsockStream, std::fs::File), Error> {
-    let stream = engine.copy(key, op, "/", 0)?;
+    let stream = engine.copy(key, op, "/", 0, "")?;
     let mut f = std::fs::File::from(stream.fd.try_clone()?);
     let frame = guest_frame(&mut f)?;
     match edock_proto::decode(&frame) {

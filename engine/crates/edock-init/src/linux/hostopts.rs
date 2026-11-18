@@ -267,8 +267,9 @@ pub fn errno_text(e: &io::Error) -> String {
 
 /// The supplementary groups for a user, read from the container's
 /// /etc/passwd and /etc/group as runc does: every group that lists the
-/// user, unless the run named a group (`user:group`), then `--group-add`.
-pub fn supplementary_groups(user: &str, uid: u32, add: &[String]) -> io::Result<Vec<libc::gid_t>> {
+/// user, unless the run named a group (`user:group`); with none, its
+/// primary group `gid`; then `--group-add`.
+pub fn supplementary_groups(user: &str, uid: u32, gid: u32, add: &[String]) -> io::Result<Vec<libc::gid_t>> {
     let group_file = fs::read_to_string("/etc/group").unwrap_or_default();
     let groups: Vec<Vec<&str>> = group_file.lines().map(|l| l.split(':').collect()).filter(|f: &Vec<&str>| f.len() >= 3).collect();
     let mut out = Vec::new();
@@ -284,6 +285,9 @@ pub fn supplementary_groups(user: &str, uid: u32, add: &[String]) -> io::Result<
                 }
             }
         }
+    }
+    if out.is_empty() {
+        out.push(gid);
     }
     for g in add {
         let gid = match g.parse::<u32>() {

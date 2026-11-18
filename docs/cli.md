@@ -157,6 +157,32 @@ Long-lived Linux environments on eDock. Each one has your user, `sudo`, and `/Us
 
 `ssh on` makes `ssh NAME.edock` reach every machine (VS Code, Cursor and Zed too); `off` undoes it, and `status` says `on` or `off`. `stdio NAME` is the ProxyCommand it uses: the machine's `sshd -i` on its stdin and stdout. See [SSH and editors](app/machines.md#ssh-and-editors).
 
+## `edock on-demand`
+
+```sh
+edock on-demand [--all]
+edock on-demand NAME
+edock on-demand NAME TIME | off | reset
+```
+
+A Compose project (or a container in none) that's on demand stops when nothing has used it for a while, and starts again on the next connection to one of its ports or to `NAME.edock.localhost`. The connection waits for it; with the VM awake that's usually a few hundred milliseconds. While it's stopped (parked), it uses no memory, its ports stay yours, and `docker ps -a` says `(parked)`.
+
+- With no name, it lists the projects and containers that are on demand; `--all` lists every one.
+- `NAME TIME` turns it on: parked after `TIME` without use (`30s`, `15m`, `1h`).
+- `off` turns it off, even where its label turns it on. A parked one starts again.
+- `reset` leaves it to the label again.
+
+In a project's `compose.yaml`, the label does the same on any one service, for all of the project:
+
+```yaml
+services:
+  web:
+    labels:
+      app.edock.on-demand: "15m"
+```
+
+What `edock on-demand` sets is kept in `~/.edock/on-demand.json` and goes before the label. Without use means no connection open through its ports or its name, nothing sent by its containers (to each other too), and no `docker exec -it` session. Its services stop in reverse `depends_on` order and start in that order, waiting for `service_healthy` where it says so.
+
 ## `edock usb` (beta)
 
 ```sh

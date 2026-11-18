@@ -15,6 +15,7 @@ pub mod proxy;
 mod domains;
 mod inspect;
 mod engine;
+mod ondemand;
 mod filters;
 mod health;
 mod hostetc;

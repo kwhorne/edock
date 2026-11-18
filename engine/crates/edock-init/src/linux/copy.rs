@@ -120,7 +120,10 @@ fn enter(spec: &CopySpec<'_>, running: &[(&str, libc::pid_t)], paths: &Paths) ->
     Ok(())
 }
 
-/// Unpacks the archive that follows into `spec.path`, a directory.
+/// Unpacks the archive that follows into `spec.path`, a directory. Its
+/// files keep the archive's owners, or all get `spec.owner`'s (`docker cp
+/// -a` into a container with a user), looked up in the container's
+/// /etc/passwd and /etc/group as Docker does; else root's.
 fn copy_in(conn: &mut fs::File, spec: &CopySpec<'_>) -> io::Result<()> {
     let dest = std::path::Path::new(spec.path);
     match fs::metadata(dest) {
@@ -128,13 +131,15 @@ fn copy_in(conn: &mut fs::File, spec: &CopySpec<'_>) -> io::Result<()> {
         Ok(_) => return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("notdir: extraction point is not a directory: {}", spec.path))),
         Err(_) => return Err(io::Error::new(io::ErrorKind::NotFound, format!("notfound: Could not find the file {} in container {}", spec.path, spec.id))),
     }
+    let keep = spec.flags & copy_flags::KEEP_OWNERS != 0;
+    let owner = if keep { None } else { Some(container::resolve_user(spec.owner).map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("unable to find user {}: no matching entries in passwd file", spec.owner)))?) };
     let source: Box<dyn Read + '_> = if spec.flags & copy_flags::CHUNKED != 0 { Box::new(Chunks::new(&mut *conn)) } else { Box::new(&mut *conn) };
     let mut reader = BufReader::with_capacity(256 * 1024, source);
     {
         let mut archive = tar::Archive::new(&mut reader);
         archive.set_preserve_permissions(true);
         archive.set_preserve_mtime(true);
-        archive.set_preserve_ownerships(spec.flags & copy_flags::KEEP_OWNERS != 0);
+        archive.set_preserve_ownerships(keep);
         archive.set_unpack_xattrs(false);
         archive.set_overwrite(true);
         for entry in archive.entries()? {
@@ -150,7 +155,13 @@ fn copy_in(conn: &mut fs::File, spec: &CopySpec<'_>) -> io::Result<()> {
                     }
                 }
             }
-            entry.unpack_in(dest)?;
+            let path = dest.join(entry.path()?);
+            // False: an entry it refused (one that would land outside).
+            if entry.unpack_in(dest)? {
+                if let Some((uid, gid)) = owner.filter(|o| *o != (0, 0)) {
+                    std::os::unix::fs::lchown(&path, Some(uid), Some(gid))?;
+                }
+            }
         }
     }
     // The archive's trailing padding: read it so the host's writes complete.

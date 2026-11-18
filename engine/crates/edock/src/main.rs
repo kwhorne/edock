@@ -48,6 +48,8 @@ mod kubeconfig;
 #[cfg(unix)]
 mod machine;
 #[cfg(unix)]
+mod on_demand;
+#[cfg(unix)]
 mod run;
 #[cfg(unix)]
 // Some helpers here served only the removed eDock window; kept for the eDock desktop.
@@ -85,6 +87,7 @@ usage: edock COMMAND          docker's commands, on eDock: edock run, ps, exec,
        edock machine create NAME [--distro D | --image IMAGE] [--systemd] [--ssh-agent]
        edock machine list | shell NAME [-- CMD...] | start | stop | restart | delete NAME
        edock machine ssh on | off | status   `ssh NAME.edock` reaches a machine
+       edock on-demand [--all] | NAME [TIME|off|reset]   stop a project while unused, start it on the next connection
        edock import [orbstack | desktop-linux] [--list] | orbstack image|volume|container NAME
        edock bench [--runs N] [--image IMAGE] [--network none|bridge]
        edock boot [--console] [--pings N]
@@ -132,6 +135,8 @@ fn main() -> ExitCode {
         Some("k8s") => k8s::run(&args[1..]),
         #[cfg(unix)]
         Some("machine") => machine::run(&args[1..]),
+        #[cfg(unix)]
+        Some("on-demand") => on_demand::run(&args[1..]),
         #[cfg(unix)]
         Some("usb") => usb::run(&args[1..]),
         #[cfg(unix)]

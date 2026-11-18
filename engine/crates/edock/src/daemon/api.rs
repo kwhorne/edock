@@ -109,6 +109,9 @@ fn route(req: &Request, engine: &Arc<Engine>, w: &mut UnixStream, r: &mut BufRea
         ("GET", "/edock/resources") => return reply(w, Ok(resources(engine)), 200),
         // Settings → Domains: the container-domain routers' ports.
         ("GET", "/edock/domains") => return reply(w, Ok(super::domains::report()), 200),
+        ("GET", "/edock/on-demand") => return reply(w, Ok(Value::Array(engine.on_demand_report())), 200),
+        ("POST", "/edock/on-demand") => return reply(w, set_on_demand(req, engine), 200),
+        ("POST", "/edock/on-demand/park") => return reply(w, park_now(req, engine), 200),
         // The HTTP inspector (inspect.rs): what went through the domain routers.
         ("GET", "/edock/http") => return reply(w, Ok(super::inspect::list(req.query("since").and_then(|v| v.parse().ok()).unwrap_or(0))), 200),
         ("POST", "/edock/http") => return reply(w, set_inspector(req), 200),
@@ -652,6 +655,20 @@ fn set_domain_ports(req: &Request, engine: &Arc<Engine>) -> Result<Value, Error>
     let body: Value = serde_json::from_slice(&req.body).map_err(|e| Error::BadRequest(format!("invalid JSON: {e}")))?;
     let port = |k: &str| body[k].as_u64().and_then(|p| u16::try_from(p).ok()).filter(|&p| p != 0).ok_or_else(|| Error::BadRequest(format!("{k} must be a port from 1 to 65535")));
     super::domains::set_ports(engine, port("http")?, port("https")?).map_err(Error::Conflict)
+}
+
+/// `{"name": "shop", "value": "15m"}`; `"off"`, or null to leave it to the label.
+fn set_on_demand(req: &Request, engine: &Engine) -> Result<Value, Error> {
+    let body: Value = serde_json::from_slice(&req.body).map_err(|e| Error::BadRequest(format!("invalid JSON: {e}")))?;
+    let name = body["name"].as_str().filter(|n| !n.is_empty()).ok_or_else(|| Error::BadRequest("name a Compose project or container".into()))?;
+    engine.set_on_demand(name, body["value"].as_str())
+}
+
+/// `{"name": "shop"}`: parked now.
+fn park_now(req: &Request, engine: &Engine) -> Result<Value, Error> {
+    let body: Value = serde_json::from_slice(&req.body).map_err(|e| Error::BadRequest(format!("invalid JSON: {e}")))?;
+    let name = body["name"].as_str().filter(|n| !n.is_empty()).ok_or_else(|| Error::BadRequest("name a Compose project or container".into()))?;
+    engine.park_now(name)
 }
 
 fn set_resources(req: &Request) -> Result<(), Error> {
@@ -1688,6 +1705,7 @@ fn status_text(c: &Container) -> String {
         Status::Created => "Created".into(),
         Status::Running if c.paused => format!("Up {} (Paused)", ago(c.started)),
         Status::Running => format!("Up {}", ago(c.started)),
+        Status::Exited if c.parked => format!("Exited ({}) {} ago (parked)", c.exit_code, ago(c.finished)),
         Status::Exited => format!("Exited ({}) {} ago", c.exit_code, ago(c.finished)),
     }
 }
@@ -2489,7 +2507,7 @@ fn archive_get(req: &Request, engine: &Engine, id: &str, w: &mut UnixStream) -> 
     use std::io::Read;
     let path = req.query("path").unwrap_or("/");
     let op = if req.method == "HEAD" { edock_proto::copy_op::STAT } else { edock_proto::copy_op::OUT };
-    let stream = match engine.copy(id, op, path, 0) {
+    let stream = match engine.copy(id, op, path, 0, "") {
         Ok(s) => s,
         Err(e) => return reply(w, Err(e), 200),
     };
@@ -2568,14 +2586,16 @@ fn archive_put(req: &Request, engine: &Engine, id: &str, w: &mut UnixStream, r: 
     use edock_proto::copy_flags;
     let path = req.query("path").unwrap_or("/");
     // As Docker: files keep the owners the archive gives them (what `docker
-    // cp` sends is the Mac user's); copyUIDGID (`docker cp -a`) makes them
-    // the container user's, here root's when it runs as root. A named user
-    // isn't looked up: those keep the archive's owners.
+    // cp` sends is the Mac user's). copyUIDGID (`docker cp -a`) gives them
+    // the container's user, as its /etc/passwd and /etc/group name it
+    // (`nobody`, `1234:5678`); a container with no user keeps the archive's.
     let mut flags = copy_flags::CHUNKED | copy_flags::KEEP_OWNERS;
+    let mut owner = String::new();
     if req.flag("copyUIDGID") {
         let user = engine.with(id, |c| c.spec.user.clone()).unwrap_or_default();
-        if matches!(user.split(':').next().unwrap_or(""), "" | "0" | "root") {
+        if !user.is_empty() {
             flags &= !copy_flags::KEEP_OWNERS;
+            owner = user;
         }
     }
     if req.flag("noOverwriteDirNonDir") {
@@ -2594,7 +2614,7 @@ fn archive_put(req: &Request, engine: &Engine, id: &str, w: &mut UnixStream, r: 
             return Ok(Next::Close);
         }
     };
-    let stream = match engine.copy(id, edock_proto::copy_op::IN, path, flags) {
+    let stream = match engine.copy(id, edock_proto::copy_op::IN, path, flags, &owner) {
         Ok(s) => s,
         Err(e) => {
             reply(w, Err(e), 200)?;

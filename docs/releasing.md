@@ -18,7 +18,7 @@ A release is a signed, notarized `eDock-<version>-arm64.dmg` on GitHub. `scripts
 
 3. **`cargo-about`**, for the licence notices: `cargo install cargo-about --locked --features cli`.
 
-4. **The engine's guest**, built once: `cargo xtask kernel && cargo xtask disk && cargo xtask guest` in `engine/`.
+4. **The engine's guest kernel and disk**, built once: `cargo xtask kernel && cargo xtask disk` in `engine/`. The guest's agent (the initramfs) is built by each release.
 
 5. **The update key** in `~/.config/edock/update-key`. Installed copies of eDock accept an update only when it's signed with this key. Its public half is `UPDATE_KEY` in `desktop/src/main.rs`.
    - **The key already exists.** Copy it into a password manager or another safe place. If it's lost, installed copies can't take updates any more until people install a new version by hand.
@@ -40,7 +40,7 @@ EDOCK_RELEASE_NOTES=notes.md \
 This takes about 15 minutes, most of it waiting for Apple. It:
 
 1. **Sets the version** in `desktop/elyra.toml`, `desktop/Cargo.toml` and `engine/Cargo.toml`. One number then covers the app, its About box and the engine's `/version`. Without `--version`, the script refuses to build when the three differ.
-2. **Builds the engine** (`cargo xtask host`, `cargo xtask bundle`).
+2. **Builds the engine**: the guest's agent (`cargo xtask guest`), then the engine (`cargo xtask host`, `cargo xtask bundle`).
 3. **Regenerates `desktop/NOTICE`** (`scripts/notices.sh`, with `cargo about`): the licences of the app's Rust crates and of the JavaScript in its window. It goes into the app as `Contents/Resources/NOTICE`, with the MIT `LICENSE`, and the engine's `NOTICE` and `LICENSE` go in `Contents/Resources/engine/`.
 4. **Builds the app** (`npm run build`, `rata bundle`).
 5. **Puts the engine into the app:** `Contents/MacOS/edock`, plus `Contents/Resources/guest`, the kernel, initramfs and disk template. Kiri's licence goes in `Contents/Resources/engine`.

@@ -600,7 +600,17 @@ $D run -d --name cpc alpine sleep 120 >/dev/null
 t cp-in-file "one" bash -c "$D cp $CPD/a.txt cpc:/tmp/ && $D exec cpc cat /tmp/a.txt"
 t cp-in-dir "two" bash -c "$D cp $CPD/dir cpc:/tmp/ && $D exec cpc cat /tmp/dir/sub/b.txt"
 t cp-in-rename "one" bash -c "$D cp $CPD/a.txt cpc:/tmp/renamed.txt && $D exec cpc cat /tmp/renamed.txt"
-t cp-in-root-owner "0 0" bash -c "$D exec cpc stat -c '%u %g' /tmp/a.txt"
+# Owners as Docker's (Moby 29): what the archive gives (the Mac user's),
+# and with -a the container's user, looked up in its own /etc/passwd.
+t cp-in-owner "$(id -u) $(id -g)" bash -c "$D exec cpc stat -c '%u %g' /tmp/a.txt"
+t cp-in-archive-no-user "$(id -u) $(id -g)" bash -c "$D cp -a $CPD/a.txt cpc:/tmp/arch.txt && $D exec cpc stat -c '%u %g' /tmp/arch.txt"
+$D run -d --name cpu1 --user 1234:5678 alpine sleep 120 >/dev/null
+$D run -d --name cpu2 --user nobody alpine sleep 120 >/dev/null
+t cp-in-archive-uid-gid "1234 5678" bash -c "$D cp -a $CPD/dir cpu1:/tmp/ && $D exec cpu1 stat -c '%u %g' /tmp/dir/sub/b.txt"
+t cp-in-archive-named "65534 65534" bash -c "$D cp -a $CPD/a.txt cpu2:/tmp/ && $D exec cpu2 stat -c '%u %g' /tmp/a.txt"
+$D rm -f cpu1 cpu2 >/dev/null
+# --user with a uid /etc/passwd doesn't have: group 0, as runc gives it.
+t user-unknown-uid "uid=1234 gid=0(root) groups=0(root)" $D run --rm --user 1234 alpine id
 t cp-out-file "fromctr" bash -c "$D exec cpc sh -c 'echo fromctr > /etc/motd2' && $D cp cpc:/etc/motd2 $CPD/ && cat $CPD/motd2"
 t cp-out-dir "deep" bash -c "$D exec cpc sh -c 'mkdir -p /opt/x/y; echo deep > /opt/x/y/z' && $D cp cpc:/opt/x $CPD/xx && cat $CPD/xx/y/z"
 t cp-out-stdout "alpine-release" bash -c "$D cp cpc:/etc/alpine-release - | tar -t"

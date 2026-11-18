@@ -259,6 +259,11 @@ fn saved_port(kind: Kind) -> Option<u16> {
     v[kind.key()].as_u64().and_then(|p| u16::try_from(p).ok()).filter(|&p| p != 0)
 }
 
+/// Whether the container-name routers serve (`NAME.edock.localhost`).
+pub fn routing() -> bool {
+    !ROUTERS.lock().unwrap_or_else(PoisonError::into_inner).is_empty()
+}
+
 /// Whether this engine has router ports of its own: eDock Dev starts its
 /// routers only then, leaving 80 and 443 to the installed eDock.
 pub fn own_ports() -> bool {
@@ -353,7 +358,9 @@ fn serve(mut client: TcpStream, engine: &Engine) -> io::Result<()> {
         return Ok(());
     }
     client.set_nodelay(true)?;
-    let Some((head, guest, tap)) = route(&mut client, engine, "http")? else { return Ok(()) };
+    let Some((head, guest, tap, id)) = route(&mut client, engine, "http")? else { return Ok(()) };
+    // Open while it lasts: it keeps an on-demand project awake.
+    let _open = engine.domain_open(&id);
     // The 30 s limit was for a request that never finished its head: a slow
     // answer or a stream (SSE) isn't cut.
     client.set_read_timeout(None)?;
@@ -401,11 +408,12 @@ fn pump(from: &mut impl Read, to: &mut impl Write, tap: Option<&Tap>, dir: Dir) 
     tap.closed(dir);
 }
 
-/// Reads the request head, finds the container its Host names and connects
-/// to it, with a tap when the inspector is on. `None` once it has answered
-/// by itself (no such container, an unreachable one, or a client that went
-/// away).
-type Routed = (Vec<u8>, edock_vmm::VsockStream, Option<Arc<Tap>>);
+/// Reads the request head, finds the container its Host names (waking its
+/// project when it's parked) and connects to it, with a tap when the
+/// inspector is on, and the container's id. `None` once it has answered by
+/// itself (no such container, an unreachable one, one that didn't wake, or
+/// a client that went away).
+type Routed = (Vec<u8>, edock_vmm::VsockStream, Option<Arc<Tap>>, String);
 fn route(client: &mut impl ReadWrite, engine: &Engine, scheme: &'static str) -> io::Result<Option<Routed>> {
     let mut head = Vec::with_capacity(2048);
     let mut buf = [0u8; 4096];
@@ -428,7 +436,22 @@ fn route(client: &mut impl ReadWrite, engine: &Engine, scheme: &'static str) -> 
         .lines()
         .find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("host")).map(|(_, v)| v.trim().to_owned()))
         .unwrap_or_default();
-    let Some(target) = engine.route(&host) else {
+    let asked = std::time::Instant::now();
+    let routed = match engine.route_waking(&host) {
+        Ok(r) => r,
+        Err(why) => {
+            let body = format!("<!doctype html><meta charset=utf-8><title>eDock</title><body style=\"font:15px -apple-system,sans-serif;margin:40px\"><h1>{}</h1>", escape(&why));
+            respond(client, 502, "Bad Gateway", &body)?;
+            return Ok(None);
+        }
+    };
+    // Woken (by this request or one just before): its web server may need a
+    // moment more than the container.
+    let waited = routed.as_ref().filter(|(t, _)| t.waking).is_some_and(|(t, _)| wait_for_web(engine, t));
+    // What waiting for the wake cost this request (it found it parked, or
+    // waited for its web server), for the inspector.
+    let woke_ms = routed.as_ref().filter(|(_, found_parked)| *found_parked || waited).map(|_| asked.elapsed().as_secs_f64() * 1000.0);
+    let Some((target, _)) = routed else {
         let list: String = engine.domains().iter().map(|d| { let d = escape(d); format!("<li><a href=\"{scheme}://{d}\">{d}</a></li>") }).collect();
         let body = format!(
             "<!doctype html><meta charset=utf-8><title>eDock</title><body style=\"font:15px -apple-system,sans-serif;margin:40px\">\
@@ -448,7 +471,7 @@ fn route(client: &mut impl ReadWrite, engine: &Engine, scheme: &'static str) -> 
         return Ok(None);
     }
     match engine.relay_to(target.ip, port) {
-        Ok(g) => Ok(Some((head, g, Tap::new(scheme, &host, &target.name)))),
+        Ok(g) => Ok(Some((head, g, Tap::new(scheme, &host, &target.name, woke_ms), target.id))),
         Err(e) => {
             respond(client, 502, "Bad Gateway", &format!("eDock could not reach the container: {}", escape(&e.to_string())))?;
             Ok(None)
@@ -468,6 +491,8 @@ pub struct Target {
     pub published: Vec<u16>,
     /// Ports the image declares (EXPOSE) or `--expose` adds.
     pub exposed: Vec<u16>,
+    /// Woken from parked moments ago: its web server may not listen yet.
+    pub waking: bool,
 }
 
 /// Ports web servers usually listen on, most likely first.
@@ -504,7 +529,7 @@ fn choose(cands: &[u16], listening: Option<&[u16]>) -> u16 {
         return *p;
     }
     if cands.is_empty() {
-        let (best, _) = candidates(&Target { ip: [0; 4], id: String::new(), name: String::new(), label: None, published: Vec::new(), exposed: on.to_vec() });
+        let (best, _) = candidates(&Target { ip: [0; 4], id: String::new(), name: String::new(), label: None, published: Vec::new(), exposed: on.to_vec(), waking: false });
         return best[0];
     }
     cands[0]
@@ -513,12 +538,35 @@ fn choose(cands: &[u16], listening: Option<&[u16]>) -> u16 {
 /// The web port for a request, and what the container listens on when
 /// that was asked: certain ones at once; otherwise asks the container,
 /// remembered for a few seconds since a page opens many connections.
+type Seen = std::collections::HashMap<String, (std::time::Instant, u16, Option<Vec<u16>>)>;
+/// `web_port`'s answers of the last few seconds, by container.
+static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+
+/// After a wake: until the container listens on a port that could be its
+/// web port (any, when it declares none), for up to 30 s. What it heard
+/// before it was parked is forgotten. True if it had to wait.
+fn wait_for_web(engine: &Engine, t: &Target) -> bool {
+    if let Some(seen) = SEEN.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
+        seen.remove(&t.id);
+    }
+    let (cands, _) = candidates(t);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut waited = false;
+    while std::time::Instant::now() < deadline {
+        match engine.listening(&t.id) {
+            Ok((reach, _)) if if cands.is_empty() { !reach.is_empty() } else { cands.iter().any(|p| reach.contains(p)) } => return waited,
+            // Marked running a moment before its process is: wait for that,
+            // unless it has stopped.
+            Err(_) if !engine.is_running(&t.id) => return waited,
+            _ => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+        waited = true;
+    }
+    waited
+}
+
 fn web_port(engine: &Engine, t: &Target) -> (u16, Option<Vec<u16>>) {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
     use std::time::{Duration, Instant};
-    type Seen = HashMap<String, (Instant, u16, Option<Vec<u16>>)>;
-    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
     let (cands, sure) = candidates(t);
     // A database's port, even the only one, is looked at: the page then
     // says it isn't a web page. The owner's label is always taken.
@@ -526,7 +574,7 @@ fn web_port(engine: &Engine, t: &Target) -> (u16, Option<Vec<u16>>) {
         return (cands[0], None);
     }
     let fresh = |at: Instant| at.elapsed() < Duration::from_secs(10);
-    if let Some((at, p, on)) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(&t.id) {
+    if let Some((at, p, on)) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(std::collections::HashMap::new).get(&t.id) {
         if fresh(*at) {
             return (*p, on.clone());
         }
@@ -534,7 +582,7 @@ fn web_port(engine: &Engine, t: &Target) -> (u16, Option<Vec<u16>>) {
     let on = engine.listening(&t.id).ok().map(|(reach, _)| reach);
     let port = choose(&cands, on.as_deref());
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-    let seen = seen.get_or_insert_with(HashMap::new);
+    let seen = seen.get_or_insert_with(std::collections::HashMap::new);
     seen.retain(|_, (at, _, _)| fresh(*at));
     seen.insert(t.id.clone(), (Instant::now(), port, on.clone()));
     (port, on)
@@ -572,11 +620,12 @@ fn serve_tls(tcp: TcpStream, engine: &Engine, config: Arc<rustls::ServerConfig>)
     let mut tls = rustls::StreamOwned::new(conn, tcp);
     let routed = route(&mut tls, engine, "https")?;
     tls.sock.set_read_timeout(None)?;
-    let Some((head, guest, tap)) = routed else {
+    let Some((head, guest, tap, id)) = routed else {
         tls.conn.send_close_notify();
         let _ = tls.flush();
         return Ok(());
     };
+    let _open = engine.domain_open(&id);
     let mut container = std::fs::File::from(guest.fd.try_clone()?);
     let saw = |dir: Dir, bytes: &[u8]| {
         if let Some(t) = &tap {
@@ -679,7 +728,7 @@ mod tests {
     use super::{candidates, choose, Target};
 
     fn t(label: Option<u16>, published: &[u16], exposed: &[u16]) -> Target {
-        Target { ip: [0; 4], id: String::new(), name: String::new(), label, published: published.to_vec(), exposed: exposed.to_vec() }
+        Target { ip: [0; 4], id: String::new(), name: String::new(), label, published: published.to_vec(), exposed: exposed.to_vec(), waking: false }
     }
 
     #[test]

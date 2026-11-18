@@ -416,7 +416,7 @@ fn tar(entries: &[(&str, Option<&[u8]>)]) -> Vec<u8> {
 
 /// Unpacks a tar archive into a directory of the container, as `docker cp` does.
 fn copy_in(engine: &Engine, id: &str, path: &str, archive: &mut dyn Read) -> Result<(), Error> {
-    let stream = engine.copy(id, edock_proto::copy_op::IN, path, edock_proto::copy_flags::CHUNKED)?;
+    let stream = engine.copy(id, edock_proto::copy_op::IN, path, edock_proto::copy_flags::CHUNKED, "")?;
     let mut to_guest = std::fs::File::from(stream.fd.try_clone()?);
     api::send_chunks(archive, &mut to_guest)?;
     let mut from_guest = std::fs::File::from(stream.fd.try_clone()?);

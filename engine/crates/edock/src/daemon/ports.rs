@@ -188,10 +188,21 @@ pub struct Binding {
     pub host_port: u16,
 }
 
+/// A bound socket of a published port.
+pub enum Sock {
+    Tcp(TcpListener),
+    Udp(UdpSocket),
+}
+
+/// A published port's socket with what it is for: (binding, host address,
+/// host port, socket).
+pub type Bound = (Binding, String, u16, Sock);
+
 /// A running forward for one container; dropping it closes every listener.
 pub struct Forwards {
     wake: Vec<OwnedFd>,
-    threads: Vec<JoinHandle<()>>,
+    /// Each listener's thread hands its socket back when it stops, for `park`.
+    threads: Vec<JoinHandle<Option<Bound>>>,
     /// Linux host: the kernel forwards these (sockets stay bound so the
     /// ports read as taken); dropping tells the agent to stop.
     kernel: Option<(Arc<VmLink>, String, Vec<TcpListener>, Vec<UdpSocket>)>,
@@ -200,6 +211,185 @@ pub struct Forwards {
     nat: Option<(Arc<VmLink>, String, Vec<NatPort>)>,
     /// What was actually bound: (binding, host address, host port).
     pub bound: Vec<(Binding, String, u16)>,
+    /// Where each TCP listener's connections go, for `adopt`: (host
+    /// address, host port, container port, NAT address).
+    routes: Vec<(String, u16, u16, Option<SocketAddr>)>,
+    vm: Arc<VmLink>,
+    target_ip: [u8; 4],
+    /// Client connections open through these listeners now.
+    open: Arc<AtomicUsize>,
+}
+
+/// Counts a connection as open while it is held.
+struct OpenGuard(Arc<AtomicUsize>);
+
+impl OpenGuard {
+    fn new(open: &Arc<AtomicUsize>) -> OpenGuard {
+        open.fetch_add(1, Ordering::AcqRel);
+        OpenGuard(open.clone())
+    }
+}
+
+impl Drop for OpenGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl Forwards {
+    /// Client connections open through these ports now.
+    pub fn open(&self) -> usize {
+        self.open.load(Ordering::Acquire)
+    }
+
+    /// The container stopped to be parked: its listeners stop, and their
+    /// sockets stay bound in a `Parked`, whose first connection calls
+    /// `wake`. `None` on a Linux host, where the kernel serves the ports:
+    /// they close as on any stop.
+    pub fn park(mut self, wake: Waker) -> Option<Parked> {
+        if self.kernel.is_some() {
+            return None;
+        }
+        if let Some((vm, id, _ports)) = self.nat.take() {
+            let _ = vm.unpublish(&id);
+        }
+        self.wake.clear();
+        let socks: Vec<Bound> = self.threads.drain(..).filter_map(|t| t.join().ok().flatten()).collect();
+        match Parked::new(socks, wake) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                crate::diag::warn!("published ports not held for a parked container", error = e);
+                None
+            }
+        }
+    }
+
+    /// Passes on connections a `Parked` held while the container woke.
+    pub fn adopt(&self, held: Vec<Held>) {
+        for h in held {
+            let Some(&(_, _, container_port, nat)) = self.routes.iter().find(|(ip, port, ..)| *ip == h.ip && *port == h.port) else {
+                continue;
+            };
+            let (vm, ip, open) = (self.vm.clone(), self.target_ip, OpenGuard::new(&self.open));
+            let _ = std::thread::Builder::new().name("edock-conn".into()).spawn(move || {
+                let (_permit, _open) = (h.permit, open);
+                let _ = relay(h.client, &vm, ip, container_port, nat);
+            });
+        }
+    }
+}
+
+/// What a `Parked` calls on its first connection.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
+
+/// A client connection a `Parked` holds until the container can take it.
+pub struct Held {
+    ip: String,
+    port: u16,
+    client: TcpStream,
+    permit: TcpPermit,
+}
+
+struct ParkedState {
+    held: Mutex<Vec<Held>>,
+    /// The time of the connection that called the waker; `None` until one has.
+    woke: Mutex<Option<Instant>>,
+}
+
+/// A parked container's published ports, still bound, so nothing else
+/// takes them: the first TCP connection calls the waker, and every
+/// connection waits here, unread, until `unpark` hands them on. UDP
+/// sockets are only held.
+pub struct Parked {
+    stop: Option<OwnedFd>,
+    thread: Option<JoinHandle<Vec<Bound>>>,
+    state: Arc<ParkedState>,
+}
+
+impl std::fmt::Debug for Parked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parked").finish_non_exhaustive()
+    }
+}
+
+impl Parked {
+    pub fn new(socks: Vec<Bound>, wake: Waker) -> io::Result<Parked> {
+        let (stop_r, stop_w) = pipe()?;
+        let state = Arc::new(ParkedState { held: Mutex::new(Vec::new()), woke: Mutex::new(None) });
+        let shared = state.clone();
+        let thread = std::thread::Builder::new().name("edock-parked".into()).spawn(move || parked_loop(socks, &stop_r, &shared, &wake))?;
+        Ok(Parked { stop: Some(stop_w), thread: Some(thread), state })
+    }
+
+    /// When the connection that woke it came; `None` if none has yet.
+    pub fn woken_at(&self) -> Option<Instant> {
+        *self.state.woke.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The sockets, for `start_with`, and the connections waiting.
+    pub fn unpark(mut self) -> (Vec<Bound>, Vec<Held>) {
+        let socks = self.stop_thread();
+        let held = std::mem::take(&mut *self.state.held.lock().unwrap_or_else(|e| e.into_inner()));
+        (socks, held)
+    }
+
+    /// After a wake that failed: the connections waiting are closed, and
+    /// the next one wakes it again.
+    pub fn rearm(&self) {
+        let held = std::mem::take(&mut *self.state.held.lock().unwrap_or_else(|e| e.into_inner()));
+        *self.state.woke.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        drop(held);
+    }
+
+    fn stop_thread(&mut self) -> Vec<Bound> {
+        // Closing the write end wakes the thread.
+        self.stop.take();
+        self.thread.take().and_then(|t| t.join().ok()).unwrap_or_default()
+    }
+}
+
+impl Drop for Parked {
+    fn drop(&mut self) {
+        drop(self.stop_thread());
+    }
+}
+
+fn parked_loop(socks: Vec<Bound>, stop: &OwnedFd, state: &ParkedState, wake: &Waker) -> Vec<Bound> {
+    loop {
+        let mut fds: Vec<libc::pollfd> = socks
+            .iter()
+            .filter_map(|(.., s)| match s {
+                Sock::Tcp(l) => Some(l.as_raw_fd()),
+                Sock::Udp(_) => None,
+            })
+            .chain([stop.as_raw_fd()])
+            .map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
+            .collect();
+        // SAFETY: polling descriptors we own, `fds.len()` of them.
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return socks;
+        }
+        if fds.last().is_some_and(|f| f.revents != 0) {
+            return socks;
+        }
+        for (_, ip, port, s) in &socks {
+            let Sock::Tcp(l) = s else { continue };
+            while let Ok((client, from)) = l.accept() {
+                let Some(permit) = tcp_permit(from.ip()) else { continue };
+                state.held.lock().unwrap_or_else(|e| e.into_inner()).push(Held { ip: ip.clone(), port: *port, client, permit });
+                let first = {
+                    let mut woke = state.woke.lock().unwrap_or_else(|e| e.into_inner());
+                    woke.is_none().then(|| *woke = Some(Instant::now())).is_some()
+                };
+                if first {
+                    wake();
+                }
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Forwards {
@@ -381,8 +571,14 @@ fn holder_in(lsof: &str) -> Option<String> {
 /// Binds every port first (so a clash fails the start cleanly), then starts
 /// one accept thread per listener.
 pub fn start(vm: Arc<VmLink>, id: &str, bindings: &[Binding], target_ip: [u8; 4]) -> io::Result<Forwards> {
-    let mut listeners = Vec::with_capacity(bindings.len());
-    let mut udp = Vec::new();
+    start_with(vm, id, bindings, target_ip, None)
+}
+
+/// Binds the Mac's side of these published ports, each on every address
+/// its binding asks for: the sockets `start_with` serves, or a `Parked`
+/// holds.
+pub fn bind(bindings: &[Binding]) -> io::Result<Vec<Bound>> {
+    let mut out = Vec::with_capacity(bindings.len());
     for b in bindings {
         // A port picked by the kernel (0) is picked once: the `::` listener
         // takes the one 0.0.0.0 got.
@@ -418,16 +614,34 @@ pub fn start(vm: Arc<VmLink>, id: &str, bindings: &[Binding], target_ip: [u8; 4]
                 let s = UdpSocket::from(sock);
                 s.set_nonblocking(true)?;
                 port = s.local_addr()?.port();
-                udp.push((b.clone(), ip, port, s));
+                out.push((b.clone(), ip, port, Sock::Udp(s)));
                 continue;
             }
             let l = TcpListener::from(sock);
             l.set_nonblocking(true)?;
             port = l.local_addr()?.port();
-            listeners.push((b.clone(), ip, port, l));
+            out.push((b.clone(), ip, port, Sock::Tcp(l)));
         }
     }
-    let mut fw = Forwards { wake: Vec::new(), threads: Vec::new(), kernel: None, nat: None, bound: Vec::new() };
+    Ok(out)
+}
+
+/// `start`, with the sockets of a `Parked` (`unpark`) when given, instead
+/// of binding the ports again: they never come free in between.
+pub fn start_with(vm: Arc<VmLink>, id: &str, bindings: &[Binding], target_ip: [u8; 4], bound: Option<Vec<Bound>>) -> io::Result<Forwards> {
+    let bound = match bound {
+        Some(b) => b,
+        None => bind(bindings)?,
+    };
+    let mut listeners = Vec::with_capacity(bound.len());
+    let mut udp = Vec::new();
+    for (b, ip, port, sock) in bound {
+        match sock {
+            Sock::Tcp(l) => listeners.push((b, ip, port, l)),
+            Sock::Udp(s) => udp.push((b, ip, port, s)),
+        }
+    }
+    let mut fw = Forwards { wake: Vec::new(), threads: Vec::new(), kernel: None, nat: None, bound: Vec::new(), routes: Vec::new(), vm: vm.clone(), target_ip, open: Arc::new(AtomicUsize::new(0)) };
     // On a Linux host the daemon shares the kernel with the containers, so
     // the kernel can rewrite the packets (nftables DNAT) instead of two
     // user-space relays copying every byte; that serves every address but
@@ -467,10 +681,11 @@ pub fn start(vm: Arc<VmLink>, id: &str, bindings: &[Binding], target_ip: [u8; 4]
         fw.wake.push(wake_w);
         let vm = vm.clone();
         let container_port = b.container_port;
+        fw.bound.push((b.clone(), ip.clone(), port));
         fw.threads.push(std::thread::Builder::new().name(format!("edock-udp-{port}")).spawn(move || {
             udp_loop(&sock, &wake_r, &vm, target_ip, container_port);
+            Some((b, ip, port, Sock::Udp(sock)))
         })?);
-        fw.bound.push((b, ip, port));
     }
     // In the VM: the guest kernel forwards each TCP binding from a port of
     // its own on the NAT network. A target on loopback stays relayed.
@@ -489,10 +704,13 @@ pub fn start(vm: Arc<VmLink>, id: &str, bindings: &[Binding], target_ip: [u8; 4]
         fw.wake.push(wake_w);
         let vm = vm.clone();
         let container_port = b.container_port;
+        let open = fw.open.clone();
+        fw.bound.push((b.clone(), ip.clone(), port));
+        fw.routes.push((ip.clone(), port, container_port, nat));
         fw.threads.push(std::thread::Builder::new().name(format!("edock-port-{port}")).spawn(move || {
-            accept_loop(&listener, &wake_r, &vm, target_ip, container_port, nat);
+            accept_loop(&listener, &wake_r, &vm, target_ip, container_port, nat, &open);
+            Some((b, ip, port, Sock::Tcp(listener)))
         })?);
-        fw.bound.push((b, ip, port));
     }
     Ok(fw)
 }
@@ -633,7 +851,7 @@ fn open_udp_session(sock: &UdpSocket, vm: &VmLink, ip: [u8; 4], port: u16, peer:
     })
 }
 
-fn accept_loop(listener: &TcpListener, wake: &OwnedFd, vm: &Arc<VmLink>, ip: [u8; 4], port: u16, nat: Option<SocketAddr>) {
+fn accept_loop(listener: &TcpListener, wake: &OwnedFd, vm: &Arc<VmLink>, ip: [u8; 4], port: u16, nat: Option<SocketAddr>, open: &Arc<AtomicUsize>) {
     loop {
         let mut fds = [
             libc::pollfd {
@@ -662,9 +880,10 @@ fn accept_loop(listener: &TcpListener, wake: &OwnedFd, vm: &Arc<VmLink>, ip: [u8
                 continue;
             };
             let vm = vm.clone();
+            let open = OpenGuard::new(open);
             let _ = std::thread::Builder::new().name("edock-conn".into()).spawn(move || {
                 // Held until the connection is done.
-                let _permit = permit;
+                let (_permit, _open) = (permit, open);
                 let _ = relay(client, &vm, ip, port, nat);
             });
         }

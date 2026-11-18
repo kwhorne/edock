@@ -1225,7 +1225,7 @@ fn finish_child(p: &Prepared, io: &ChildStdio, console: bool) -> ! {
     super::seccomp::install(p.seccomp.then_some(p.caps)).unwrap_or_else(|e| fail("seccomp", e));
     let (uid, gid) = resolve_user(&p.user).unwrap_or_else(|e| fail("user", e));
     // The user's /etc/group memberships and --group-add, as Docker gives them.
-    let groups = super::hostopts::supplementary_groups(&p.user, uid, &p.host.groups).unwrap_or_else(|e| fail("groups", e));
+    let groups = super::hostopts::supplementary_groups(&p.user, uid, gid, &p.host.groups).unwrap_or_else(|e| fail("groups", e));
     give_stdio([0, 1, 2], uid).unwrap_or_else(|e| fail("stdio", e));
     // SAFETY: plain id-setting syscalls; `groups` outlives setgroups.
     unsafe {
@@ -1488,7 +1488,9 @@ fn chown_refused(e: &io::Error) -> bool {
     matches!(e.raw_os_error(), Some(libc::EINVAL | libc::EPERM | libc::EROFS))
 }
 
-fn resolve_user(user: &str) -> io::Result<(libc::uid_t, libc::gid_t)> {
+/// `user[:group]`, by number or by name in /etc/passwd and /etc/group (the
+/// container's, once in its root): its uid and gid. Empty is root.
+pub(super) fn resolve_user(user: &str) -> io::Result<(libc::uid_t, libc::gid_t)> {
     if user.is_empty() {
         return Ok((0, 0));
     }
@@ -1507,7 +1509,8 @@ fn resolve_user(user: &str) -> io::Result<(libc::uid_t, libc::gid_t)> {
     };
     let not_found = |what: &str| io::Error::new(io::ErrorKind::NotFound, format!("unknown {what} {user}"));
     let (uid, primary_gid) = match u.parse::<u32>() {
-        Ok(id) => (id, lookup_gid_for_uid(id).unwrap_or(id)),
+        // Not in /etc/passwd: group 0, as runc (and so Docker) has it.
+        Ok(id) => (id, lookup_gid_for_uid(id).unwrap_or(0)),
         Err(_) => lookup("/etc/passwd", u).ok_or_else(|| not_found("user"))?,
     };
     let gid = match g {

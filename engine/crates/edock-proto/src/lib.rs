@@ -208,7 +208,8 @@ pub mod copy_op {
 }
 
 pub mod copy_flags {
-    /// Keep the archive's owners (`docker cp -a`); otherwise root owns everything.
+    /// Keep the archive's owners (`docker cp`, and `-a` into a container
+    /// with no user); otherwise `CopySpec::owner` owns what's unpacked.
     pub const KEEP_OWNERS: u32 = 1;
     /// Refuse to replace a directory with a file or the reverse.
     pub const NO_OVERWRITE_DIR_NON_DIR: u32 = 2;
@@ -227,16 +228,22 @@ pub struct CopySpec<'a> {
     pub path: &'a str,
     pub flags: u32,
     pub layers: StrList<'a>,
+    /// Without `copy_flags::KEEP_OWNERS`, who owns what's unpacked:
+    /// `user[:group]`, names as the container's /etc/passwd and /etc/group
+    /// give them (`docker cp -a` into a container with a user); empty is
+    /// root. Not sent by engines before it: empty.
+    pub owner: &'a str,
 }
 
 /// Encodes a `Copy` frame from the sender's side.
-pub fn encode_copy<S: AsRef<str>>(out: &mut Vec<u8>, op: u8, id: &str, path: &str, flags: u32, layers: &[S]) {
+pub fn encode_copy<S: AsRef<str>>(out: &mut Vec<u8>, op: u8, id: &str, path: &str, flags: u32, layers: &[S], owner: &str) {
     frame(out, kind::COPY, |o| {
         o.push(op);
         put_str(o, id);
         put_str(o, path);
         put_u32(o, flags);
         StrList::put(o, layers);
+        put_str(o, owner);
     });
 }
 
@@ -971,6 +978,7 @@ impl Msg<'_> {
                 put_u32(o, c.flags);
                 put_u32(o, c.layers.count);
                 o.extend_from_slice(c.layers.raw);
+                put_str(o, c.owner);
             }),
             Msg::CopyStat { entry, link } => frame(out, kind::COPY_STAT, |o| {
                 put_entry(o, &entry);
@@ -1244,7 +1252,7 @@ pub fn decode(frame: &[u8]) -> Result<Msg<'_>, DecodeError> {
         kind::MEMORY_PRESSURE => Msg::MemoryPressure,
         kind::REMOVE_VOLUME => Msg::RemoveVolume { name: r.str()? },
         kind::REMOVE_BRIDGE => Msg::RemoveBridge { bridge: r.str()? },
-        kind::COPY => Msg::Copy(CopySpec { op: r.u8()?, id: r.str()?, path: r.str()?, flags: r.u32()?, layers: r.list()? }),
+        kind::COPY => Msg::Copy(CopySpec { op: r.u8()?, id: r.str()?, path: r.str()?, flags: r.u32()?, layers: r.list()?, owner: if r.remaining() >= 4 { r.str()? } else { "" } }),
         kind::COPY_STAT => Msg::CopyStat { entry: read_entry(&mut r)?, link: r.str()? },
         kind::COPY_DONE => Msg::CopyDone,
         kind::UPDATE => Msg::Update { id: r.str()?, limits: read_limits(&mut r)? },
@@ -1449,13 +1457,24 @@ mod tests {
         round(Msg::Uplink { ip: [192, 168, 64, 18], gateway: [192, 168, 64, 1] });
         round(Msg::Ack);
         let mut buf = Vec::new();
-        encode_copy(&mut buf, copy_op::IN, "c1", "/etc", copy_flags::KEEP_OWNERS, &["sha256:a", "sha256:b"]);
+        encode_copy(&mut buf, copy_op::IN, "c1", "/etc", copy_flags::KEEP_OWNERS, &["sha256:a", "sha256:b"], "app:staff");
         let Msg::Copy(c) = decode(&buf).unwrap() else { panic!() };
-        assert_eq!((c.op, c.id, c.path, c.flags), (copy_op::IN, "c1", "/etc", copy_flags::KEEP_OWNERS));
+        assert_eq!((c.op, c.id, c.path, c.flags, c.owner), (copy_op::IN, "c1", "/etc", copy_flags::KEEP_OWNERS, "app:staff"));
         assert_eq!(c.layers.iter().collect::<Vec<_>>(), ["sha256:a", "sha256:b"]);
         let mut again = Vec::new();
         Msg::Copy(c).encode(&mut again);
         assert_eq!(buf, again);
+        // From an engine before `owner`: none.
+        let mut old = Vec::new();
+        frame(&mut old, kind::COPY, |o| {
+            o.push(copy_op::IN);
+            put_str(o, "c1");
+            put_str(o, "/etc");
+            put_u32(o, 0);
+            StrList::put(o, &["sha256:a"]);
+        });
+        let Msg::Copy(c) = decode(&old).unwrap() else { panic!() };
+        assert_eq!((c.path, c.owner), ("/etc", ""));
         let mut buf = Vec::new();
         let entries = [
             FsEntry { name: "a", mode: 0o100644, size: 1, mtime: 2, mtime_nsec: 9, ino: 1 },

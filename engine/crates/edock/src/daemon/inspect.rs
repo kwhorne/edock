@@ -102,6 +102,9 @@ struct Exchange {
     done: bool,
     /// Why it ended without a whole response.
     error: Option<String>,
+    /// How long it waited for its container's project to wake (On demand),
+    /// before it reached it.
+    woke_ms: Option<f64>,
 }
 
 fn header<'a>(h: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -127,6 +130,7 @@ impl Exchange {
             "ms": self.ms,
             "done": self.done,
             "error": self.error,
+            "woke_ms": self.woke_ms,
         })
     }
 
@@ -244,6 +248,8 @@ struct TapState {
     res_seq: Option<u64>,
     /// Stopped following this connection.
     lost: bool,
+    /// The wake this connection waited for, told with its first request.
+    woke_ms: Option<f64>,
     /// Body bytes seen past what's kept, not yet added to the sizes in the
     /// log (request, response): added every MiB and at the end, so a big
     /// download doesn't take the log's lock for every piece.
@@ -253,7 +259,7 @@ struct TapState {
 impl Tap {
     /// A tap for a connection to `container` through `host`; `None` while
     /// the inspector is off.
-    pub fn new(scheme: &'static str, host: &str, container: &str) -> Option<Arc<Tap>> {
+    pub fn new(scheme: &'static str, host: &str, container: &str, woke_ms: Option<f64>) -> Option<Arc<Tap>> {
         on().then(|| {
             Arc::new(Tap {
                 inner: Mutex::new(TapState {
@@ -266,6 +272,7 @@ impl Tap {
                     req_seq: None,
                     res_seq: None,
                     lost: false,
+                    woke_ms,
                     unsaid: [0, 0],
                 }),
             })
@@ -381,6 +388,7 @@ impl TapState {
                     method,
                     target,
                     req_headers: headers,
+                    woke_ms: self.woke_ms.take(),
                     ..Default::default()
                 });
                 self.waiting.push_back((seq, head));
@@ -633,7 +641,7 @@ mod tests {
     /// A tap fed in pieces of `step` bytes; the exchanges it recorded.
     fn run(container: &str, req: &[u8], res: &[u8], step: usize) -> Vec<Value> {
         ON.store(true, Ordering::Relaxed);
-        let tap = Tap::new("http", "x.edock.localhost", container).unwrap();
+        let tap = Tap::new("http", "x.edock.localhost", container, None).unwrap();
         for c in req.chunks(step) {
             tap.saw(Dir::Request, c);
         }
@@ -669,7 +677,7 @@ mod tests {
         let r = req(&format!("HEAD / HTTP/1.1\nHost: {host}\n\nGET /x HTTP/1.1\nHost: {host}\n\nGET /y HTTP/1.0\nHost: {host}\n\n"));
         let s = req("HTTP/1.1 200 OK\nContent-Length: 999\n\nHTTP/1.1 304 Not Modified\n\nHTTP/1.0 200 OK\n\nuntil the end");
         ON.store(true, Ordering::Relaxed);
-        let tap = Tap::new("http", host, "hc").unwrap();
+        let tap = Tap::new("http", host, "hc", None).unwrap();
         tap.saw(Dir::Request, &r);
         tap.saw(Dir::Response, &s);
         tap.closed(Dir::Response);
@@ -690,7 +698,7 @@ mod tests {
         let mut s = req("HTTP/1.1 101 Switching Protocols\nUpgrade: websocket\n\n");
         s.extend_from_slice(&[0x81, 0x02, b'h', b'i']);
         ON.store(true, Ordering::Relaxed);
-        let tap = Tap::new("http", host, "ws").unwrap();
+        let tap = Tap::new("http", host, "ws", None).unwrap();
         tap.saw(Dir::Request, &r);
         tap.saw(Dir::Response, &s);
         tap.saw(Dir::Request, b"\x81\x82garbage");
@@ -739,7 +747,7 @@ mod tests {
     fn no_response_is_an_error() {
         let host = "nr.edock.localhost";
         ON.store(true, Ordering::Relaxed);
-        let tap = Tap::new("http", host, "nr").unwrap();
+        let tap = Tap::new("http", host, "nr", None).unwrap();
         tap.saw(Dir::Request, &req(&format!("GET / HTTP/1.1\nHost: {host}\n\n")));
         drop(tap);
         let l = log();
