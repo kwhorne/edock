@@ -24,7 +24,13 @@
   $effect(() => {
     if (quick) return;
     appWindow.show();
-    api.welcome_needed().then((first) => first && navigate("/welcome"));
+    // Shown once: its steps stay on the Engine page, so it needn't come back
+    // because it was left another way than Skip.
+    api.welcome_needed().then((first) => {
+      if (!first) return;
+      navigate("/welcome");
+      api.welcome_done().catch(() => {});
+    });
   });
 
   // The menu bar item's menu, and pages the popover asks for. Handlers,

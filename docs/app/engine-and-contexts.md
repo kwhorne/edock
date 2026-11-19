@@ -76,7 +76,7 @@ The app looks for the engine binary in this order:
 
 **Tell me when a container runs out of memory or turns unhealthy, or containers keep waiting for memory** (on by default) shows a macOS notification when the kernel kills a container for using all the memory it may have, or when its health check starts failing. Click it for the container's log. Each container gets at most one of each every ten minutes, and eDock's own containers (Linux machines, Kubernetes, helpers) none.
 
-On eDock's engine, the app also looks at the memory pressure every 15 seconds. When it stays *high* for half a minute, before the kernel has to stop anything, you get one notification (at most once in half an hour), and a click opens this page. It works on any engine the app shows, as long as the app runs. With them off, the [menu bar](menu-bar.md) still marks such a container, with a dot and in its popover.
+On eDock's engine, the app also looks at the memory pressure every 15 seconds. When it stays *high* for half a minute, before the kernel has to stop anything, you get one notification (at most once in half an hour), and a click opens this page. When one container waits a lot itself (10% or more), the notification names it: *db is waiting for memory*. It works on any engine the app shows, as long as the app runs. With them off, the [menu bar](menu-bar.md) still marks such a container, with a dot and in its popover.
 
 ### Contexts
 
@@ -99,7 +99,7 @@ eDock's engine reports no memory while its VM sleeps.
 
 - the VM, awake or asleep, with its CPUs and memory;
 - the memory the containers use, out of the most the VM may take;
-- **memory pressure**: how much of the last 10 seconds the containers all spent waiting on memory (Linux's pressure stall information). *none*, *some* (2% or more, or 85% of the VM's memory used) or *high* (10% or more, or 95% used). With some or high, it says what to do: when the VM's memory is nearly all used, give it more; when the VM has room, a container's own memory limit (`-m`, `mem_limit`) is the likely cause, and that container's Stats tab shows it at its limit;
+- **memory pressure**: how much of the last 10 seconds the containers all spent waiting on memory (Linux's pressure stall information). *none*, *some* (2% or more, or 85% of the VM's memory used) or *high* (10% or more, or 95% used). Below it, the containers that wait on memory now, by name and most first (up to three), each with how long it waited and its own memory limit if it has one; click one for its Stats tab. One container waiting counts too, though the VM has room: a container at its own limit makes the pressure some or high by itself. With some or high, it says what to do: when the VM's memory is nearly all used, give it more; when the VM has room and a container waits at its own limit (`-m`, `mem_limit`), it names that container: raise its limit;
 - the VM's CPU use;
 - the engine's own memory on the Mac;
 - the guest agent's memory in the VM;

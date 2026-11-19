@@ -44,6 +44,43 @@ pub fn pressure(stall: f64, used: f64, ceiling: f64) -> &'static str {
     }
 }
 
+/// A container all of whose processes waited on memory lately: the share
+/// of the last 10 s, in percent, and its own memory limit in bytes (0: none,
+/// only the VM's).
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, specta::Type)]
+pub struct Stalled {
+    pub id: String,
+    pub name: String,
+    pub stall: f64,
+    pub limit: f64,
+}
+
+/// The containers /info says wait on memory now, most first.
+pub fn stalled(info: &Value) -> Vec<Stalled> {
+    let n = |v: &Value| v.as_f64().unwrap_or(0.0);
+    info["EdockMemoryStalled"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            Some(Stalled {
+                id: s["Id"].as_str()?.to_owned(),
+                name: s["Name"].as_str()?.trim_start_matches('/').to_owned(),
+                stall: n(&s["Stall"]),
+                limit: n(&s["Limit"]),
+            })
+        })
+        .collect()
+}
+
+/// `pressure` from /info (the VM awake): the VM's own stall, or the worst
+/// container's when one waits at its own limit while the VM has room.
+pub fn level(info: &Value, stalled: &[Stalled]) -> &'static str {
+    let n = |k: &str| info[k].as_f64().unwrap_or(0.0);
+    let worst = stalled.iter().map(|s| s.stall).fold(0.0, f64::max);
+    pressure(n("EdockMemoryStall").max(worst), n("EdockMemoryUsed"), n("EdockMemoryCeiling"))
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Alert {
     pub id: String,
@@ -140,9 +177,14 @@ pub fn show(alerts: &Alerts, notifier: &Notifier, bus: &Arc<EventBus>, a: Alert)
     let (title, body) = match a.what {
         What::OutOfMemory => (format!("{} ran out of memory", a.name), "The kernel stopped it: it used all the memory it may have. Click for its last log lines."),
         What::Unhealthy => (format!("{} is unhealthy", a.name), "Its health check keeps failing. Click for its log."),
-        What::MemoryPressure => (
+        // `name` is the container that waits most, or "Containers".
+        What::MemoryPressure if a.name == "Containers" => (
             "Containers are waiting for memory".to_owned(),
             "The kernel may soon stop one. A container's own memory limit may be too low, or the VM too small: the Engine page says which.",
+        ),
+        What::MemoryPressure => (
+            format!("{} is waiting for memory", a.name),
+            "The kernel may soon stop it. Its own memory limit may be too low, or the VM too small: the Engine page says which.",
         ),
     };
     let bus = bus.clone();
@@ -160,7 +202,8 @@ pub struct RecentAlert {
     pub id: String,
     pub name: String,
     /// "oom" (the kernel stopped it: out of memory), "unhealthy", or
-    /// "memory" (containers kept waiting on it; `id` is "vm").
+    /// "memory" (containers kept waiting on it; `id` is "vm", `name` the
+    /// container that waited most, or "Containers").
     pub what: String,
     /// How long ago, in seconds.
     pub ago: u32,
@@ -238,6 +281,25 @@ mod tests {
         assert_eq!(pressure(12.0, 1e9, 8e9), "high", "stalled a lot");
         assert_eq!(pressure(0.0, 7.7e9, 8e9), "high", "nearly all used");
         assert_eq!(pressure(0.0, 0.0, 0.0), "none", "asleep");
+    }
+
+    #[test]
+    fn a_container_waiting_at_its_own_limit_is_named() {
+        let info = serde_json::json!({
+            "EdockMemoryStall": 0.4, "EdockMemoryUsed": 1e9, "EdockMemoryCeiling": 8e9,
+            "EdockMemoryStalled": [
+                {"Id": "abc", "Name": "/db", "Stall": 31.5, "Limit": 268435456},
+                {"Id": "def", "Name": "web", "Stall": 1.2, "Limit": 0},
+                {"Name": "no id"}
+            ]
+        });
+        let s = stalled(&info);
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[0].name.as_str(), s[0].stall, s[0].limit), ("db", 31.5, 268435456.0));
+        assert_eq!(level(&info, &s), "high", "the VM has room, but db waits");
+        let calm = serde_json::json!({"EdockMemoryStall": 0.0, "EdockMemoryUsed": 1e9, "EdockMemoryCeiling": 8e9});
+        assert!(stalled(&calm).is_empty(), "an engine before 1.0 says nothing");
+        assert_eq!(level(&calm, &[]), "none");
     }
 
     #[test]

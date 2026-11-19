@@ -214,7 +214,30 @@ impl Settings {
         home().join(".edock/desktop.json")
     }
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        match std::fs::read_to_string(Self::path()) {
+            Ok(text) => Self::read(&text, &Self::path()),
+            Err(_) => Self::default(),
+        }
+    }
+    /// The settings in `text`. One that doesn't read whole (a project from
+    /// a newer eDock, a hand edit gone wrong) keeps every field and project
+    /// that does, rather than all going back to the defaults, which the
+    /// next change would then write. Not JSON at all: kept beside it as
+    /// `desktop.json.unreadable`, and started anew.
+    fn read(text: &str, path: &std::path::Path) -> Self {
+        if let Ok(s) = serde_json::from_str(text) {
+            return s;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+            let _ = std::fs::write(path.with_extension("json.unreadable"), text);
+            return Self::default();
+        };
+        Self {
+            context: v["context"].as_str().map(str::to_owned),
+            onboarded: v["onboarded"].as_bool().unwrap_or(false),
+            alerts_off: v["alerts_off"].as_bool().unwrap_or(false),
+            projects: v["projects"].as_array().into_iter().flatten().filter_map(|p| serde_json::from_value(p.clone()).ok()).collect(),
+        }
     }
     fn save(&self) {
         let path = Self::path();
@@ -259,4 +282,34 @@ pub async fn exec_exit_code(docker: &Docker, id: &str) -> i64 {
 /// Err(`why`) unless the app shows eDock's own engine.
 pub fn only_on_edock(ctx: &elyra::Ctx, why: &str) -> Result<(), String> {
     if ctx.get::<Engine>().context().0 == EDOCK { Ok(()) } else { Err(why.into()) }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::Settings;
+
+    /// A settings file that doesn't read whole keeps what does: one bad
+    /// project mustn't send the welcome and every remembered project away.
+    #[test]
+    fn a_bad_entry_loses_only_itself() {
+        let dir = std::env::temp_dir().join(format!("edock-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("desktop.json");
+        let text = r#"{"context":"edock","onboarded":true,"alerts_off":true,"projects":[
+            {"name":"shop","context":"edock","dir":"/w/shop","files":["/w/shop/compose.yaml"]},
+            {"name":"odd","context":"edock","dir":7},
+            {"name":"blog","context":"edock","dir":"/w/blog","files":[],"env_files":["/w/blog/.env"],"from_a_newer_edock":1}
+        ],"something_new":true}"#;
+        let s = Settings::read(text, &path);
+        assert_eq!(s.context.as_deref(), Some("edock"));
+        assert!(s.onboarded && s.alerts_off);
+        assert_eq!(s.projects.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["shop", "blog"]);
+        assert_eq!(s.projects[1].env_files, ["/w/blog/.env"]);
+        assert!(!path.with_extension("json.unreadable").exists());
+        // Not JSON: kept aside, and the defaults.
+        let s = Settings::read("{oops", &path);
+        assert!(!s.onboarded && s.projects.is_empty());
+        assert_eq!(std::fs::read_to_string(path.with_extension("json.unreadable")).unwrap(), "{oops");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

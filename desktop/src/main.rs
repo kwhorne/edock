@@ -86,18 +86,21 @@ fn watch_memory(ctx: Ctx) {
                 high = 0;
                 continue;
             }
-            let level = match daemon::engine_request("GET", "/info").await {
+            let (level, worst) = match daemon::engine_request("GET", "/info").await {
                 Some((200, i)) if i["EdockVmAwake"] == true => {
-                    let n = |k: &str| i[k].as_f64().unwrap_or(0.0);
-                    alerts::pressure(n("EdockMemoryStall"), n("EdockMemoryUsed"), n("EdockMemoryCeiling"))
+                    let stalled = alerts::stalled(&i);
+                    (alerts::level(&i, &stalled), stalled.into_iter().next())
                 }
-                _ => "none",
+                _ => ("none", None),
             };
             // High for half a minute, and as long as it lasts: `show` keeps
             // its line in the popover fresh and tells again each half hour.
             high = if level == "high" { high.saturating_add(1) } else { 0 };
             if high >= 2 {
-                let a = alerts::Alert { id: "vm".into(), name: "Containers".into(), what: alerts::What::MemoryPressure };
+                // The container that waits most, when it waits a lot itself
+                // (most likely at its own limit); else containers as a whole.
+                let name = worst.filter(|s| s.stall >= 10.0).map_or_else(|| "Containers".to_owned(), |s| s.name);
+                let a = alerts::Alert { id: "vm".into(), name, what: alerts::What::MemoryPressure };
                 if alerts::show(&ctx.get::<alerts::Alerts>(), &ctx.get::<elyra::notifier::Notifier>(), &ctx.get::<EventBus>(), a) {
                     refresh_tray(&ctx, None).await;
                 }

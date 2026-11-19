@@ -54,8 +54,11 @@ pub struct VmInfo {
     pub oom_kills: u32,
     /// The share of the last 10 s its containers all waited on memory, in percent.
     pub memory_stall: f64,
-    /// "none", "some" or "high": how short of memory the VM is.
+    /// "none", "some" or "high": how short of memory the VM is, or a
+    /// container at its own limit.
     pub memory_pressure: String,
+    /// The containers that wait on memory now, most first.
+    pub memory_stalled: Vec<crate::alerts::Stalled>,
 }
 
 #[command]
@@ -63,6 +66,8 @@ pub async fn vm_info(ctx: Ctx) -> Result<VmInfo, String> {
     on_edock(&ctx)?;
     let r = answer(engine_request("GET", "/edock/resources").await)?;
     let i = answer(engine_request("GET", "/info").await)?;
+    let awake = r["awake"] == true;
+    let stalled = if awake { crate::alerts::stalled(&i) } else { Vec::new() };
     Ok(VmInfo {
         cpus: n(&r["cpus"]) as u32,
         memory_mib: n(&r["memory_mib"]) as u32,
@@ -79,7 +84,8 @@ pub async fn vm_info(ctx: Ctx) -> Result<VmInfo, String> {
         cpu_percent: n(&i["EdockCpuPercent"]),
         oom_kills: n(&i["EdockOomKills"]) as u32,
         memory_stall: n(&i["EdockMemoryStall"]),
-        memory_pressure: if r["awake"] == true { crate::alerts::pressure(n(&i["EdockMemoryStall"]), n(&i["EdockMemoryUsed"]), n(&i["EdockMemoryCeiling"])) } else { "none" }.into(),
+        memory_pressure: if awake { crate::alerts::level(&i, &stalled) } else { "none" }.into(),
+        memory_stalled: stalled,
     })
 }
 

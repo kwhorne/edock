@@ -64,7 +64,7 @@ docker-py, Testcontainers, IDE plugins and other tools that read `/var/run/docke
 
 ## `docker build --add-host …:host-gateway` fails
 
-buildx refuses `host-gateway` for docker-container builders, and eDock's builder is one. Use the address itself (`--add-host name:198.19.248.254`), or `DOCKER_BUILDKIT=0 docker build …`.
+buildx refuses `host-gateway` for docker-container builders, on your Mac before the build reaches eDock, and eDock's builder is one. A build step reaches the Mac as `host.docker.internal` without any flag. For another name, use the address itself (`--add-host name:198.19.248.254`), or `DOCKER_BUILDKIT=0 docker build …`.
 
 ## An amd64 image is slow
 

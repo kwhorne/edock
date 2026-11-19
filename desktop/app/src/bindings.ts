@@ -650,7 +650,8 @@ export type RecentAlert = {
 	name: string,
 	/**
 	 *  "oom" (the kernel stopped it: out of memory), "unhealthy", or
-	 *  "memory" (containers kept waiting on it; `id` is "vm").
+	 *  "memory" (containers kept waiting on it; `id` is "vm", `name` the
+	 *  container that waited most, or "Containers").
 	 */
 	what: string,
 	/**  How long ago, in seconds. */
@@ -807,6 +808,18 @@ export type Snapshot = {
 	note: string,
 };
 
+/**
+ *  A container all of whose processes waited on memory lately: the share
+ *  of the last 10 s, in percent, and its own memory limit in bytes (0: none,
+ *  only the VM's).
+ */
+export type Stalled = {
+	id: string,
+	name: string,
+	stall: number,
+	limit: number,
+};
+
 export type Started = {
 	container: string,
 	/**  How an app connects: `postgres://postgres:postgres@localhost:5432/postgres`. */
@@ -868,8 +881,13 @@ export type VmInfo = {
 	oom_kills: number,
 	/**  The share of the last 10 s its containers all waited on memory, in percent. */
 	memory_stall: number,
-	/**  "none", "some" or "high": how short of memory the VM is. */
+	/**
+	 *  "none", "some" or "high": how short of memory the VM is, or a
+	 *  container at its own limit.
+	 */
 	memory_pressure: string,
+	/**  The containers that wait on memory now, most first. */
+	memory_stalled: Stalled[],
 };
 
 export type VolumeRow = {

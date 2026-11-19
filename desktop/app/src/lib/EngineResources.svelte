@@ -1,6 +1,6 @@
 <!-- The VM's CPUs and memory, and what it uses now. -->
 <script>
-  import { confirm } from "@elyra/runtime";
+  import { confirm, navigate } from "@elyra/runtime";
   import { Badge, Button, Callout, Card, Skeleton } from "@elyra/ui";
   import { onDestroy } from "svelte";
   import { api } from "../bindings";
@@ -62,9 +62,18 @@
         <dd>
           <Badge variant={vm.memory_pressure === "high" ? "danger" : vm.memory_pressure === "some" ? "warning" : "success"}>{vm.memory_pressure === "high" ? "high" : vm.memory_pressure === "some" ? "some" : "none"}</Badge>
           <span class="muted">{vm.memory_stall ? `waiting on memory ${vm.memory_stall.toFixed(1)}% of the last 10 s` : "nothing waits on memory"}</span>
+          {#each vm.memory_stalled as s (s.id)}
+            <div class="small">
+              <button class="link-path" onclick={() => navigate(`/containers/${s.id}?tab=stats`)}>{s.name}</button> <span class="muted">waits on memory {s.stall.toFixed(1)}% of the last 10 s{#if s.limit}, at its own limit of {bytes(s.limit)}{/if}</span>
+            </div>
+          {/each}
           {#if vm.memory_pressure !== "none"}
+            {@const full = vm.memory_ceiling && vm.memory_used / vm.memory_ceiling >= 0.85}
+            {@const limited = vm.memory_stalled.find((s) => s.limit)}
             <div class="muted small">
-              {#if vm.memory_ceiling && vm.memory_used / vm.memory_ceiling >= 0.85}
+              {#if !full && limited}
+                The VM has room: {limited.name}'s own memory limit (<code>-m</code>, <code>mem_limit</code>) is too low for it. Raise that limit before the kernel stops it.
+              {:else if full}
                 The VM's memory is nearly all used: give it more below, or stop what you don't need, before the kernel stops a container.
               {:else}
                 The VM has room, so a container's own memory limit (<code>-m</code>, <code>mem_limit</code>) is the likely cause: its Stats tab shows which one is at its limit. Raise that limit, or give the VM more below.

@@ -1664,6 +1664,62 @@ async fn alerts_for_out_of_memory_and_unhealthy() {
     }
 }
 
+/// A container that keeps waiting on memory at its own limit (`-m 64m`,
+/// reading a file five times that size over and over) is named on the
+/// Engine page, with its limit, and is pressure though the VM has room: `EDOCK_TEST_HOST=unix://$HOME/.edock/run/docker.sock`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs eDock's engine"]
+async fn a_container_waiting_on_memory_is_named() {
+    use crate::alerts::Stalled;
+    use crate::vm::VmInfo;
+    use bollard::query_parameters as q;
+    if !std::env::var("EDOCK_TEST_HOST").is_ok_and(|h| h.contains("/.edock/")) {
+        eprintln!("skipped: needs EDOCK_TEST_HOST on eDock's socket");
+        return;
+    }
+    let _alone = ENGINE.read().await;
+    // An engine before 1.0 (the installed one, until the suite's restart
+    // test puts EDOCK_ENGINE in its place) doesn't say.
+    if !matches!(crate::daemon::engine_request("GET", "/info").await, Some((200, i)) if i.get("EdockMemoryStalled").is_some()) {
+        eprintln!("skipped: this engine doesn't name containers waiting on memory");
+        return;
+    }
+    let app = app();
+    ensure_image(&app, "alpine:latest").await;
+    let docker = app.ctx().get::<Engine>().docker().unwrap();
+    let name = format!("edock-test-squeeze-{}", std::process::id());
+    let body = bollard::models::ContainerCreateBody {
+        image: Some("alpine:latest".into()),
+        cmd: Some(vec![
+            "sh".into(),
+            "-c".into(),
+            "dd if=/dev/urandom of=/f bs=1M count=300 2>/dev/null; for i in 1 2 3 4; do (while :; do cat /f > /dev/null; done) & done; wait".into(),
+        ]),
+        labels: Some([("app.edock.test".to_string(), "1".to_string())].into()),
+        host_config: Some(bollard::models::HostConfig { memory: Some(64 << 20), ..Default::default() }),
+        ..Default::default()
+    };
+    docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(&name).build()), body).await.unwrap();
+    docker.start_container(&name, None::<q::StartContainerOptions>).await.unwrap();
+
+    let start = Instant::now();
+    let mut seen: Option<(Stalled, String)> = None;
+    while start.elapsed() < Duration::from_secs(90) {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let vm: VmInfo = app.invoke("vm_info", ()).await.unwrap();
+        if let Some(s) = vm.memory_stalled.iter().find(|s| s.name == name) {
+            if s.stall >= 2.0 {
+                seen = Some((s.clone(), vm.memory_pressure));
+                break;
+            }
+        }
+    }
+    let _ = docker.remove_container(&name, Some(q::RemoveContainerOptionsBuilder::default().force(true).build())).await;
+    let (s, level) = seen.expect("named as waiting on memory within 90 s");
+    assert_eq!(s.limit, (64 << 20) as f64, "with its own limit");
+    assert!(level == "some" || level == "high", "pressure though the VM has room: {level}");
+}
+
 /// Run image…: suggestions from the image, then a container with a port,
 /// a Mac folder, a volume, a variable and a command, served on the Mac.
 /// One that doesn't start is removed.

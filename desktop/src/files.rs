@@ -489,11 +489,14 @@ pub async fn container_file_remove(ctx: Ctx, container: String, path: String) ->
         return Err("Not the whole filesystem".into());
     }
     let info = ctx.get::<Engine>().docker()?.inspect_container(&container, None::<q::InspectContainerOptions>).await.map_err(err)?;
+    // `--tmpfs` ones aren't in Mounts (as on Docker): from HostConfig.
+    let tmpfs: Vec<(String, String)> = info.host_config.as_ref().and_then(|h| h.tmpfs.clone()).unwrap_or_default().into_keys().map(|d| (d, "tmpfs".to_owned())).collect();
     let mounts: Vec<(String, String)> = info
         .mounts
         .unwrap_or_default()
         .into_iter()
         .filter_map(|m| Some((m.destination?, m.source.or(m.name).unwrap_or_default())))
+        .chain(tmpfs)
         .collect();
     if let Some(why) = holds_a_mount(path, &mounts) {
         return Err(why);

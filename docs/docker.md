@@ -64,7 +64,7 @@ edock build-with edock    # eDock's BuildKit builder
 edock build-with docker   # docker's classic builder (DOCKER_BUILDKIT=0)
 ```
 
-One known limit: `--add-host name:host-gateway` fails with BuildKit, because buildx refuses `host-gateway` for docker-container builders. Use the address itself (`198.19.248.254` on a Mac), or `DOCKER_BUILDKIT=0`.
+One known limit: `--add-host name:host-gateway` fails with BuildKit, because buildx refuses `host-gateway` for docker-container builders. Build steps reach the Mac as `host.docker.internal` without any flag; for another name, use the address itself (`--add-host name:198.19.248.254`), or `DOCKER_BUILDKIT=0`.
 
 ## amd64 images
 

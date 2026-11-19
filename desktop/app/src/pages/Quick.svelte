@@ -115,7 +115,7 @@
       {#if vm.awake}
         VM awake · {bytes(vm.memory_used)} in use{vm.memory_ceiling ? ` of ${bytes(vm.memory_ceiling)}` : ""}
         {#if vm.memory_pressure !== "none"}
-          <button class="link-btn" class:bad={vm.memory_pressure === "high"} onclick={() => open("/engine")}>· {vm.memory_pressure === "high" ? "containers wait on memory" : "memory is tight"}</button>
+          <button class="link-btn" class:bad={vm.memory_pressure === "high"} onclick={() => open("/engine")}>· {vm.memory_pressure === "high" ? (vm.memory_stalled[0]?.stall >= 10 ? `${vm.memory_stalled[0].name} waits on memory` : "containers wait on memory") : "memory is tight"}</button>
         {/if}
       {:else}
         VM asleep · it wakes on the next command
@@ -135,7 +135,7 @@
       {#each alerts as a (`${a.id}:${a.what}`)}
         <button class="quick-alert" onclick={() => open(a.what === "memory" ? "/engine" : `/containers/${a.id}?tab=logs`)}>
           <span class="dot" class:bad={a.what === "oom" || a.what === "memory"} class:warn={a.what === "unhealthy"}></span>
-          <span class="name">{a.what === "memory" ? "Containers waited on memory" : `${a.name} ${a.what === "oom" ? "ran out of memory" : "is unhealthy"}`}</span>
+          <span class="name">{a.what === "memory" ? `${a.name} waited on memory` : `${a.name} ${a.what === "oom" ? "ran out of memory" : "is unhealthy"}`}</span>
           <span class="muted small">{ago(a.ago)}</span>
         </button>
       {/each}
