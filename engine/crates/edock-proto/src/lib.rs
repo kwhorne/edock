@@ -326,6 +326,29 @@ pub struct Stats {
     pub mem_stall: u64,
     /// Processes the kernel has killed for memory since boot (/proc/vmstat oom_kill).
     pub oom_kills: u64,
+    /// The containers that waited on memory most (their cgroup's PSI "full
+    /// avg10", above 0), most first: which one, when the VM waits, or one
+    /// held back by its own memory limit while the rest of the VM doesn't.
+    /// None from an older agent.
+    pub stalled: [Stalled; STALLED_MAX],
+}
+
+/// How many containers `Stats::stalled` names.
+pub const STALLED_MAX: usize = 3;
+
+/// A container waiting on memory: the first 12 characters of its id (empty
+/// for none) and its PSI "full avg10", in hundredths of a percent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Stalled {
+    pub id: [u8; 12],
+    pub stall: u64,
+}
+
+impl Stalled {
+    /// The id's start, or None for an empty slot.
+    pub fn id(&self) -> Option<&str> {
+        (self.id != [0; 12]).then(|| core::str::from_utf8(&self.id).ok()).flatten()
+    }
 }
 
 /// What the guest knows about its own boot, in nanoseconds of CLOCK_BOOTTIME.
@@ -861,6 +884,12 @@ impl Msg<'_> {
                 for v in [st.uptime_ns, st.mem_total_kib, st.mem_available_kib, st.agent_rss_kib, st.mem_used_kib, st.mem_stall, st.oom_kills] {
                     put_u64(o, v);
                 }
+                let named: Vec<&Stalled> = st.stalled.iter().filter(|s| s.id().is_some()).collect();
+                put_u32(o, named.len() as u32);
+                for s in named {
+                    o.extend_from_slice(&s.id);
+                    put_u64(o, s.stall);
+                }
             }),
             Msg::LayerQuery(d) => frame(out, kind::LAYER_QUERY, |o| put_str(o, d)),
             Msg::LayerStatus(have) => frame(out, kind::LAYER_STATUS, |o| o.push(have as u8)),
@@ -1160,6 +1189,18 @@ pub fn decode(frame: &[u8]) -> Result<Msg<'_>, DecodeError> {
             mem_used_kib: if r.remaining() >= 8 { r.u64()? } else { 0 },
             mem_stall: if r.remaining() >= 8 { r.u64()? } else { 0 },
             oom_kills: if r.remaining() >= 8 { r.u64()? } else { 0 },
+            stalled: {
+                let mut out = [Stalled::default(); STALLED_MAX];
+                let count = if r.remaining() >= 4 { r.u32()? as usize } else { 0 };
+                for i in 0..count {
+                    let id: [u8; 12] = r.take(12)?.try_into().map_err(|_| DecodeError::Truncated)?;
+                    let stall = r.u64()?;
+                    if let Some(slot) = out.get_mut(i) {
+                        *slot = Stalled { id, stall };
+                    }
+                }
+                out
+            },
         }),
         kind::LAYER_QUERY => Msg::LayerQuery(r.str()?),
         kind::LAYER_STATUS => Msg::LayerStatus(r.u8()? != 0),
@@ -1321,11 +1362,20 @@ mod tests {
         round(Msg::Shutdown);
         round(Msg::Error("boom"));
         round(Msg::StatsRequest);
-        let full = Stats { uptime_ns: 5, mem_total_kib: 6, mem_available_kib: 7, agent_rss_kib: 8, mem_used_kib: 9, mem_stall: 9173, oom_kills: 2 };
+        let mut stalled = [Stalled::default(); STALLED_MAX];
+        stalled[0] = Stalled { id: *b"0123456789ab", stall: 4150 };
+        stalled[1] = Stalled { id: *b"ba9876543210", stall: 230 };
+        round(Msg::Stats(Stats { uptime_ns: 5, mem_total_kib: 6, mem_available_kib: 7, agent_rss_kib: 8, mem_used_kib: 9, mem_stall: 9173, oom_kills: 2, stalled }));
+        assert_eq!(stalled[0].id(), Some("0123456789ab"));
+        assert_eq!(stalled[2].id(), None);
+        let full = Stats { uptime_ns: 5, mem_total_kib: 6, mem_available_kib: 7, agent_rss_kib: 8, mem_used_kib: 9, mem_stall: 9173, oom_kills: 2, stalled: [Stalled::default(); STALLED_MAX] };
         round(Msg::Stats(full));
-        // Older agents' Stats, without the later words, still decode.
+        // Older agents' Stats, without the later words, still decode: before
+        // `stalled` (its count, 4 bytes), before the memory words.
         let mut buf = Vec::new();
         Msg::Stats(full).encode(&mut buf);
+        let buf = &buf[..buf.len() - 4];
+        assert_eq!(decode(buf).unwrap(), Msg::Stats(full));
         let no_memory_words = Stats { mem_stall: 0, oom_kills: 0, ..full };
         assert_eq!(decode(&buf[..buf.len() - 16]).unwrap(), Msg::Stats(no_memory_words));
         assert_eq!(decode(&buf[..buf.len() - 24]).unwrap(), Msg::Stats(Stats { mem_used_kib: 0, ..no_memory_words }));

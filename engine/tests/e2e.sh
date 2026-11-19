@@ -674,6 +674,18 @@ t build-network "curl" bash -c "cd $BD && printf 'FROM alpine\nRUN apk add --no-
 t build-resolvconf "nameserver 172.17.0.1" bash -c "cd $BD && printf 'FROM alpine\nRUN cat /etc/resolv.conf\n' > Dockerfile.dns && BUILDX_BUILDER=$BX perl -e 'alarm 300; exec @ARGV' $D build --no-cache --progress plain -f Dockerfile.dns . 2>&1"
 code build-no-public-resolver 1 bash -c "cd $BD && BUILDX_BUILDER=$BX perl -e 'alarm 300; exec @ARGV' $D build --no-cache --progress plain -f Dockerfile.dns . 2>&1 | grep -q 'nameserver 8.8.8.8'"
 t build-dns "Address" bash -c "cd $BD && printf 'FROM alpine\nRUN nslookup example.com\n' > Dockerfile.lookup && BUILDX_BUILDER=$BX perl -e 'alarm 300; exec @ARGV' $D build --no-cache --progress plain -f Dockerfile.lookup . 2>&1"
+# The Mac from a build step: host.docker.internal resolves there with no flag,
+# and --add-host takes its address. `name:host-gateway` buildx refuses itself
+# for any docker-container builder (features.md); the classic builder maps it.
+python3 -m http.server 18998 --bind 127.0.0.1 >/dev/null 2>&1 &
+HTTP_PID=$!
+sleep 0.7
+printf 'FROM alpine\nRUN wget -qO- http://host.docker.internal:18998/ | head -c 200\n' > "$BD/Dockerfile.mac"
+printf 'FROM alpine\nRUN wget -qO- http://mac:18998/ | head -c 200\n' > "$BD/Dockerfile.addhost"
+t build-host-internal "Directory listing" bash -c "cd $BD && BUILDX_BUILDER=$BX perl -e 'alarm 300; exec @ARGV' $D build --no-cache --progress plain -f Dockerfile.mac . 2>&1"
+t build-add-host-addr "Directory listing" bash -c "cd $BD && BUILDX_BUILDER=$BX perl -e 'alarm 300; exec @ARGV' $D build --no-cache --progress plain --add-host mac:198.19.248.254 -f Dockerfile.addhost . 2>&1"
+t build-classic-host-gateway "Directory listing" bash -c "cd $BD && DOCKER_BUILDKIT=0 perl -e 'alarm 300; exec @ARGV' $D build --no-cache --add-host mac:host-gateway -f Dockerfile.addhost . 2>&1"
+kill $HTTP_PID
 t build-fails "exit code: 3" bash -c "cd $BD && printf 'FROM alpine\nRUN exit 3\n' > Dockerfile.bad && BUILDX_BUILDER=$BX $D build -f Dockerfile.bad . 2>&1"
 $D rmi edock-test/built edock-test/net >/dev/null 2>&1; rm -rf "$BD"
 

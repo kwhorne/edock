@@ -545,6 +545,9 @@ pub struct Engine {
     /// How starved of memory the guest is: PSI "full avg10" in hundredths
     /// of a percent (0 while asleep), and processes killed for memory since it booted.
     memory_stall: std::sync::atomic::AtomicU64,
+    /// The containers waiting on memory most, as the guest last said:
+    /// (the start of each id, PSI "full avg10" in hundredths of a percent).
+    memory_stalled: Mutex<Vec<(String, u64)>>,
     oom_kills: std::sync::atomic::AtomicU64,
     /// How busy the VM was over the last couple of seconds, in hundredths of a
     /// percent of all its CPUs (0 while asleep).
@@ -652,6 +655,7 @@ impl Engine {
             memory_target: Mutex::new(ceiling),
             memory_used: std::sync::atomic::AtomicU64::new(0),
             memory_stall: std::sync::atomic::AtomicU64::new(0),
+            memory_stalled: Mutex::new(Vec::new()),
             oom_kills: std::sync::atomic::AtomicU64::new(0),
             cpu_permyriad: std::sync::atomic::AtomicU32::new(0),
             events: Mutex::new(Events::default()),
@@ -959,6 +963,7 @@ impl Engine {
         self.sleeping.store(true, std::sync::atomic::Ordering::SeqCst);
         self.memory_used.store(0, std::sync::atomic::Ordering::Relaxed);
         self.memory_stall.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.memory_stalled.lock().unwrap_or_else(|e| e.into_inner()).clear();
         vm.shutdown();
         // Let the guest flush its disk and power off before the VM is dropped.
         if !vm.wait_stopped(Duration::from_secs(10)) {
@@ -1133,8 +1138,17 @@ impl Engine {
     fn load(&self) -> io::Result<()> {
         let saved: Vec<Saved> = match std::fs::read(&self.records) {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
-                crate::diag::error!("ignoring unreadable container records", file = self.records.display(), error = e);
-                Vec::new()
+                // Not every record reads (one an eDock after this wrote, a
+                // file cut short): the file is kept as it is beside it, and
+                // each record that reads comes back, rather than none, which
+                // the next save would then write over all of them.
+                let kept = self.records.with_extension("json.unreadable");
+                let _ = std::fs::write(&kept, &b);
+                let records: Vec<Saved> = serde_json::from_slice::<Vec<serde_json::Value>>(&b)
+                    .map(|all| all.into_iter().filter_map(|r| serde_json::from_value(r).ok()).collect())
+                    .unwrap_or_default();
+                crate::diag::error!("some container records didn't read; the file is kept", kept = kept.display(), read = records.len(), error = e);
+                records
             }),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e),
@@ -1500,7 +1514,12 @@ impl Engine {
                 self.changed.notify_all();
                 if !self.sleeping.load(std::sync::atomic::Ordering::SeqCst) {
                     self.save();
-                    crate::diag::error!("the VM stopped unexpectedly; the next request boots a new one");
+                    // The engine stopping powers it off too: nothing went wrong.
+                    if SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst) {
+                        crate::diag::info!("VM stopped with the engine");
+                    } else {
+                        crate::diag::error!("the VM stopped unexpectedly; the next request boots a new one");
+                    }
                     // A crashed VM: forget it, so the next request boots a fresh one.
                     if let Ok(mut link) = self.link.try_lock() {
                         *link = None;
@@ -1546,6 +1565,7 @@ impl Engine {
                 };
                 engine.memory_used.store(used, std::sync::atomic::Ordering::Relaxed);
                 engine.memory_stall.store(stats.mem_stall, std::sync::atomic::Ordering::Relaxed);
+                *engine.memory_stalled.lock().unwrap_or_else(|e| e.into_inner()) = stats.stalled.iter().filter_map(|s| Some((s.id()?.to_owned(), s.stall))).collect();
                 engine.oom_kills.store(stats.oom_kills, std::sync::atomic::Ordering::Relaxed);
                 if !cfg!(target_os = "macos") {
                     continue;
@@ -1594,6 +1614,21 @@ impl Engine {
     pub fn memory_trouble(&self) -> (f64, u64) {
         let stall = self.memory_stall.load(std::sync::atomic::Ordering::Relaxed) as f64 / 100.0;
         (stall, self.oom_kills.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// The containers waiting on memory most, most first: id, name, the
+    /// share of the last 10 s all its processes waited (percent), and its
+    /// own memory limit in bytes (0: none, so the VM's is the one).
+    pub fn memory_stalled(&self) -> Vec<(String, String, f64, u64)> {
+        let stalled = self.memory_stalled.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let st = self.lock();
+        stalled
+            .into_iter()
+            .filter_map(|(prefix, stall)| {
+                let c = st.containers.values().find(|c| c.id.starts_with(&prefix))?;
+                Some((c.id.clone(), c.name.clone(), stall as f64 / 100.0, c.spec.limits.memory_max))
+            })
+            .collect()
     }
 
     /// How busy the VM is, in percent of all its CPUs; 0 while asleep.

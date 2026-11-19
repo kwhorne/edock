@@ -266,13 +266,13 @@ pub fn errno_text(e: &io::Error) -> String {
 }
 
 /// The supplementary groups for a user, read from the container's
-/// /etc/passwd and /etc/group as runc does: every group that lists the
-/// user, unless the run named a group (`user:group`); with none, its
-/// primary group `gid`; then `--group-add`.
+/// /etc/passwd and /etc/group as runc does: its primary group `gid`, every
+/// group that lists the user unless the run named a group (`user:group`),
+/// then `--group-add`. As runc, a group can be there twice (`id` shows it).
 pub fn supplementary_groups(user: &str, uid: u32, gid: u32, add: &[String]) -> io::Result<Vec<libc::gid_t>> {
     let group_file = fs::read_to_string("/etc/group").unwrap_or_default();
     let groups: Vec<Vec<&str>> = group_file.lines().map(|l| l.split(':').collect()).filter(|f: &Vec<&str>| f.len() >= 3).collect();
-    let mut out = Vec::new();
+    let mut out = vec![gid];
     let (name, group) = user.split_once(':').map_or((user, None), |(u, g)| (u, Some(g)));
     if group.is_none() {
         let name = if name.is_empty() || name.parse::<u32>().is_ok() { user_name(uid) } else { Some(name.to_owned()) };
@@ -286,9 +286,6 @@ pub fn supplementary_groups(user: &str, uid: u32, gid: u32, add: &[String]) -> i
             }
         }
     }
-    if out.is_empty() {
-        out.push(gid);
-    }
     for g in add {
         let gid = match g.parse::<u32>() {
             Ok(id) => id,
@@ -300,7 +297,6 @@ pub fn supplementary_groups(user: &str, uid: u32, gid: u32, add: &[String]) -> i
         };
         out.push(gid);
     }
-    out.dedup();
     Ok(out)
 }
 

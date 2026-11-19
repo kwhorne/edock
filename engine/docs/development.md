@@ -45,7 +45,24 @@ docker --host unix://$HOME/.edock/run/docker.sock run --rm alpine echo hello
 docker context create edock --docker host=unix://$HOME/.edock/run/docker.sock   # optional
 ./target/release/edock bench         # eDock vs other engines
 SOAK=600 tests/e2e.sh                # every check, then 600 runs watching for leaks
+tests/parity.py                      # the same docker commands on eDock and on Moby (OrbStack), compared
+tests/upgrade.py                     # released engines' data, opened by this one
 ```
+
+`tests/upgrade.py` has each of a few released engines (0.2.0 to the latest)
+make some state, with a HOME of its own under `$TMPDIR`: containers running and
+stopped, restart policies, a volume with files, a network, a Compose project
+with data, a committed image, and a parked project where it has On demand.
+Then this checkout's engine starts on the same data, and it checks that all of
+it came back and works, and that its log has no errors. It also opens a
+`containers.json` with a record it can't read. Releases are fetched with `gh`.
+
+`tests/parity.py` runs each of its cases (users and groups, exit codes, `exec`,
+`cp`, `inspect`, DNS, volumes, capabilities, ports, and more) against eDock and
+against an engine that runs Moby, Docker's own (OrbStack by default; `--b
+SOCKET` for another), with ids, times and addresses made equal, and shows where
+the answers differ. A difference with a good reason goes in its `KNOWN`, with
+the reason; any other fails it. `-k NAME` runs some, `-v` shows every answer.
 
 Docker's commands also work as `edock` commands, always on eDock whatever
 docker context is selected: `edock run`, `edock ps`, `edock exec`, `edock logs`,

@@ -738,7 +738,8 @@ fn write_etc_files(spec: &RunSpec<'_>, base: &std::path::Path, upstream: &[[u8; 
         return Ok(out);
     }
     let domain = net_opts::values(spec.net.opts, net_opts::DOMAINNAME).next().filter(|d| !d.is_empty());
-    let mut hosts = String::from("127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n");
+    // As Docker writes it, with its IPv6 names.
+    let mut hosts = String::from("127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\nff00::\tip6-mcastprefix\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n");
     // On an IPv6-only network the IPv4 address is eDock's own name for it.
     let v4 = spec.net.ip != [0; 4] && !net::Plug::from_opts(spec.net.opts).no_ipv4;
     if v4 {
@@ -1507,7 +1508,11 @@ pub(super) fn resolve_user(user: &str) -> io::Result<(libc::uid_t, libc::gid_t)>
             Some((id, gid))
         })
     };
-    let not_found = |what: &str| io::Error::new(io::ErrorKind::NotFound, format!("unknown {what} {user}"));
+    // Docker's words.
+    let not_found = |what: &str| {
+        let (name, file) = if what == "user" { (u, "passwd") } else { (g.unwrap_or(""), "group") };
+        io::Error::new(io::ErrorKind::NotFound, format!("unable to find {what} {name}: no matching entries in {file} file"))
+    };
     let (uid, primary_gid) = match u.parse::<u32>() {
         // Not in /etc/passwd: group 0, as runc (and so Docker) has it.
         Ok(id) => (id, lookup_gid_for_uid(id).unwrap_or(0)),

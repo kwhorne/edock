@@ -61,3 +61,29 @@ jobs:
         run: |
           sh -n scripts/bundle.sh
           sh -n scripts/notices.sh
+          bash -n scripts/verify.sh
+          bash -n engine/tests/e2e.sh
+          python3 -m py_compile engine/tests/parity.py engine/tests/upgrade.py
+
+  guest:
+    # The guest agent (edock-init) is Linux code, so its tests run on Linux,
+    # Arm as in the VM. As root: it makes device nodes and mounts as the VM's
+    # PID 1 does. Built as the runner's user, run with sudo.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Guest agent tests
+        working-directory: engine
+        run: |
+          cargo test --locked -p edock-init --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .executable != null) | .executable' > /tmp/guest-tests
+          test -s /tmp/guest-tests
+          while read -r t; do sudo "$t"; done < /tmp/guest-tests

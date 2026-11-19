@@ -23,6 +23,8 @@ pub fn run(exe: &CStr, argv: *const *const libc::c_char, envp: *const *const lib
     // SAFETY: signal-mask and process calls on local sets, in the
     // single-threaded child; the child branch only execs or exits.
     unsafe {
+        // Named as Docker's: `ps` and `pgrep docker-init` see it so.
+        libc::prctl(libc::PR_SET_NAME, c"docker-init".as_ptr() as libc::c_ulong, 0, 0, 0);
         // Blocked signals queue even for PID 1, which the kernel would
         // otherwise drop without a handler; sigtimedwait takes them below.
         let mut forward: libc::sigset_t = std::mem::zeroed();

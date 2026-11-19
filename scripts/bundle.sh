@@ -24,10 +24,13 @@
 #                   engine/Cargo.toml first (otherwise all three must already agree)
 #   --skip-engine   reuse engine/target/edock-engine
 #   --dmg           also make the .dmg
-#   --notarize      sign with EDOCK_SIGN_ID, notarize and staple (implies --dmg),
-#                   regenerate desktop/NOTICE, make the kernel source archive,
-#                   and make the update: dist/eDock-<version>-<arch>.zip and
-#                   dist/latest.json, signed with the update key
+#   --notarize      sign with EDOCK_SIGN_ID, notarize and staple (implies --dmg
+#                   and --verify), regenerate desktop/NOTICE, make the kernel
+#                   source archive, and make the update: dist/eDock-<version>-
+#                   <arch>.zip and dist/latest.json, signed with the update key
+#   --verify        before notarizing, check the app's engine and guest as they
+#                   ship: e2e and Docker parity (scripts/verify.sh, about 10 min)
+#   --skip-verify   don't, even with --notarize
 #
 # Environment:
 #   EDOCK_SIGN_ID        "Developer ID Application: Name (TEAMID)", or its SHA-1;
@@ -54,21 +57,24 @@ DESKTOP="$ROOT/desktop"
 APP="$DESKTOP/target/release/bundle/eDock.app"
 DIST="$ROOT/dist"
 
-SKIP_ENGINE=0 DMG=0 NOTARIZE=0 SET_VERSION=""
+SKIP_ENGINE=0 DMG=0 NOTARIZE=0 SET_VERSION="" VERIFY="" 
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-engine) SKIP_ENGINE=1 ;;
     --dmg) DMG=1 ;;
     --notarize) NOTARIZE=1 DMG=1 ;;
+    --verify) VERIFY=1 ;;
+    --skip-verify) VERIFY=0 ;;
     --version) shift; SET_VERSION=${1:?--version needs a value} ;;
     --version=*) SET_VERSION=${1#--version=} ;;
-    -h|--help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)"; exit 2 ;;
   esac
   shift
 done
 
 die() { echo "bundle: $*" >&2; exit 1; }
+[ -n "$VERIFY" ] || VERIFY=$NOTARIZE
 
 # ── Version: one number for the app, its About box and the engine ─────
 version_of() { sed -n "s/^version = \"\(.*\)\"/\1/p" "$1" | head -1; }
@@ -160,7 +166,15 @@ sign "$APP"
 codesign --verify --deep --strict "$APP"
 codesign -d --entitlements - "$APP/Contents/MacOS/edock" 2>/dev/null | grep -q com.apple.security.virtualization \
   || die "the engine lost its virtualization entitlement"
+# The guest agent that ships is the one just built from this code.
+cmp -s "$ENGINE/guest/out/initramfs.cpio" "$APP/Contents/Resources/guest/initramfs.cpio" \
+  || die "the app's guest agent (initramfs.cpio) isn't engine/guest/out's"
 du -sh "$APP"
+
+if [ "$VERIFY" = 1 ]; then
+  echo "== verify: e2e and Docker parity on the app's engine and guest"
+  "$ROOT/scripts/verify.sh" "$APP/Contents" || die "verify failed: see engine/target/verify (or --skip-verify)"
+fi
 
 # notarytool with the credentials chosen above, each argument quoted.
 notary() {

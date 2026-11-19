@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use edock_proto::{ContainerStats, Limits};
+use edock_proto::{ContainerStats, Limits, STALLED_MAX, Stalled};
 
 use super::sys;
 
@@ -69,6 +69,27 @@ pub fn memory_trouble() -> (u64, u64) {
     let stall = fs::read_to_string("/proc/pressure/memory").ok().and_then(|p| full_avg10(&p));
     let kills = fs::read_to_string("/proc/vmstat").map(|v| keyed(&v, "oom_kill")).unwrap_or(0);
     (stall.unwrap_or(0), kills)
+}
+
+/// The containers waiting on memory most: each one's PSI "full avg10" from
+/// its cgroup's memory.pressure (under `root`), above 0, most first. A
+/// container held back by its own limit shows here though the VM as a
+/// whole may not wait at all.
+pub fn stalled<'a>(root: &Path, ids: impl Iterator<Item = &'a str>) -> [Stalled; STALLED_MAX] {
+    let mut all: Vec<(u64, &str)> = ids
+        .filter_map(|id| {
+            let psi = fs::read_to_string(root.join(id).join("memory.pressure")).ok()?;
+            full_avg10(&psi).filter(|v| *v > 0).map(|v| (v, id))
+        })
+        .collect();
+    all.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+    let mut out = [Stalled::default(); STALLED_MAX];
+    for (slot, (stall, id)) in out.iter_mut().zip(all) {
+        let n = id.len().min(12);
+        slot.id[..n].copy_from_slice(&id.as_bytes()[..n]);
+        slot.stall = stall;
+    }
+    out
 }
 
 /// "full avg10" from a PSI file, in hundredths of a percent.
@@ -199,6 +220,22 @@ mod tests {
         let psi = "some avg10=100.00 avg60=100.00 avg300=98.32 total=1712105326\nfull avg10=91.73 avg60=94.09 avg300=81.92 total=1200142082\n";
         assert_eq!(full_avg10(psi), Some(9173));
         assert_eq!(full_avg10("some avg10=1.00 avg60=0 avg300=0 total=1\n"), None, "no full line");
+    }
+
+    /// The containers waiting on memory, most first, those that don't left out.
+    #[test]
+    fn the_containers_that_wait_most_are_named() {
+        let root = std::env::temp_dir().join(format!("edock-psi-{}", std::process::id()));
+        let psi = |v: &str| format!("some avg10={v} avg60=0 avg300=0 total=1\nfull avg10={v} avg60=0 avg300=0 total=1\n");
+        for (id, v) in [("aaaaaaaaaaaa1111", "3.50"), ("bbbbbbbbbbbb2222", "0.00"), ("cccccccccccc3333", "41.20"), ("dddddddddddd4444", "0.10"), ("eeeeeeeeeeee5555", "1.00")] {
+            fs::create_dir_all(root.join(id)).unwrap();
+            fs::write(root.join(id).join("memory.pressure"), psi(v)).unwrap();
+        }
+        let ids = ["aaaaaaaaaaaa1111", "bbbbbbbbbbbb2222", "cccccccccccc3333", "dddddddddddd4444", "eeeeeeeeeeee5555", "gone"];
+        let named = stalled(&root, ids.into_iter());
+        assert_eq!(named.map(|s| s.stall), [4120, 350, 100]);
+        assert_eq!(named.map(|s| s.id().map(str::to_owned)), [Some("cccccccccccc".into()), Some("aaaaaaaaaaaa".into()), Some("eeeeeeeeeeee".into())]);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

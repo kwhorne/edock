@@ -49,15 +49,16 @@ This takes about 15 minutes, most of it waiting for Apple. It:
    - then the app around it.
 
    Both use the hardened runtime and a secure timestamp. `rata bundle` signs with `--deep`, which would drop the engine's entitlement, so the engine is signed again on its own. The script checks the entitlement is there.
-7. **Notarizes the app** and staples its ticket, so the copy in Applications opens without a network.
-8. **Makes the update:**
+7. **Checks the app's engine and guest as they ship** (`scripts/verify.sh`, about 10 minutes): the guest's agent must be the one just built, then `engine/tests/e2e.sh` and, when OrbStack runs, `engine/tests/parity.py` (eDock's answers against Docker's own) run against that engine, with a HOME of its own so nothing of the installed eDock is touched. Any failure stops the release; the logs are in `engine/target/verify`. `--skip-verify` skips it.
+8. **Notarizes the app** and staples its ticket, so the copy in Applications opens without a network.
+9. **Makes the update:**
    - `dist/eDock-<version>-arm64.zip`, the stapled app, zipped with `--norsrc` so it stays sealed;
    - `dist/latest.json`, which names that zip with its SHA-256, the update key's signature and the notes from `EDOCK_RELEASE_NOTES`.
 
    Before any of this, the script checks that the update key matches the app's `UPDATE_KEY`, so a mismatch stops it at once rather than after 15 minutes.
-9. **Writes the kernel's source archive**, `dist/eDock-<version>-kernel-source.tar.xz`: the exact Linux release with eDock's patches applied, and its build inputs. GPL-2.0 asks that this be published beside the binaries; `KERNEL_SOURCE_OFFER.md` in the app names it. It takes about 6 minutes and is about 160 MB.
-10. **Makes the `.dmg`** (the app and a link to Applications), signs it, notarizes it, and staples it.
-11. **Checks both with `spctl`**, and writes `dist/eDock-<version>-arm64.dmg.sha256`.
+10. **Writes the kernel's source archive**, `dist/eDock-<version>-kernel-source.tar.xz`: the exact Linux release with eDock's patches applied, and its build inputs. GPL-2.0 asks that this be published beside the binaries; `KERNEL_SOURCE_OFFER.md` in the app names it. It takes about 6 minutes and is about 160 MB.
+11. **Makes the `.dmg`** (the app and a link to Applications), signs it, notarizes it, and staples it.
+12. **Checks both with `spctl`**, and writes `dist/eDock-<version>-arm64.dmg.sha256`.
 
 If Apple rejects either submission, the script prints Apple's log with the reason, and stops.
 

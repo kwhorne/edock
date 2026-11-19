@@ -134,10 +134,23 @@ pub unsafe fn clone3(args: &CloneArgs) -> io::Result<libc::pid_t> {
 /// destructors. Only for the child between clone and exec.
 pub fn child_fail(fd: RawFd, what: &str, err: io::Error) -> ! {
     let msg = format!("edock: cannot start container: {what}: {err}\n");
+    let code = start_failure_code(what, &err);
     // SAFETY: writing a valid buffer to a descriptor we hold, then exiting.
     unsafe {
         libc::write(fd, msg.as_ptr().cast(), msg.len());
-        libc::_exit(127)
+        libc::_exit(code)
+    }
+}
+
+/// The exit status `docker run` gives a container that couldn't start:
+/// 126 when its program can't be run (permission denied, a directory),
+/// 125 for what Docker refuses itself (a user or group it can't find), and
+/// 127 for the rest (a program that isn't there, above all).
+pub fn start_failure_code(what: &str, err: &io::Error) -> i32 {
+    match err.raw_os_error() {
+        Some(libc::EACCES | libc::EISDIR) => 126,
+        _ if matches!(what, "user" | "groups") => 125,
+        _ => 127,
     }
 }
 

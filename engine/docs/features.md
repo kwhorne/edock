@@ -85,12 +85,15 @@ Kubernetes LoadBalancer services are published on `localhost`, and
   "Prevent automatic sleeping when the display is off" in System Settings
   (Battery › Options on a laptop, Energy on a desktop Mac).
 
-- **`docker build --add-host name:host-gateway` with BuildKit fails** with
+- **`docker build --add-host name:host-gateway` with buildx fails** with
   `host-gateway is not supported by the docker-container driver`. buildx
-  refuses `host-gateway` for every builder except Docker's built-in one, and
-  eDock's builder is a docker-container builder, so the build stops before
-  eDock sees it. Docker's own docker-container builders do the same. Until
-  eDock has a built-in builder (planned), use the address itself
-  (`--add-host name:172.18.0.1` on Linux, the default bridge's
-  gateway; `198.19.248.254` on a Mac) or `DOCKER_BUILDKIT=0`, where eDock
-  maps `host-gateway` itself.
+  checks this on your Mac, before the build reaches eDock, and refuses
+  `host-gateway` for every builder except one inside Docker's own engine;
+  eDock's builder is a docker-container builder, as are the ones you make
+  with `docker buildx create` on any Docker. Build steps reach the Mac
+  anyway: `host.docker.internal` resolves to it with no flag at all, and
+  `--add-host name:198.19.248.254` (the Mac's address from the VM; on a
+  Linux host, `172.18.0.1`) gives it another name. The classic builder
+  (`DOCKER_BUILDKIT=0`, or a docker CLI without buildx) takes
+  `host-gateway` as it is. A builder inside eDock's engine, which buildx
+  would let map it, is planned.

@@ -367,7 +367,8 @@ pub fn serve(mut conn: File, paths: &Paths) -> io::Result<()> {
                     let (mem_total_kib, mem_available_kib) = meminfo();
                     let agent_rss_kib = self_rss_kib();
                     let (mem_stall, oom_kills) = super::cgroup::memory_trouble();
-                    Msg::Stats(Stats { uptime_ns: sys::boottime_ns(), mem_total_kib, mem_available_kib, agent_rss_kib, mem_used_kib: held_kib(paths, agent_rss_kib), mem_stall, oom_kills })
+                    let stalled = super::cgroup::stalled(&paths.cgroup, procs.values().filter(|p| p.exited.is_none()).map(|p| p.run.id.as_str()));
+                    Msg::Stats(Stats { uptime_ns: sys::boottime_ns(), mem_total_kib, mem_available_kib, agent_rss_kib, mem_used_kib: held_kib(paths, agent_rss_kib), mem_stall, oom_kills, stalled })
                         .encode(&mut out)
                 }
                 Ok(Msg::LayerQuery(digest)) => Msg::LayerStatus(layers::present(&paths.layers, digest)).encode(&mut out),

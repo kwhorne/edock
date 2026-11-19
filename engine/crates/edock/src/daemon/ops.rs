@@ -493,7 +493,7 @@ fn system_df(engine: &Engine) -> Result<Value, Error> {
             "Names": [format!("/{}", c.name)],
             "Image": c.spec.image,
             "ImageID": c.spec.image_id,
-            "Command": c.argv().join(" "),
+            "Command": super::api::command_line(&c.argv()),
             "Created": time::unix(c.created),
             "State": c.status.as_str(),
             "Status": c.status.as_str(),

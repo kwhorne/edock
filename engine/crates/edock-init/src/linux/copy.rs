@@ -132,7 +132,7 @@ fn copy_in(conn: &mut fs::File, spec: &CopySpec<'_>) -> io::Result<()> {
         Err(_) => return Err(io::Error::new(io::ErrorKind::NotFound, format!("notfound: Could not find the file {} in container {}", spec.path, spec.id))),
     }
     let keep = spec.flags & copy_flags::KEEP_OWNERS != 0;
-    let owner = if keep { None } else { Some(container::resolve_user(spec.owner).map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("unable to find user {}: no matching entries in passwd file", spec.owner)))?) };
+    let owner = if keep { None } else { Some(container::resolve_user(spec.owner)?) };
     let source: Box<dyn Read + '_> = if spec.flags & copy_flags::CHUNKED != 0 { Box::new(Chunks::new(&mut *conn)) } else { Box::new(&mut *conn) };
     let mut reader = BufReader::with_capacity(256 * 1024, source);
     {

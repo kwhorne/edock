@@ -433,6 +433,8 @@ fn info(engine: &Engine) -> Value {
         "EdockMemoryUsed": engine.memory_used(),
         "EdockMemoryStall": engine.memory_trouble().0,
         "EdockOomKills": engine.memory_trouble().1,
+        // Which containers wait: [{Id, Name, Stall (percent), Limit (bytes, 0: none)}].
+        "EdockMemoryStalled": engine.memory_stalled().into_iter().map(|(id, name, stall, limit)| json!({"Id": id, "Name": name, "Stall": stall, "Limit": limit})).collect::<Vec<_>>(),
         "EdockCpuPercent": engine.cpu_percent(),
         "Warnings": [],
     })
@@ -1189,6 +1191,9 @@ fn mounts(body: &Value, engine: &Engine, image: &edock_image::Image) -> Result<M
             // `--tmpfs /x:noexec,size=64m`: flags and options alike.
             let opts = opts.as_str().unwrap_or("").split(',').filter(|o| !o.is_empty() && *o != "tmpfs").collect::<Vec<_>>().join(",");
             add("tmpfs", "", dst, false, &opts, false, &mut out)?;
+            // As Docker: `--tmpfs` shows in HostConfig.Tmpfs, not in Mounts
+            // (a `--mount type=tmpfs` does).
+            out.info.pop();
         }
     }
     // `-v /path` (no source) arrives in `Volumes`; the image's VOLUME lines
@@ -1498,7 +1503,8 @@ pub(super) fn create(req: &Request, engine: &Engine) -> Result<Value, Error> {
     }
     // Docker's rules: an explicit Entrypoint drops the image's Cmd; an
     // explicit Cmd replaces the image's Cmd but keeps its Entrypoint.
-    let entry_override = strings(&body["Entrypoint"]);
+    // `--entrypoint ''` arrives as [""]: no entrypoint, as Docker reads it.
+    let entry_override = strings(&body["Entrypoint"]).map(|e| if e.len() == 1 && e[0].is_empty() { Vec::new() } else { e });
     let entrypoint = entry_override.clone().unwrap_or_else(|| image.config.entrypoint.clone());
     let cmd = strings(&body["Cmd"]).unwrap_or_else(|| if entry_override.is_some() { Vec::new() } else { image.config.cmd.clone() });
     let mut env = image.config.env.clone();
@@ -1699,6 +1705,15 @@ fn human_duration(d: Duration) -> String {
     }
 }
 
+/// `docker ps`'s COMMAND, as Docker writes it: the program, then its
+/// arguments, those with a space in single quotes (only those: not a tab, a
+/// quote or an empty one).
+pub(super) fn command_line(argv: &[String]) -> String {
+    let mut parts = argv.iter();
+    let Some(program) = parts.next() else { return String::new() };
+    std::iter::once(program.clone()).chain(parts.map(|a| if a.contains(' ') { format!("'{a}'") } else { a.clone() })).collect::<Vec<_>>().join(" ")
+}
+
 fn status_text(c: &Container) -> String {
     let ago = |t: Option<std::time::SystemTime>| human_duration(t.and_then(|t| t.elapsed().ok()).unwrap_or_default());
     match c.status {
@@ -1848,6 +1863,9 @@ fn container_inspect(engine: &Engine, key: &str) -> Result<Value, Error> {
         if let Some(t) = c.spec.stop_timeout {
             v["Config"]["StopTimeout"] = t.into();
         }
+        if let Some(n) = c.spec.stop_signal {
+            v["Config"]["StopSignal"] = signal_name(n).into();
+        }
         if !c.spec.shell.is_empty() {
             v["Config"]["Shell"] = json!(c.spec.shell);
         }
@@ -1892,7 +1910,7 @@ fn list(req: &Request, engine: &Engine) -> Result<Value, Error> {
                 "Names": [format!("/{}", c.name)],
                 "Image": c.spec.image,
                 "ImageID": c.spec.image_id,
-                "Command": c.argv().join(" "),
+                "Command": command_line(&c.argv()),
                 "Created": time::unix(c.created),
                 "State": state_word(c),
                 "Status": ps_status(c, health.get(&c.id)),
@@ -2653,6 +2671,11 @@ pub(super) fn signal(name: &str) -> u32 {
     parse_signal(name).unwrap_or(15)
 }
 
+/// A signal's name as Docker shows it (`SIGINT`), or its number.
+fn signal_name(n: u32) -> String {
+    SIGNALS.iter().find(|(_, v)| *v == n).map_or_else(|| n.to_string(), |(name, _)| format!("SIG{name}"))
+}
+
 /// Linux's signals by name, as Docker's `signal.SignalMap` has them.
 const SIGNALS: [(&str, u32); 34] = [
     ("HUP", 1), ("INT", 2), ("QUIT", 3), ("ILL", 4), ("TRAP", 5), ("ABRT", 6), ("IOT", 6), ("BUS", 7),
@@ -2700,6 +2723,17 @@ pub(super) fn parse_signal(raw: &str) -> Result<u32, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `docker ps`'s COMMAND as Moby 29 writes it: arguments with a space
+    /// quoted, nothing else.
+    #[test]
+    fn a_command_reads_as_dockers() {
+        let c = |a: &[&str]| super::command_line(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(c(&["sh", "-c", "echo made; exit 4"]), "sh -c 'echo made; exit 4'");
+        assert_eq!(c(&["echo", "it's", "a$b", "", "x\"y", "plain", "tab\tin"]), "echo it's a$b  x\"y plain tab\tin");
+        assert_eq!(c(&["/my prog", "x"]), "/my prog x");
+        assert_eq!(c(&[]), "");
+    }
 
     #[test]
     fn kernel_release_is_trimmed_and_empty_is_none() {
