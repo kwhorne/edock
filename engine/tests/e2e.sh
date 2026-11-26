@@ -756,6 +756,25 @@ t history-base "<missing>" $D history edock-test/committed:1
 t commit-stopped "sha256:" bash -c "$D stop -t 1 ren2 >/dev/null && $D commit ren2 edock-test/committed:2"
 $D rm -f ren2 >/dev/null; $D rmi edock-test/committed:1 edock-test/committed:2 >/dev/null 2>&1
 
+# Commits, tags and removals at once (a Compose pull, a build and a commit
+# together): none loses another's image, and the list stays readable. Before
+# the image list had a lock, this lost images and could leave the list
+# unreadable, every image command failing after.
+section "images changed at once"
+$D run -d --name many alpine sleep 120 >/dev/null
+MANY=()
+for i in $(seq 20); do
+  $D commit many edock-test/many-commit:$i >/dev/null 2>&1 & MANY+=($!)
+  $D tag alpine edock-test/many-tag:$i & MANY+=($!)
+  ($D tag alpine edock-test/many-tmp:$i && $D rmi edock-test/many-tmp:$i >/dev/null) & MANY+=($!)
+done
+wait "${MANY[@]}"
+t images-at-once-kept "kept=40" bash -c "echo kept=\$($D images --format '{{.Repository}}' | grep -cE '^edock-test/many-(commit|tag)\$')"
+t images-at-once-removed "left=0" bash -c "echo left=\$($D images --format '{{.Repository}}' | grep -c '^edock-test/many-tmp\$')"
+t images-at-once-readable "alpine" $D images alpine --format '{{.Repository}}'
+$D rm -f many >/dev/null
+$D images --format '{{.Repository}}:{{.Tag}}' | grep '^edock-test/many-' | xargs $D rmi >/dev/null 2>&1
+
 section "network connect and disconnect"
 $D network create na >/dev/null; $D network create nb >/dev/null
 $D run -d --name multi --network na nginx:alpine >/dev/null; sleep 0.3

@@ -211,6 +211,7 @@ impl Store {
 
     /// Adds `image`, replacing any image with the same name.
     pub fn put_image(&self, image: Image) -> io::Result<()> {
+        let _held = self.hold_index()?;
         let mut images = self.images()?;
         images.retain(|i| i.name != image.name);
         images.push(image);
@@ -222,6 +223,7 @@ impl Store {
     /// pin to it. Every tag of the image in that repository gets it, as there.
     /// Not if `name` became another image during the push.
     pub fn set_pushed(&self, name: &str, config_digest: &str, digest: &str) -> io::Result<()> {
+        let _held = self.hold_index()?;
         let mut images = self.images()?;
         let Some(repo) = images.iter().find(|i| i.name == name && i.config_digest == config_digest).map(|i| i.repo().to_owned()) else { return Ok(()) };
         for i in images.iter_mut().filter(|i| i.config_digest == config_digest && i.repo() == repo) {
@@ -233,6 +235,9 @@ impl Store {
 
     /// Removes the image and deletes blobs no remaining image uses.
     pub fn remove_image(&self, name: &str) -> io::Result<Option<Image>> {
+        // Held until the blobs are gone too: an image added meanwhile that
+        // uses one of them keeps it.
+        let _held = self.hold_index()?;
         let mut images = self.images()?;
         let Some(pos) = images.iter().position(|i| i.name == name) else { return Ok(None) };
         let removed = images.remove(pos);
@@ -248,11 +253,54 @@ impl Store {
         Ok(Some(removed))
     }
 
+    /// An index that doesn't read (two writes at once, before the lock, could
+    /// leave the end of an older one after a newer one) is kept beside it as
+    /// `images.json.unreadable`, and each image in it that still reads comes
+    /// back, rather than every pull, run and list failing on it from then on.
+    /// `Some((images read, kept file))` when it was repaired.
+    pub fn repair_index(&self) -> io::Result<Option<(usize, PathBuf)>> {
+        let _held = self.hold_index()?;
+        let bytes = match fs::read(self.root.join("images.json")) {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if serde_json::from_slice::<Vec<Image>>(&bytes).is_ok() {
+            return Ok(None);
+        }
+        let kept = self.root.join("images.json.unreadable");
+        fs::write(&kept, &bytes)?;
+        // The first whole value, before what was left after it.
+        let first = serde_json::Deserializer::from_slice(&bytes).into_iter::<Vec<serde_json::Value>>().next().and_then(Result::ok).unwrap_or_default();
+        let mut images: Vec<Image> = Vec::new();
+        for image in first.into_iter().filter_map(|v| serde_json::from_value::<Image>(v).ok()) {
+            images.retain(|i| i.name != image.name);
+            images.push(image);
+        }
+        self.write_index(&images)?;
+        Ok(Some((images.len(), kept)))
+    }
+
+    /// `images.lock`, held until it's dropped, around each change to the
+    /// index: the daemon's threads and the `edock` command each have a
+    /// Store, and two changes at once would otherwise each write back what
+    /// they read, losing the other's image.
+    fn hold_index(&self) -> io::Result<File> {
+        let lock = File::options().create(true).truncate(false).write(true).open(self.root.join("images.lock"))?;
+        lock.lock()?;
+        Ok(lock)
+    }
+
+    /// Writes the index whole, through a file of this writer's own, so a
+    /// reader sees the old index or the new one, never part of one.
     fn write_index(&self, images: &[Image]) -> io::Result<()> {
-        let tmp = self.root.join("tmp/images.json");
+        let tmp = self.root.join("tmp").join(format!("images.json.{}.{}", std::process::id(), TMP_SEQ.fetch_add(1, Ordering::Relaxed)));
         let bytes = serde_json::to_vec_pretty(images).map_err(io::Error::other)?;
-        fs::write(&tmp, bytes)?;
-        fs::rename(tmp, self.root.join("images.json"))
+        if let Err(e) = fs::write(&tmp, bytes).and_then(|()| fs::rename(&tmp, self.root.join("images.json"))) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+        Ok(())
     }
 }
 
@@ -419,6 +467,93 @@ mod tests {
             assert!(store.find(&name).unwrap().is_some(), "{name}");
         }
         assert!(store.find(&format!("other/node@{index}")).unwrap().is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn images_added_at_once_are_all_kept() {
+        // A commit, a pull and a tag at the same moment, each from its own
+        // Store as the daemon and the `edock` command have: none loses
+        // another's image, and the index reads whole throughout.
+        let root = std::env::temp_dir().join(format!("edock-store-race-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        Store::open(&root).unwrap();
+        let image = |name: String| Image {
+            name,
+            digest: format!("sha256:{}", "1".repeat(64)),
+            index_digest: None,
+            config_digest: format!("sha256:{}", "2".repeat(64)),
+            layers: Vec::new(),
+            size: 0,
+            platform: "linux/arm64".into(),
+            created: String::new(),
+            pulled_at: 0,
+            config: RunConfig::default(),
+        };
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let root = root.clone();
+                std::thread::spawn(move || {
+                    let store = Store::open(&root).unwrap();
+                    for n in 0..40 {
+                        store.put_image(image(format!("t{t}/kept:{n}"))).unwrap();
+                        store.put_image(image(format!("t{t}/gone:{n}"))).unwrap();
+                        store.remove_image(&format!("t{t}/gone:{n}")).unwrap();
+                        store.images().unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let names: std::collections::HashSet<String> = Store::open(&root).unwrap().images().unwrap().into_iter().map(|i| i.name).collect();
+        assert_eq!(names.len(), 8 * 40, "{} of {} kept", names.len(), 8 * 40);
+        assert!(names.iter().all(|n| n.contains("/kept:")));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_image_list_is_repaired_and_kept() {
+        let root = std::env::temp_dir().join(format!("edock-store-repair-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store = Store::open(&root).unwrap();
+        let image = |name: &str| Image {
+            name: name.into(),
+            digest: format!("sha256:{}", "1".repeat(64)),
+            index_digest: None,
+            config_digest: format!("sha256:{}", "2".repeat(64)),
+            layers: Vec::new(),
+            size: 0,
+            platform: "linux/arm64".into(),
+            created: String::new(),
+            pulled_at: 0,
+            config: RunConfig::default(),
+        };
+        assert_eq!(store.repair_index().unwrap(), None, "no index: nothing to do");
+        store.put_image(image("a:1")).unwrap();
+        store.put_image(image("b:1")).unwrap();
+        assert_eq!(store.repair_index().unwrap(), None, "a whole index is left as it is");
+        let index = root.join("images.json");
+        let whole = fs::read(&index).unwrap();
+
+        // A shorter write over a longer one: the older one's end after it.
+        let mut damaged = whole.clone();
+        damaged.extend_from_slice(b" \"PATH=/usr/bin\"\n      ]\n    }\n  }\n]");
+        fs::write(&index, &damaged).unwrap();
+        assert!(store.images().is_err());
+        let (read, kept) = store.repair_index().unwrap().expect("repaired");
+        assert_eq!(read, 2);
+        assert_eq!(fs::read(&kept).unwrap(), damaged, "the damaged file is kept as it was");
+        let names: Vec<String> = store.images().unwrap().into_iter().map(|i| i.name).collect();
+        assert_eq!(names, ["a:1", "b:1"]);
+
+        // Cut short: none reads, but the store works again.
+        fs::write(&index, &whole[..whole.len() / 2]).unwrap();
+        assert_eq!(store.repair_index().unwrap().map(|(n, _)| n), Some(0));
+        assert!(store.images().unwrap().is_empty());
+        store.put_image(image("c:1")).unwrap();
+        assert_eq!(store.images().unwrap().len(), 1);
         fs::remove_dir_all(&root).unwrap();
     }
 

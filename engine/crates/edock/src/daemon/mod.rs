@@ -140,6 +140,11 @@ pub fn run(_args: &[String]) -> io::Result<()> {
     };
 
     let store = edock_image::Store::open(edock_image::Store::default_root()?)?;
+    match store.repair_index() {
+        Ok(Some((read, kept))) => diag::error!("the image list didn't read; the file is kept", kept = kept.display(), read = read),
+        Ok(None) => {}
+        Err(e) => diag::error!("the image list couldn't be checked", error = e),
+    }
     let engine = engine::Engine::boot(store).inspect_err(|e| diag::error!("engine did not start", error = e))?;
     diag::info!("engine ready", version = env!("CARGO_PKG_VERSION"), ms = t0.elapsed().as_millis(), socket = format!("unix://{}", socket.display()));
     // Container files in Finder, at ~/eDock. A Linux host has them on its
