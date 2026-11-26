@@ -166,12 +166,15 @@ async fn commit(ctx: &Ctx, container: &str, note: Option<&str>) -> Result<String
     let name = info.name.as_deref().unwrap_or(container).trim_start_matches('/').to_owned();
     let repo = format!("{REPO}/{}", repo_part(&name));
     // Two in the same second: the second gets `-2`, never the first's tag.
+    // Only "no such image" makes a tag free: another error, said, rather
+    // than a snapshot replaced.
     let mut tag = stamp();
     for n in 2.. {
-        if docker.inspect_image(&format!("{repo}:{tag}")).await.is_err() {
-            break;
+        match docker.inspect_image(&format!("{repo}:{tag}")).await {
+            Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => break,
+            Err(e) => return Err(err(e)),
+            Ok(_) => tag = format!("{}-{n}", stamp_base(&tag)),
         }
-        tag = format!("{}-{n}", stamp_base(&tag));
     }
     let mut labels = info.config.as_ref().and_then(|c| c.labels.clone()).unwrap_or_default();
     labels.insert(LABEL.into(), "container".into());
