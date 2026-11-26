@@ -81,7 +81,7 @@ The app looks for the engine in `EDOCK_ENGINE`, beside the app, in `~/.edock/bin
 - **Build the engine with `cargo xtask host`, not `cargo build -p edock`.** Starting a VM needs the `com.apple.security.virtualization` entitlement, and only `xtask host` signs it in. An engine built with plain `cargo build` answers on its socket, but the first container fails with *The process doesn't have the "com.apple.security.virtualization" entitlement*.
 - **Quit eDock before `rata codegen`.** The app is single-instance (it stays in the menu bar). While it runs, codegen's launch only brings the running app forward, and the bindings aren't written.
 - **Restart the app after `npm run build`.** A page that's already open still names the old build's files.
-- **The Elyra dependency.** `desktop/Cargo.toml` and `desktop/app/package.json` use Elyra's published `v0.46.0` release. To work on Elyra and eDock together, point both at a local checkout for a while: a `path` dependency, and `file:` packages. Don't commit that.
+- **The Elyra dependency.** `desktop/Cargo.toml` and `desktop/app/package.json` use Elyra's published `v0.55.0` release. To work on Elyra and eDock together, point both at a local checkout for a while: a `path` dependency, and `file:` packages. Don't commit that.
 
 ## Tests
 

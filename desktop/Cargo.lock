@@ -707,8 +707,8 @@ dependencies = [
 
 [[package]]
 name = "elyra"
-version = "0.46.0"
-source = "git+https://github.com/kwhorne/elyra-framework?tag=v0.46.0#f5172b27cd6191aa7bd363cf359e3a403fe2f398"
+version = "0.55.0"
+source = "git+https://github.com/kwhorne/elyra-framework?tag=v0.55.0#e7007998ebf79efcbca95435bb15ca4e78dd4f4a"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -719,7 +719,9 @@ dependencies = [
  "elyra-macros",
  "gio",
  "hmac",
+ "http",
  "jiff",
+ "libc",
  "muda",
  "notify-rust",
  "objc2",
@@ -739,6 +741,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "signal-hook",
  "specta",
  "specta-serde",
  "specta-typescript",
@@ -757,8 +760,8 @@ dependencies = [
 
 [[package]]
 name = "elyra-macros"
-version = "0.46.0"
-source = "git+https://github.com/kwhorne/elyra-framework?tag=v0.46.0#f5172b27cd6191aa7bd363cf359e3a403fe2f398"
+version = "0.55.0"
+source = "git+https://github.com/kwhorne/elyra-framework?tag=v0.55.0#e7007998ebf79efcbca95435bb15ca4e78dd4f4a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2936,6 +2939,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "signal-hook"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3085,8 +3098,8 @@ dependencies = [
 
 [[package]]
 name = "substrate-core"
-version = "0.46.0"
-source = "git+https://github.com/kwhorne/elyra-framework?tag=v0.46.0#f5172b27cd6191aa7bd363cf359e3a403fe2f398"
+version = "0.55.0"
+source = "git+https://github.com/kwhorne/elyra-framework?tag=v0.55.0#e7007998ebf79efcbca95435bb15ca4e78dd4f4a"
 dependencies = [
  "serde",
  "specta",

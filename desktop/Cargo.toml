@@ -13,7 +13,7 @@ name = "edock-desktop"
 path = "src/main.rs"
 
 [dependencies]
-elyra = { git = "https://github.com/kwhorne/elyra-framework", tag = "v0.46.0", features = ["tray", "system", "updater"] }
+elyra = { git = "https://github.com/kwhorne/elyra-framework", tag = "v0.55.0", features = ["tray", "system", "updater"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 specta = { version = "=2.0.0-rc.25", features = ["derive"] }

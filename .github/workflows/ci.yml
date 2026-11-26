@@ -49,7 +49,7 @@ jobs:
       - name: Bindings match the commands
         working-directory: desktop
         run: |
-          cargo install --locked --git https://github.com/kwhorne/elyra-framework --tag v0.46.0 ratatosk
+          cargo install --locked --git https://github.com/kwhorne/elyra-framework --tag v0.55.0 ratatosk
           rata codegen
           git diff --exit-code app/src/bindings.ts
 

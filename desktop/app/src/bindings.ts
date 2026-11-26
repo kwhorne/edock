@@ -324,7 +324,12 @@ export type FileChoice =
 /**  Picked in a save dialog: it may be written, replacing what's there. */
 "save" | 
 /**  A folder picked in an open dialog: a new file may be written in it. */
-"folder";
+"folder" | 
+/**
+ *  Opened from the OS (RFC 0052): double-clicked, dropped on the app's
+ *  icon, or named on its command line. It may be read, and saved back to.
+ */
+"document";
 
 export type FileEntry = {
 	name: string,

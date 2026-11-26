@@ -3928,6 +3928,7 @@ Used by:
 - rustls 0.23.46 (https://github.com/rustls/rustls)
 - scopeguard 1.2.0 (https://github.com/bluss/scopeguard)
 - signal-hook-registry 1.4.8 (https://github.com/vorner/signal-hook)
+- signal-hook 0.3.18 (https://github.com/vorner/signal-hook)
 - smallvec 1.16.5 (https://github.com/servo/rust-smallvec)
 - socket2 0.6.5 (https://github.com/rust-lang/socket2)
 - stable_deref_trait 1.2.1 (https://github.com/storyyeller/stable_deref_trait)
@@ -6586,9 +6587,9 @@ SOFTWARE.
 MIT License
 ----------------------------------------------------------------------
 Used by:
-- elyra-macros 0.46.0 (https://github.com/kwhorne/elyra-framework)
-- elyra 0.46.0 (https://github.com/kwhorne/elyra-framework)
-- substrate-core 0.46.0 (https://github.com/kwhorne/elyra-framework)
+- elyra-macros 0.55.0 (https://github.com/kwhorne/elyra-framework)
+- elyra 0.55.0 (https://github.com/kwhorne/elyra-framework)
+- substrate-core 0.55.0 (https://github.com/kwhorne/elyra-framework)
 - edock-desktop 1.0.0
 - block2 0.6.2 (https://github.com/madsmtm/objc2)
 - dpi 0.1.2 (https://github.com/rust-windowing/winit)
@@ -7387,14 +7388,14 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 JavaScript libraries in the window
 ==================================
 
-@elyra/runtime 0.46.0 — MIT
+@elyra/runtime 0.55.0 — MIT
 ----------------------------------------------------------------------
 
 Copyright (c) 2026 Knut W. Horne and the Elyra contributors.
 MIT License: https://github.com/kwhorne/elyra-framework/blob/main/LICENSE
 
 
-@elyra/ui 0.46.0 — MIT
+@elyra/ui 0.55.0 — MIT
 ----------------------------------------------------------------------
 
 Copyright (c) 2026 Knut W. Horne and the Elyra contributors.
