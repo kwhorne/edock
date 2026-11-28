@@ -49,6 +49,7 @@ impl Scratch {
             image: Some("alpine:latest".into()),
             cmd: Some(vec!["sh".into(), "-c".into(), "i=0; while true; do echo tick $i; i=$((i+1)); sleep 0.2; done".into()]),
             labels: Some([("com.docker.compose.project".to_string(), "edock-test".to_string())].into()),
+            host_config: Some(bollard::models::HostConfig { tmpfs: Some([("/scratch".to_string(), "size=1m".to_string())].into()), ..Default::default() }),
             ..Default::default()
         };
         let id = docker.create_container(Some(q::CreateContainerOptionsBuilder::default().name(name).build()), body).await.unwrap().id;
@@ -118,6 +119,8 @@ async fn lists_actions_logs_and_a_terminal() {
     let _: () = app.invoke("container_action", (c.id.clone(), "stop".to_string())).await.unwrap();
     let detail: crate::resources::ContainerDetail = app.invoke("container_inspect", (c.id.clone(),)).await.unwrap();
     assert_eq!(detail.state, "exited");
+    // `--tmpfs` among its mounts (Docker lists it under HostConfig.Tmpfs).
+    assert!(detail.mounts.iter().any(|m| m.kind == "tmpfs" && m.destination == "/scratch" && m.rw), "{:?}", detail.mounts.iter().map(|m| (&m.kind, &m.destination)).collect::<Vec<_>>());
     let _: () = app.invoke("project_action", ("edock-test".to_string(), "start".to_string())).await.unwrap();
     let detail: crate::resources::ContainerDetail = app.invoke("container_inspect", (c.id.clone(),)).await.unwrap();
     assert_eq!(detail.state, "running");
@@ -1870,7 +1873,16 @@ async fn on_demand_park_and_wake() {
     .await
     .unwrap();
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer:.80}");
-    let u = mine(app.invoke("on_demand_list", ()).await.unwrap());
+    // The request's own container answers as soon as it serves; a service
+    // that doesn't depend on it (the worker) may start a moment after.
+    let mut u = mine(app.invoke("on_demand_list", ()).await.unwrap());
+    for _ in 0..50 {
+        if u.state == "running" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        u = mine(app.invoke("on_demand_list", ()).await.unwrap());
+    }
     assert_eq!(u.state, "running", "woken, worker too");
 
     assert!(compose(&["down", "-t", "1"]).status.success());

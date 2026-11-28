@@ -568,6 +568,8 @@ export type OnDemand = {
 	label: string | null,
 	/**  Something can wake it: a published port, or its name. */
 	wakeable: boolean,
+	/**  Started with `--rm`: never parked, as stopping it removes it. */
+	auto_remove: boolean,
 	/**  "running", "parked", "stopped" or "partly running". */
 	state: string,
 };

@@ -237,11 +237,11 @@
     if (!u) return [];
     const mark = (on) => (on ? "✓ " : "");
     return [
-      ...OD_TIMES.map(([v, l]) => ({ label: `${mark(u.on && u.after === v)}Park after ${l} unused`, disabled: !u.wakeable, action: () => setOnDemand(u, v, items) })),
+      ...OD_TIMES.map(([v, l]) => ({ label: `${mark(u.on && u.after === v)}Park after ${l} unused`, disabled: !u.wakeable || u.auto_remove, action: () => setOnDemand(u, v, items) })),
       u.on && !OD_TIMES.some(([v]) => v === u.after) ? { label: `✓ Park after ${u.after} unused`, disabled: true } : null,
       { label: `${mark(!u.on)}Keep running`, action: () => setOnDemand(u, "off", items) },
       u.setting ? { label: `As its label says (${u.label ? `after ${u.label}` : "keep running"})`, action: () => setOnDemand(u, null, items) } : null,
-      u.wakeable ? null : { label: "Nothing can wake it: publish a port", disabled: true },
+      u.auto_remove ? { label: "Removed when it stops (--rm): it can't be parked", disabled: true } : u.wakeable ? null : { label: "Nothing can wake it: publish a port", disabled: true },
       u.on && u.state !== "parked" ? { separator: true } : null,
       u.on && u.state !== "parked" ? { label: "Park now", action: () => parkNow(u) } : null,
     ].filter(Boolean);

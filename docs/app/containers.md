@@ -114,7 +114,10 @@ The moon button on a project's row (or a container's right-click menu) turns it 
 - All of a project parks and wakes as one, its services in their `depends_on` order, waiting for `service_healthy` where it says so.
 - Unused means no connection open through its ports or name, nothing sent by its containers (to each other too), and no terminal or `docker exec -it` in one. A database client that keeps a connection open keeps it awake.
 - A service without a published port, such as a queue worker or a scheduled job, doesn't run while its project is parked. What a container keeps only in memory is lost when it parks, as with `docker stop`. eDock says so when you turn it on.
+- A connection waits until the container listens on the port it came to, not on every port it publishes: a debugger's port nothing listens on doesn't hold the rest back.
 - A container that exits as it wakes stays parked; a page at its name says why, and the next connection tries again. **Stop** makes a parked one plainly stopped.
+- **Prune** and `docker container prune` leave parked containers: they are held, not stopped for good.
+- A container started with `--rm` can't be on demand, since stopping it would remove it. Its menu says so.
 - [Requests](requests.md) marks the request that woke one, and how long it waited. The same settings are on the command line as [`edock on-demand`](../cli.md#edock-on-demand), and kept in `~/.edock/on-demand.json`.
 
 Containers outside Compose come after the projects, the running ones first.

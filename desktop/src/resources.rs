@@ -410,7 +410,7 @@ pub async fn container_inspect(ctx: Ctx, id: String) -> Result<ContainerDetail, 
         out.sort_by(|a, b| a.key.cmp(&b.key));
         out
     };
-    let mounts = v["Mounts"]
+    let mut mounts: Vec<MountRow> = v["Mounts"]
         .as_array()
         .map(|a| {
             a.iter()
@@ -423,6 +423,15 @@ pub async fn container_inspect(ctx: Ctx, id: String) -> Result<ContainerDetail, 
                 .collect()
         })
         .unwrap_or_default();
+    // `--tmpfs`, which Docker (and eDock since 1.0) lists here, not in Mounts.
+    if let Some(t) = v["HostConfig"]["Tmpfs"].as_object() {
+        for (path, opts) in t {
+            if !mounts.iter().any(|m| &m.destination == path) {
+                let ro = opts.as_str().is_some_and(|o| o.split(',').any(|o| o.trim() == "ro"));
+                mounts.push(MountRow { kind: "tmpfs".into(), source: String::new(), destination: path.clone(), rw: !ro });
+            }
+        }
+    }
     let networks = v["NetworkSettings"]["Networks"]
         .as_object()
         .map(|o| o.iter().map(|(k, n)| KeyValue { key: k.clone(), value: s(&n["IPAddress"]) }).collect())

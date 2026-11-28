@@ -218,6 +218,8 @@ pub struct OnDemand {
     pub label: Option<String>,
     /// Something can wake it: a published port, or its name.
     pub wakeable: bool,
+    /// Started with `--rm`: never parked, as stopping it removes it.
+    pub auto_remove: bool,
     /// "running", "parked", "stopped" or "partly running".
     pub state: String,
 }
@@ -233,6 +235,7 @@ fn on_demand_of(v: &Value) -> OnDemand {
         setting: s("setting"),
         label: s("label"),
         wakeable: v["wakeable"] == true,
+        auto_remove: v["auto_remove"] == true,
         state: s("state").unwrap_or_default(),
     }
 }
