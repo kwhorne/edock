@@ -209,9 +209,17 @@ impl Store {
         Ok(self.images()?.into_iter().find(|i| i.name == name || i.digest == name || r.as_ref().is_some_and(|r| i.matches(r))))
     }
 
-    /// Adds `image`, replacing any image with the same name.
+    /// Adds `image`, replacing any image with the same name. Its config
+    /// and layers must be in the store: a pull, commit or load writes them
+    /// before the image is listed, and `remove_image` (holding the list)
+    /// may have deleted one meanwhile, the last image that used it gone.
     pub fn put_image(&self, image: Image) -> io::Result<()> {
         let _held = self.hold_index()?;
+        for d in std::iter::once(&image.config_digest).chain(image.layers.iter().map(|l| &l.digest)) {
+            if !self.blob_path(d).is_ok_and(|p| p.is_file()) {
+                return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} lacks {d}, removed with another image as it was stored: pull or build it again", image.name)));
+            }
+        }
         let mut images = self.images()?;
         images.retain(|i| i.name != image.name);
         images.push(image);
@@ -411,6 +419,13 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// Blobs for made-up digests: an image is listed only with its blobs there.
+    fn blobs<'a>(store: &Store, digests: impl IntoIterator<Item = &'a String>) {
+        for d in digests {
+            fs::write(store.blob_path(d).unwrap(), b"").unwrap();
+        }
+    }
+
     #[test]
     fn rejects_paths_instead_of_digests() {
         let root = std::env::temp_dir().join(format!("edock-store-path-test-{}", std::process::id()));
@@ -436,7 +451,7 @@ mod tests {
             pulled_at: 0,
             config: RunConfig::default(),
         };
-        store.put_image(image).unwrap();
+        assert!(store.put_image(image).is_err(), "its blobs aren't digests");
         store.remove_image("malicious:latest").unwrap();
         assert_eq!(fs::read(&outside).unwrap(), b"do not touch");
         fs::remove_dir_all(&root).unwrap();
@@ -460,6 +475,7 @@ mod tests {
             pulled_at: 0,
             config: RunConfig::default(),
         };
+        blobs(&store, [&image.config_digest]);
         assert_eq!(image.repo(), "kindest/node");
         assert_eq!(image.repo_digest(), Some(format!("kindest/node@{index}")));
         store.put_image(image).unwrap();
@@ -477,7 +493,7 @@ mod tests {
         // another's image, and the index reads whole throughout.
         let root = std::env::temp_dir().join(format!("edock-store-race-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        Store::open(&root).unwrap();
+        blobs(&Store::open(&root).unwrap(), [&format!("sha256:{}", "2".repeat(64))]);
         let image = |name: String| Image {
             name,
             digest: format!("sha256:{}", "1".repeat(64)),
@@ -514,6 +530,37 @@ mod tests {
     }
 
     #[test]
+    fn an_image_whose_layer_went_meanwhile_is_refused() {
+        // A pull has its layer, already there, then `docker rmi` of the last
+        // image that used it deletes it before the pull lists its image.
+        let root = std::env::temp_dir().join(format!("edock-store-gone-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store = Store::open(&root).unwrap();
+        let d = |c: &str| format!("sha256:{}", c.repeat(64));
+        let image = |name: &str| Image {
+            name: name.into(),
+            digest: d("1"),
+            index_digest: None,
+            config_digest: d("2"),
+            layers: vec![Layer { digest: d("3"), size: 0, media_type: "application/vnd.oci.image.layer.v1.tar".into() }],
+            size: 0,
+            platform: "linux/arm64".into(),
+            created: String::new(),
+            pulled_at: 0,
+            config: RunConfig::default(),
+        };
+        blobs(&store, [&d("2"), &d("3")]);
+        store.put_image(image("old:1")).unwrap();
+        store.remove_image("old:1").unwrap();
+        assert!(!store.blob_path(&d("3")).unwrap().exists(), "no image used it");
+        let e = store.put_image(image("new:1")).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        assert!(e.to_string().contains("pull or build it again"), "{e}");
+        assert!(store.images().unwrap().is_empty(), "not listed without its layer");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn a_damaged_image_list_is_repaired_and_kept() {
         let root = std::env::temp_dir().join(format!("edock-store-repair-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -530,6 +577,7 @@ mod tests {
             pulled_at: 0,
             config: RunConfig::default(),
         };
+        blobs(&store, [&format!("sha256:{}", "2".repeat(64))]);
         assert_eq!(store.repair_index().unwrap(), None, "no index: nothing to do");
         store.put_image(image("a:1")).unwrap();
         store.put_image(image("b:1")).unwrap();
@@ -574,6 +622,7 @@ mod tests {
             pulled_at: 0,
             config: RunConfig::default(),
         };
+        blobs(&store, ["1", "2", "3"].map(d).iter());
         // Built here: no registry has it yet, so no RepoDigest, as with Docker.
         store.put_image(image("localhost:5000/built:1", "1", None)).unwrap();
         // The same image's other tags: one in its repository, one in another registry.

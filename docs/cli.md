@@ -181,7 +181,7 @@ services:
       app.edock.on-demand: "15m"
 ```
 
-What `edock on-demand` sets is kept in `~/.edock/on-demand.json` and goes before the label. Without use means no connection open through its ports or its name, nothing sent by its containers (to each other too), and no `docker exec -it` session. Its services stop in reverse `depends_on` order and start in that order, waiting for `service_healthy` where it says so.
+What `edock on-demand` sets is kept in `~/.edock/on-demand.json` and goes before the label. Without use means no connection open through its ports or its name, nothing sent by its containers (to each other too), and no `docker exec -it` session. Its services stop in reverse `depends_on` order and start in that order, waiting for `service_healthy` where it says so. A connection waits until its container listens on the port it came to. `docker container prune` leaves parked containers. A container started with `--rm` can't be on demand: stopping it would remove it.
 
 ## `edock usb` (beta)
 

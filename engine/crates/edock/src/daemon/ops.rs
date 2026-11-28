@@ -375,7 +375,9 @@ fn container_prune(req: &Request, engine: &Engine) -> Result<Value, Error> {
     let f = filters(req, &["until", "label", "label!"])?;
     let doomed = engine.each(|c| {
         let labels = if c.spec.labels.is_object() { c.spec.labels.clone() } else { json!({}) };
-        (c.status != Status::Running && !kept_from_prune(&labels) && f.labels(&labels) && until_ok(&f, c.created)).then(|| c.id.clone())
+        // Parked (On demand) isn't stopped for good: its ports are held, and
+        // the next connection starts it again.
+        (c.status != Status::Running && !c.parked && !kept_from_prune(&labels) && f.labels(&labels) && until_ok(&f, c.created)).then(|| c.id.clone())
     });
     let mut deleted = Vec::new();
     for id in doomed {

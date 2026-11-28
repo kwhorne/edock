@@ -451,6 +451,15 @@ fn route(client: &mut impl ReadWrite, engine: &Engine, scheme: &'static str) -> 
     // What waiting for the wake cost this request (it found it parked, or
     // waited for its web server), for the inspector.
     let woke_ms = routed.as_ref().filter(|(_, found_parked)| *found_parked || waited).map(|_| asked.elapsed().as_secs_f64() * 1000.0);
+    // It exited while its web server was awaited: the page that says so,
+    // not a connection to it that closes empty.
+    if let Some((t, _)) = routed.as_ref().filter(|(t, _)| t.waking)
+        && let Some(why) = engine.not_woken(&t.id, &t.name)
+    {
+        let body = format!("<!doctype html><meta charset=utf-8><title>eDock</title><body style=\"font:15px -apple-system,sans-serif;margin:40px\"><h1>{}</h1>", escape(&why));
+        respond(client, 502, "Bad Gateway", &body)?;
+        return Ok(None);
+    }
     let Some((target, _)) = routed else {
         let list: String = engine.domains().iter().map(|d| { let d = escape(d); format!("<li><a href=\"{scheme}://{d}\">{d}</a></li>") }).collect();
         let body = format!(

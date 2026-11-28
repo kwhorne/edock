@@ -286,6 +286,8 @@ pub type Waker = Arc<dyn Fn() + Send + Sync>;
 pub struct Held {
     ip: String,
     port: u16,
+    /// The container's port it's for.
+    container_port: u16,
     client: TcpStream,
     permit: TcpPermit,
 }
@@ -324,6 +326,14 @@ impl Parked {
     /// When the connection that woke it came; `None` if none has yet.
     pub fn woken_at(&self) -> Option<Instant> {
         *self.state.woke.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The container ports connections wait for now, each once.
+    pub fn waited_on(&self) -> Vec<u16> {
+        let mut ports: Vec<u16> = self.state.held.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|h| h.container_port).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
     }
 
     /// The sockets, for `start_with`, and the connections waiting.
@@ -375,11 +385,11 @@ fn parked_loop(socks: Vec<Bound>, stop: &OwnedFd, state: &ParkedState, wake: &Wa
         if fds.last().is_some_and(|f| f.revents != 0) {
             return socks;
         }
-        for (_, ip, port, s) in &socks {
+        for (binding, ip, port, s) in &socks {
             let Sock::Tcp(l) = s else { continue };
             while let Ok((client, from)) = l.accept() {
                 let Some(permit) = tcp_permit(from.ip()) else { continue };
-                state.held.lock().unwrap_or_else(|e| e.into_inner()).push(Held { ip: ip.clone(), port: *port, client, permit });
+                state.held.lock().unwrap_or_else(|e| e.into_inner()).push(Held { ip: ip.clone(), port: *port, container_port: binding.container_port, client, permit });
                 let first = {
                     let mut woke = state.woke.lock().unwrap_or_else(|e| e.into_inner());
                     woke.is_none().then(|| *woke = Some(Instant::now())).is_some()

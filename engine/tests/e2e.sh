@@ -456,6 +456,36 @@ fi
 t domain-ports-yield "Welcome to nginx" bash -c "$D run -d --name d18780 -p 18780:80 nginx:alpine >/dev/null && sleep 1 && curl -s -m 5 http://127.0.0.1:18780/"
 $D rm -f d18780 >/dev/null
 t domain-ports-back "Welcome to nginx" bash -c "for i in \$(seq 20); do curl -s -m 2 http://dmv.edock.localhost:18780 | grep -q nginx && break; sleep 0.5; done; curl -s -m 5 http://dmv.edock.localhost:18780"
+
+# On demand at its edges, with the routers on 18780 in every flavor.
+section "On demand: prune, --rm, a second port, an exit as it wakes"
+odpark="curl -s --unix-socket $SOCK -X POST -H Content-Type:application/json http://d/edock/on-demand/park -d"
+# Parked is held, not stopped for good: prune leaves it, and takes the rest.
+$D run -d --name odp -p 18791:80 --label app.edock.on-demand=1h --label app.edock.e2e-od=1 nginx:alpine >/dev/null
+$D create --name odgone --label app.edock.e2e-od=1 alpine true >/dev/null
+ready http://127.0.0.1:18791/
+t od-park '"state":"parked"' $odpark '{"name":"odp"}'
+t od-prune-takes-stopped "gone=0" bash -c "$D container prune -f --filter label=app.edock.e2e-od=1 >/dev/null; echo gone=\$($D ps -a --format '{{.Names}}' | grep -c '^odgone\$')"
+t od-prune-keeps-parked "(parked)" $D ps -a --filter name=odp --format '{{.Status}}'
+t od-prune-woken "Welcome to nginx" curl -s -m 20 http://127.0.0.1:18791/
+# `--rm`: stopping it would remove it, so it's never parked.
+$D run -d --rm --name odrm -p 18794:80 --label app.edock.on-demand=1h nginx:alpine >/dev/null
+ready http://127.0.0.1:18794/
+t od-rm-not-parked "isn't on demand" $odpark '{"name":"odrm"}'
+t od-rm-not-set "removed when it stops" curl -s --unix-socket "$SOCK" -X POST -H Content-Type:application/json -d '{"name":"odrm","value":"15m"}' http://d/edock/on-demand
+t od-rm-runs "odrm" $D ps --filter name=odrm --format '{{.Names}}'
+# A second port nothing listens on (a debugger's) doesn't hold the first back.
+$D run -d --name odm -p 18792:80 -p 18793:9229 --label app.edock.on-demand=1h nginx:alpine >/dev/null
+ready http://127.0.0.1:18792/
+t od-park-two-ports '"state":"parked"' $odpark '{"name":"odm"}'
+t od-wake-one-port "in time" bash -c "s=\$(date +%s); curl -s -m 25 http://127.0.0.1:18792/ | grep -q nginx && [ \$((\$(date +%s) - s)) -lt 10 ] && echo in time"
+# Woken by its name, it exits before it serves: the page says so.
+$D run -d --name odx --label app.edock.on-demand=1h --entrypoint sh nginx:alpine -c 'if [ -e /woke ]; then sleep 0.3; exit 3; fi; touch /woke; exec nginx -g "daemon off;"' >/dev/null
+ready http://odx.edock.localhost:18780/
+t od-park-exits '"state":"parked"' $odpark '{"name":"odx"}'
+t od-exit-as-it-woke "exited with code 3 as it woke" curl -s -m 30 http://odx.edock.localhost:18780/
+$D rm -f odp odrm odm odx >/dev/null 2>&1
+
 if [ -z "$FEATURE" ]; then
   # t execs its command, so this is curl itself: a shell function there would never run.
   t domain-ports-restore "\"port\":$OLD_HTTP" curl -s --unix-socket "$SOCK" -X POST -H 'Content-Type: application/json' -d "{\"http\":$OLD_HTTP,\"https\":$OLD_HTTPS}" http://d/edock/domains

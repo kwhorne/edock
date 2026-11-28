@@ -1405,14 +1405,18 @@ impl Engine {
                 };
                 let mut anon = Vec::new();
                 let mut removed_log = None;
+                // Dropped after the lock: ports it held join their thread.
+                let mut removed = None;
                 if remove {
-                    if let Some(c) = st.containers.remove(id) {
-                        anon = c.spec.anon_volumes;
-                        removed_log = Some(c.log);
+                    if let Some(mut c) = st.containers.remove(id) {
+                        anon = std::mem::take(&mut c.spec.anon_volumes);
+                        removed_log = Some(c.log.clone());
+                        removed = Some(c);
                     }
                     note_removed(&mut st, id, code);
                 }
                 drop(st);
+                drop(removed);
                 if let Some((image, attrs)) = actor {
                     // As Docker: `oom` first, when the kernel killed it for memory.
                     if oom {
@@ -1625,6 +1629,10 @@ impl Engine {
         stalled
             .into_iter()
             .filter_map(|(prefix, stall)| {
+                // Under 0.1% would show as 0.0%: not waiting, to anyone reading it.
+                if stall < 10 {
+                    return None;
+                }
                 let c = st.containers.values().find(|c| c.id.starts_with(&prefix))?;
                 Some((c.id.clone(), c.name.clone(), stall as f64 / 100.0, c.spec.limits.memory_max))
             })
@@ -2380,23 +2388,28 @@ impl Engine {
                 return Ok(Some((t, true)));
             }
             let waking = self.waking.lock().unwrap_or_else(|e| e.into_inner()).contains(&unit);
-            if !waking {
-                // The wake is over and it doesn't run: it didn't start, or exited.
-                let st = self.lock();
-                let Some(c) = st.containers.get(&id) else { return Err(format!("{cname} is gone")) };
-                if c.status != Status::Running {
-                    return Err(if c.exits > 0 && c.finished.is_some_and(|f| f.elapsed().is_ok_and(|e| e < WAKE_LIMIT)) {
-                        format!("{cname} exited with code {} as it woke: its log says why", c.exit_code)
-                    } else {
-                        format!("{cname} didn't start: the engine's log says why")
-                    });
-                }
+            // The wake is over and it doesn't run: it didn't start, or exited.
+            if !waking && let Some(why) = self.not_woken(&id, &cname) {
+                return Err(why);
             }
             if std::time::Instant::now() >= deadline {
                 return Err(format!("{cname} didn't wake in {} s", WAKE_LIMIT.as_secs()));
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Why a container that was woken doesn't run, or `None` if it does.
+    pub fn not_woken(&self, id: &str, cname: &str) -> Option<String> {
+        let st = self.lock();
+        let Some(c) = st.containers.get(id) else { return Some(format!("{cname} is gone")) };
+        (c.status != Status::Running).then(|| {
+            if c.exits > 0 && c.finished.is_some_and(|f| f.elapsed().is_ok_and(|e| e < WAKE_LIMIT)) {
+                format!("{cname} exited with code {} as it woke: its log says why", c.exit_code)
+            } else {
+                format!("{cname} didn't start: the engine's log says why")
+            }
+        })
     }
 
     /// A connection through the container-name router to `id`, counted
@@ -2926,13 +2939,16 @@ impl Engine {
             return;
         }
         let me = self.me.get().cloned().unwrap_or_default();
+        let ours = unit.clone();
         let spawned = std::thread::Builder::new().name("edock-wake".into()).spawn(move || {
             let Some(engine) = me.upgrade() else { return };
-            engine.wake_unit(&unit);
-            engine.waking.lock().unwrap_or_else(|e| e.into_inner()).remove(&unit);
+            engine.wake_unit(&ours);
+            engine.waking.lock().unwrap_or_else(|e| e.into_inner()).remove(&ours);
         });
+        // Not woken after all: the next connection tries again. Other
+        // units waking stay so.
         if spawned.is_err() {
-            self.waking.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            self.waking.lock().unwrap_or_else(|e| e.into_inner()).remove(&unit);
         }
     }
 
@@ -3001,15 +3017,19 @@ impl Engine {
     /// If it exits meanwhile, it stays parked.
     fn finish_wake(&self, id: &str, target: [u8; 4]) {
         let Some((ports, name)) = self.lock().containers.get(id).map(|c| (c.spec.ports.clone(), c.name.clone())) else { return };
-        let mut want: Vec<u16> = ports.iter().filter(|b| b.proto != "udp").map(|b| b.container_port).collect();
-        want.sort_unstable();
-        want.dedup();
+        let published: Vec<u16> = ports.iter().filter(|b| b.proto != "udp").map(|b| b.container_port).collect();
         let deadline = std::time::Instant::now() + WAKE_LIMIT;
         let ready = loop {
             if !self.is_running(id) {
                 break false;
             }
-            if self.listening(id).is_ok_and(|(reach, _)| want.iter().all(|p| reach.contains(p))) {
+            // Ready when it listens on each port a connection waits for
+            // (one that came while it woke too), or, with none waiting, on
+            // any it publishes: not on every one, as a port it publishes but
+            // seldom serves (a debugger's) would hold the rest back.
+            let waited_on = self.lock().containers.get(id).and_then(|c| c.held.as_ref().map(super::ports::Parked::waited_on)).unwrap_or_default();
+            let ready = |reach: &[u16]| if waited_on.is_empty() { published.is_empty() || published.iter().any(|p| reach.contains(p)) } else { waited_on.iter().all(|p| reach.contains(p)) };
+            if self.listening(id).is_ok_and(|(reach, _)| ready(&reach)) {
                 break true;
             }
             if std::time::Instant::now() >= deadline {
@@ -3120,6 +3140,8 @@ impl Engine {
                     "setting": setting.map(|c| match c { Choice::Off => "off".to_owned(), Choice::After(d) => shown(d) }),
                     "label": label.map(shown),
                     "wakeable": members.iter().any(|c| !c.spec.ports.is_empty()) || super::domains::routing(),
+                    // `--rm`: never parked, as stopping it removes it.
+                    "auto_remove": members.iter().any(|c| c.spec.auto_remove),
                     "state": state,
                     "containers": members.len(),
                 })
@@ -3152,10 +3174,18 @@ impl Engine {
                 }
             }
         };
+        let removed_when_stopped = {
+            let st = self.lock();
+            let project = |c: &Container| c.spec.labels.get("com.docker.compose.project").and_then(|v| v.as_str()) == Some(name);
+            st.containers.values().any(|c| !is_own(c) && c.spec.auto_remove && (if kind == "project" { project(c) } else { c.name == name }))
+        };
         let stored = match value.map(str::trim).filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("reset")) {
             None => None,
             Some(v) => Some(match choice(v) {
                 Some(Choice::Off) => "off".to_owned(),
+                Some(Choice::After(_)) if removed_when_stopped => {
+                    return Err(Error::BadRequest(format!("{name} is removed when it stops (--rm): parking it would remove it")));
+                }
                 Some(Choice::After(d)) => shown(d),
                 None => return Err(Error::BadRequest(format!("{v:?} isn't a time (30s, 15m, 1h) or off"))),
             }),
@@ -3854,18 +3884,23 @@ fn on_demand_units(st: &State, settings: &super::ondemand::Settings) -> HashMap<
 /// `on_demand_units`, with or without the check that something can wake them.
 fn on_demand_units_of(st: &State, settings: &super::ondemand::Settings, wakeable_only: bool) -> HashMap<String, Duration> {
     use super::ondemand::Choice;
-    let mut units: HashMap<String, (Option<Choice>, Duration, bool)> = HashMap::new();
+    let mut units: HashMap<String, (Option<Choice>, Duration, bool, bool)> = HashMap::new();
     for c in st.containers.values().filter(|c| !is_own(c)) {
         let Some(unit) = unit_of(c) else { continue };
-        let u = units.entry(unit).or_insert_with(|| (unit_setting(settings, &c.spec, &c.name), Duration::ZERO, false));
+        let u = units.entry(unit).or_insert_with(|| (unit_setting(settings, &c.spec, &c.name), Duration::ZERO, false, false));
         if let Some(a) = label_after(&c.spec) {
             u.1 = u.1.max(a);
         }
         u.2 |= !c.spec.ports.is_empty() || super::domains::routing();
+        u.3 |= c.spec.auto_remove;
     }
     units
         .into_iter()
-        .filter_map(|(unit, (setting, label, wakeable))| {
+        .filter_map(|(unit, (setting, label, wakeable, removed_when_stopped))| {
+            // `--rm`: stopping it to park it would remove it for good.
+            if removed_when_stopped {
+                return None;
+            }
             let after = match setting {
                 Some(Choice::Off) => return None,
                 Some(Choice::After(d)) => d,

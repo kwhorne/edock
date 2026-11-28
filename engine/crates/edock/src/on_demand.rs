@@ -66,6 +66,7 @@ fn on_demand(u: &Value) -> String {
     match u["after"].as_str() {
         Some(after) => format!("after {after}{from}"),
         None if u["setting"] == "off" => format!("off{from}"),
+        None if u["label"].is_string() && u["auto_remove"] == true => "off (removed when it stops: --rm)".into(),
         None if u["label"].is_string() && u["wakeable"] == false => "off (nothing can wake it: publish a port)".into(),
         None => "off".into(),
     }
@@ -93,6 +94,7 @@ fn sentence(u: &Value) -> String {
         None => match (u["setting"].as_str(), u["label"].as_str()) {
             (Some("off"), Some(label)) => format!("{name}: not on demand (turned off here; its label says {label})"),
             (Some("off"), None) => format!("{name}: not on demand (turned off here)"),
+            (_, Some(_)) if u["auto_remove"] == true => format!("{name}: not on demand: it's removed when it stops (--rm)"),
             (_, Some(_)) if u["wakeable"] == false => format!("{name}: not on demand: nothing can wake it (publish a port)"),
             _ => format!("{name}: not on demand"),
         },
@@ -109,6 +111,7 @@ mod tests {
         assert_eq!(u(json!({"after": "15m", "from": "label"})), "after 15m (label)");
         assert_eq!(u(json!({"after": null, "setting": "off", "from": "setting"})), "off (setting)");
         assert_eq!(u(json!({"after": null, "label": "5m", "wakeable": false})), "off (nothing can wake it: publish a port)");
+        assert_eq!(u(json!({"after": null, "label": "5m", "auto_remove": true, "wakeable": true})), "off (removed when it stops: --rm)");
         assert_eq!(u(json!({"after": null})), "off");
     }
 
